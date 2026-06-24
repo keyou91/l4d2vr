@@ -887,8 +887,7 @@ void VR::ParseConfigFile()
             getString("VRRuntimeBackend", L4D2VR_RuntimeBackendName(m_RequestedRuntimeBackend));
         const VrRuntimeBackend parsedRuntimeBackend =
             L4D2VR_ParseRuntimeBackend(configuredRuntimeBackend, m_RequestedRuntimeBackend);
-        m_RuntimeBackendFallbackToOpenVR =
-            getBool("VRRuntimeFallbackToOpenVR", m_RuntimeBackendFallbackToOpenVR);
+        m_RuntimeBackendFallbackToOpenVR = false;
 
         if (parsedRuntimeBackend == m_RequestedRuntimeBackend)
         {
@@ -3712,6 +3711,22 @@ void VR::ApplyVrRecommendedVideoSettingsIfNeeded(const char* reason)
 {
     if (!m_VrRecommendedVideoSettingsEnabled)
         return;
+
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        m_VrRecommendedVideoSettingsApplyPending = false;
+        m_VrRecommendedVideoSettingsAppliedThisSession = false;
+
+        static bool s_loggedOpenXrSkip = false;
+        if (!s_loggedOpenXrSkip)
+        {
+            s_loggedOpenXrSkip = true;
+            Game::logMsg(
+                "[VR][VideoSettings] skipped VR recommended video settings for OpenXR backend reason=%s",
+                (reason && *reason) ? reason : "unspecified");
+        }
+        return;
+    }
 
     const bool ok = L4D2VR_ApplyRecommendedVideoSettings();
     m_VrRecommendedVideoSettingsApplyPending = false;

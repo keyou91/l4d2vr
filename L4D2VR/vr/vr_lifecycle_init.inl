@@ -947,7 +947,63 @@ VR::VR(Game* game)
 
     if (runtimeSelection.active == VrRuntimeBackend::OpenXR)
     {
-        Game::errorMsg("Native OpenXR runtime selected, but the OpenXR rendering/input backend is not wired yet.");
+        const OpenXrHelperLaunchConfig helperConfig = L4D2VR_ReadOpenXrHelperLaunchConfig();
+        Game::logMsg("[VR][OpenXRHelper] enabled=%d submitTestFrames=%u waitReadySeconds=%u",
+            helperConfig.enabled ? 1 : 0,
+            helperConfig.submitTestFrames,
+            helperConfig.waitReadySeconds);
+        if (!helperConfig.enabled)
+        {
+            Game::errorMsg("OpenXR helper backend selected, but OpenXRHelper is disabled.");
+            return;
+        }
+
+        m_OpenXrHelperBridgeActive = L4D2VR_StartOpenXrHelper(helperConfig);
+        if (!m_OpenXrHelperBridgeActive)
+        {
+            Game::errorMsg("OpenXR helper backend selected, but the helper did not start.");
+            return;
+        }
+
+        m_RenderWidth = 3600;
+        m_RenderHeight = 3200;
+        m_AntiAliasing = 0;
+        m_TextureBounds[0] = vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 0.5f };
+        m_TextureBounds[1] = vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 0.5f };
+        m_Aspect = static_cast<float>(m_RenderWidth) / static_cast<float>(m_RenderHeight);
+        m_Fov = 90.0f;
+        m_HmdDisplayFrequencyHz.store(90.0f, std::memory_order_relaxed);
+        m_HmdDisplayFrequencyHzLastUpdateMs.store(static_cast<uint32_t>(GetTickCount()), std::memory_order_relaxed);
+
+        m_HmdForward = { 1.0f, 0.0f, 0.0f };
+        m_HmdRight = { 0.0f, -1.0f, 0.0f };
+        m_HmdUp = { 0.0f, 0.0f, 1.0f };
+        m_LeftControllerForward = m_HmdForward;
+        m_LeftControllerRight = m_HmdRight;
+        m_LeftControllerUp = m_HmdUp;
+        m_RightControllerForward = m_HmdForward;
+        m_RightControllerForwardUnforced = m_HmdForward;
+        m_RightControllerRight = m_HmdRight;
+        m_RightControllerUp = m_HmdUp;
+
+        Game::logMsg(
+            "[VR][OpenXR] helper scene backend initialized renderTarget=%ux%u fov=%.1f fallbackToOpenVR=0",
+            m_RenderWidth,
+            m_RenderHeight,
+            m_Fov);
+
+        std::thread configParser(&VR::WaitForConfigUpdate, this);
+        configParser.detach();
+
+        while (!g_D3DVR9)
+            Sleep(10);
+
+        if (!m_RenderFrameReadyEvent)
+            m_RenderFrameReadyEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+
+        m_SubmitPoseToken.store(1, std::memory_order_release);
+        m_IsInitialized = true;
+        m_IsVREnabled = true;
         return;
     }
 

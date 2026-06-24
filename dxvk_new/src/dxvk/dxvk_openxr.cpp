@@ -3,6 +3,7 @@
 #include "dxvk_instance.h"
 #include "dxvk_openxr.h"
 
+#include "L4D2VR/openxr_loader_util.h"
 #include "L4D2VR/vr_runtime_backend.h"
 #include "../../../thirdparty/openxr/include/openxr/openxr_platform.h"
 
@@ -260,11 +261,13 @@ namespace dxvk {
   bool DxvkXrProvider::queryNativeOpenXrExtensions(
           DxvkNameSet& instanceExtensions,
           DxvkNameSet& deviceExtensions) const {
-    HMODULE loader = ::LoadLibrary("openxr_loader.dll");
+    L4D2VR_OpenXrLoaderLoadResult loaderResult = L4D2VR_LoadOpenXrLoader();
+    HMODULE loader = loaderResult.module;
     if (!loader) {
-      Logger::warn("OpenXR: Native openxr_loader.dll not found");
+      Logger::warn(str::format("OpenXR: ", loaderResult.detail));
       return false;
     }
+    Logger::info(str::format("OpenXR: Native loader ", loaderResult.path));
 
     auto cleanupLoader = [&]() {
       ::FreeLibrary(loader);

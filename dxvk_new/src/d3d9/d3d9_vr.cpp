@@ -72,6 +72,10 @@ namespace dxvk {
       pDesc->Height = desc->Height;
       pDesc->Format = tex->GetFormatMapping().FormatColor;
       pDesc->SampleCount = uint32_t(image->info().sampleCount);
+      HANDLE sharedHandle = image->sharedHandle();
+      pDesc->SharedHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sharedHandle));
+      pDesc->SharedHandleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
+      pDesc->SharedHandleValid = (sharedHandle != nullptr && sharedHandle != INVALID_HANDLE_VALUE) ? 1u : 0u;
 
       return D3D_OK;
     }

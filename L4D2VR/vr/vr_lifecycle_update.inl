@@ -1345,6 +1345,27 @@ void VR::Update()
             returnedToMainMenu ? "returned_to_main_menu" : "enabled");
     }
 
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR && m_Game)
+    {
+        static bool s_loggedOpenXrExposureLock = false;
+        const bool autoExposureMin = m_Game->SetConVarFloat("mat_autoexposure_min", 1.0f);
+        const bool autoExposureMax = m_Game->SetConVarFloat("mat_autoexposure_max", 1.0f);
+        const bool forceTonemap = m_Game->SetConVarFloat("mat_force_tonemap_scale", 1.0f);
+        const bool disableBloom = m_Game->SetConVarInt("mat_disable_bloom", 1);
+        const bool bloomScale = m_Game->SetConVarFloat("mat_bloom_scalefactor_scalar", 0.0f);
+        if (!s_loggedOpenXrExposureLock)
+        {
+            s_loggedOpenXrExposureLock = true;
+            Game::logMsg(
+                "[VR][OpenXR] exposure lock autoMin=%d autoMax=%d tonemap=%d disableBloom=%d bloomScale=%d",
+                autoExposureMin ? 1 : 0,
+                autoExposureMax ? 1 : 0,
+                forceTonemap ? 1 : 0,
+                disableBloom ? 1 : 0,
+                bloomScale ? 1 : 0);
+        }
+    }
+
     if (m_IsVREnabled && g_D3DVR9)
     {
         // Prevents crashing at menu
@@ -1418,6 +1439,29 @@ void VR::Update()
     ApplyShadowSettingsIfNeeded();
     ApplyFlashlightEnhancementIfNeeded();
     ApplyLocalVScriptConvarsIfNeeded();
+
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        if (inGameAtUpdateStart &&
+            m_OpenXrHelperBridgeActive &&
+            g_D3DVR9 &&
+            !m_CreatedVRTextures.load(std::memory_order_acquire) &&
+            m_CreatingTextureID == Texture_None)
+        {
+            static bool s_loggedOpenXrCreateEyeTextures = false;
+            if (!s_loggedOpenXrCreateEyeTextures)
+            {
+                s_loggedOpenXrCreateEyeTextures = true;
+                Game::logMsg("[VR][OpenXRHelper] creating OpenXR eye render targets from Update renderTarget=%ux%u",
+                    m_RenderWidth,
+                    m_RenderHeight);
+            }
+            CreateVRTextures();
+        }
+        UpdateTracking();
+        return;
+    }
+
     if (!posesValid)
     {
         // Continue using the last known poses so smoothing and aim helpers stay active.
@@ -1949,6 +1993,7 @@ void VR::CreateVRTextures()
     // it with full bounds. This keeps the original stereo crop while avoiding the
     // ReShade/OpenVR non-full-bounds path.
     const bool useDedicatedEyeSubmitTextures =
+        m_OpenXrHelperBridgeActive ||
         m_ReShadeVRCompat ||
         m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16;
     if (useDedicatedEyeSubmitTextures)
@@ -2383,6 +2428,12 @@ void VR::PublishRenderCompletedFrame(
 
 void VR::SubmitVRTextures()
 {
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        m_RenderedNewFrame.store(false, std::memory_order_release);
+        return;
+    }
+
     if (!m_Compositor)
         return;
 
@@ -2787,6 +2838,17 @@ void VR::SubmitVRTextures()
         {
             if (!texture || !texture->handle)
                 return false;
+
+            if (m_OpenXrHelperBridgeActive && L4D2VR_OpenXrHelperHasSubmittedFrame())
+            {
+                static bool s_loggedOpenXrHelperSubmitSuppressed = false;
+                if (!s_loggedOpenXrHelperSubmitSuppressed)
+                {
+                    Game::logMsg("[VR][OpenXRHelper] suppressing OpenVR compositor Submit after helper submitted OpenXR frames");
+                    s_loggedOpenXrHelperSubmitSuppressed = true;
+                }
+                return true;
+            }
 
             ensureTimingData();
 

@@ -597,8 +597,11 @@ namespace dxvk {
             if (!device || !vrState)
                 return;
 
-            const vr::VRTextureBounds_t* leftPrebakeBounds = vrState->m_ReShadeVRCompat ? &vrState->m_TextureBounds[0] : nullptr;
-            const vr::VRTextureBounds_t* rightPrebakeBounds = vrState->m_ReShadeVRCompat ? &vrState->m_TextureBounds[1] : nullptr;
+            const bool prebakeTextureBounds =
+                vrState->m_ReShadeVRCompat ||
+                vrState->m_OpenXrHelperBridgeActive;
+            const vr::VRTextureBounds_t* leftPrebakeBounds = prebakeTextureBounds ? &vrState->m_TextureBounds[0] : nullptr;
+            const vr::VRTextureBounds_t* rightPrebakeBounds = prebakeTextureBounds ? &vrState->m_TextureBounds[1] : nullptr;
             if (vrState->m_D9LeftEyeSubmitSurface)
                 VrResolveSurfaceToSubmit(device, vrState->m_D9LeftEyeSurface, vrState->m_D9LeftEyeSubmitSurface, leftPrebakeBounds);
             if (vrState->m_D9RightEyeSubmitSurface)
@@ -885,12 +888,19 @@ namespace dxvk {
                 return;
 
             IDirect3DSurface9* source = nullptr;
+            int sourceEyeIndex = -1;
             if (vr->m_DesktopMirrorHidePluginOverlays && vr->m_D9DesktopMirrorSurface)
                 source = vr->m_D9DesktopMirrorSurface;
             else if (vr->m_DesktopMirrorEye == 0)
+            {
                 source = vr->m_D9LeftEyeSubmitSurface ? vr->m_D9LeftEyeSubmitSurface : vr->m_D9LeftEyeSurface;
+                sourceEyeIndex = 0;
+            }
             else
+            {
                 source = vr->m_D9RightEyeSubmitSurface ? vr->m_D9RightEyeSubmitSurface : vr->m_D9RightEyeSurface;
+                sourceEyeIndex = 1;
+            }
 
             if (!source)
                 return;
@@ -910,9 +920,30 @@ namespace dxvk {
             if (haveBackBufferDesc)
                 VrGetDesktopMirrorOutputSize(device, presentDestRect, presentWindowOverride, backBufferDesc, outputWidth, outputHeight);
 
-            const RECT srcRect = (haveSourceDesc && haveBackBufferDesc)
+            RECT srcRect = (haveSourceDesc && haveBackBufferDesc)
                 ? VrComputeDesktopMirrorSourceRect(sourceDesc, outputWidth, outputHeight, vr->m_DesktopMirrorKeepAspect)
                 : RECT{ 0, 0, 0, 0 };
+            if (sourceEyeIndex >= 0 && haveSourceDesc && haveBackBufferDesc)
+            {
+                float u0 = std::clamp(vr->m_TextureBounds[sourceEyeIndex].uMin, 0.0f, 1.0f);
+                float v0 = std::clamp(vr->m_TextureBounds[sourceEyeIndex].vMin, 0.0f, 1.0f);
+                float u1 = std::clamp(vr->m_TextureBounds[sourceEyeIndex].uMax, 0.0f, 1.0f);
+                float v1 = std::clamp(vr->m_TextureBounds[sourceEyeIndex].vMax, 0.0f, 1.0f);
+                if (u1 > u0 && v1 > v0)
+                {
+                    RECT boundedRect{};
+                    boundedRect.left = std::clamp(static_cast<LONG>(std::floor(u0 * static_cast<float>(sourceDesc.Width))), 0L, static_cast<LONG>(sourceDesc.Width - 1));
+                    boundedRect.top = std::clamp(static_cast<LONG>(std::floor(v0 * static_cast<float>(sourceDesc.Height))), 0L, static_cast<LONG>(sourceDesc.Height - 1));
+                    boundedRect.right = std::clamp(static_cast<LONG>(std::ceil(u1 * static_cast<float>(sourceDesc.Width))), boundedRect.left + 1, static_cast<LONG>(sourceDesc.Width));
+                    boundedRect.bottom = std::clamp(static_cast<LONG>(std::ceil(v1 * static_cast<float>(sourceDesc.Height))), boundedRect.top + 1, static_cast<LONG>(sourceDesc.Height));
+
+                    D3DSURFACE_DESC boundedDesc = sourceDesc;
+                    boundedDesc.Width = static_cast<UINT>(boundedRect.right - boundedRect.left);
+                    boundedDesc.Height = static_cast<UINT>(boundedRect.bottom - boundedRect.top);
+                    srcRect = VrComputeDesktopMirrorSourceRect(boundedDesc, outputWidth, outputHeight, vr->m_DesktopMirrorKeepAspect);
+                    OffsetRect(&srcRect, boundedRect.left, boundedRect.top);
+                }
+            }
             const RECT dstRect = haveBackBufferDesc
                 ? RECT{ 0, 0, static_cast<LONG>(backBufferDesc.Width), static_cast<LONG>(backBufferDesc.Height) }
             : RECT{ 0, 0, 0, 0 };
@@ -1601,7 +1632,17 @@ namespace dxvk {
             if (pSharedHandle != nullptr && Pool != D3DPOOL_DEFAULT)
                 return D3DERR_INVALIDCALL;
 
-            const Com<D3D9Texture2D> texture = new D3D9Texture2D(this, &desc, IsExtended(), pSharedHandle);
+            HANDLE openXrSharedHandle = nullptr;
+            HANDLE* effectiveSharedHandle = pSharedHandle;
+            if (pSharedHandle == nullptr && Pool == D3DPOOL_DEFAULT && g_Game && g_Game->m_VR)
+            {
+                const VR::TextureID texID = g_Game->m_VR->m_CreatingTextureID;
+                const uint32_t submitSampleCount = desc.MultiSample == D3DMULTISAMPLE_NONE ? 1u : 0u;
+                if (g_Game->m_VR->ShouldExportOpenXrEyeTexture(texID, submitSampleCount))
+                    effectiveSharedHandle = &openXrSharedHandle;
+            }
+
+            const Com<D3D9Texture2D> texture = new D3D9Texture2D(this, &desc, IsExtended(), effectiveSharedHandle);
 
             m_initializer->InitTexture(texture->GetCommonTexture(), initialData);
             *ppTexture = texture.ref();
@@ -1665,6 +1706,7 @@ namespace dxvk {
                     textureTarget->m_VRTexture.handle = &textureTarget->m_VulkanData;
                     textureTarget->m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                     textureTarget->m_VRTexture.eType = vr::TextureType_Vulkan;
+                    g_Game->m_VR->PublishOpenXrEyeTexture(texID, texDesc);
                 }
             }
 

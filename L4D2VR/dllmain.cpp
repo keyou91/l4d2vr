@@ -2427,6 +2427,22 @@ namespace
     {
         { "2026-05-23_auto_mat_queue_mode_default_false", "AutoMatQueueMode", "false" },
         { "2026-06-12_vr_recommended_video_settings_default_false", "VrRecommendedVideoSettingsEnabled", "false" },
+        { "2026-06-24_openxr_branch_runtime_backend", "VRRuntimeBackend", "openxr" },
+        { "2026-06-24_openxr_branch_disable_openvr_fallback", "VRRuntimeFallbackToOpenVR", "false" },
+        { "2026-06-24_openxr_branch_disable_session_probe", "OpenXRSessionProbe", "false" },
+        { "2026-06-24_openxr_helper_default_true", "OpenXRHelper", "true" },
+        { "2026-06-24_openxr_helper_submit_test_frames_default_0", "OpenXRHelperSubmitTestFrames", "0" },
+        { "2026-06-24_openxr_helper_wait_ready_seconds_default_45", "OpenXRHelperWaitReadySeconds", "45" },
+    };
+
+    constexpr const char* kPreservedConfigKeysMissingFromOlderSamples[] =
+    {
+        "OpenXRHelper",
+        "OpenXRHelperSubmitTestFrames",
+        "OpenXRHelperWaitReadySeconds",
+        "OpenXRSessionProbe",
+        "VRRuntimeBackend",
+        "VRRuntimeFallbackToOpenVR",
     };
 
     std::unordered_set<std::string> ReadAppliedConfigMigrationIds(const std::filesystem::path& statePath)
@@ -2539,7 +2555,12 @@ namespace
             return;
 
         bool configChanged = false;
-        const std::unordered_set<std::string> sampleKeys = ExtractConfigParameterKeys(sampleText, true);
+        std::unordered_set<std::string> sampleKeys = ExtractConfigParameterKeys(sampleText, true);
+        for (const char* key : kPreservedConfigKeysMissingFromOlderSamples)
+        {
+            if (key && *key)
+                sampleKeys.insert(key);
+        }
         configChanged |= RemoveConfigParametersNotInSample(configText, sampleKeys);
 
         std::istringstream sampleStream(sampleText);

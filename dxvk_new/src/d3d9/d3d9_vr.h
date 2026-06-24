@@ -23,6 +23,10 @@ struct D3D9_TEXTURE_VR_DESC {
   uint32_t         Height;
   VkFormat         Format;
   uint32_t         SampleCount;
+
+  uint64_t         SharedHandle;
+  uint32_t         SharedHandleType;
+  uint32_t         SharedHandleValid;
 };
 
 struct D3D9_OPENXR_GRAPHICS_BINDING_DESC {

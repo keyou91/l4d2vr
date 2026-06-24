@@ -30,14 +30,25 @@ public:
     uint32_t RecommendedEyeWidth() const { return m_RecommendedEyeWidth; }
     uint32_t RecommendedEyeHeight() const { return m_RecommendedEyeHeight; }
     uint32_t SwapchainFormatCount() const { return static_cast<uint32_t>(m_SwapchainFormats.size()); }
+    uint32_t EyeSwapchainCount() const { return static_cast<uint32_t>(m_EyeSwapchains.size()); }
     bool SupportsSwapchainFormat(int64_t format) const;
 
 private:
+    struct EyeSwapchain
+    {
+        XrSwapchain handle = XR_NULL_HANDLE;
+        int64_t format = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t imageCount = 0;
+    };
+
     void* m_Loader = nullptr;
     PFN_xrGetInstanceProcAddr m_xrGetInstanceProcAddr = nullptr;
     PFN_xrDestroyInstance m_xrDestroyInstance = nullptr;
     PFN_xrDestroySession m_xrDestroySession = nullptr;
     PFN_xrDestroySpace m_xrDestroySpace = nullptr;
+    PFN_xrDestroySwapchain m_xrDestroySwapchain = nullptr;
 
     XrInstance m_Instance = XR_NULL_HANDLE;
     XrSystemId m_SystemId = XR_NULL_SYSTEM_ID;
@@ -45,6 +56,7 @@ private:
     XrSpace m_AppSpace = XR_NULL_HANDLE;
     bool m_SessionReady = false;
 
+    std::string m_LoaderPath;
     char m_RuntimeName[XR_MAX_RUNTIME_NAME_SIZE] = {};
     uint32_t m_RuntimeVersionMajor = 0;
     uint32_t m_RuntimeVersionMinor = 0;
@@ -52,4 +64,14 @@ private:
     uint32_t m_RecommendedEyeWidth = 0;
     uint32_t m_RecommendedEyeHeight = 0;
     std::vector<int64_t> m_SwapchainFormats;
+    std::vector<EyeSwapchain> m_EyeSwapchains;
+
+    int64_t SelectColorSwapchainFormat() const;
+    bool CreateEyeSwapchainProbe(
+        uint32_t eyeIndex,
+        int64_t format,
+        PFN_xrCreateSwapchain xrCreateSwapchainFn,
+        PFN_xrEnumerateSwapchainImages xrEnumerateSwapchainImagesFn,
+        std::string& detail);
+    void DestroyEyeSwapchains();
 };

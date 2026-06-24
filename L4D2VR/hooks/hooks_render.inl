@@ -1184,7 +1184,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				}
 			}
 
-			if (!havePoses)
+			if (!havePoses && m_VR->m_RuntimeBackend != VrRuntimeBackend::OpenXR && m_VR->m_System && vr::VRCompositor())
 			{
 				const vr::ETrackingUniverseOrigin trackingOrigin = vr::VRCompositor()->GetTrackingSpace();
 				float predicted = vr::VRCompositor()->GetFrameTimeRemaining();
@@ -1308,8 +1308,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				Vector viewRight = viewCenter + (hmdRight * (+(ipdSu * 0.5f)));
 
 				// Controllers + viewmodel (visual only, no gameplay auto-aim overrides here).
-				vr::TrackedDeviceIndex_t leftIdx = m_VR->m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
-				vr::TrackedDeviceIndex_t rightIdx = m_VR->m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+				vr::TrackedDeviceIndex_t leftIdx = vr::k_unTrackedDeviceIndexInvalid;
+				vr::TrackedDeviceIndex_t rightIdx = vr::k_unTrackedDeviceIndexInvalid;
+				if (m_VR->m_RuntimeBackend != VrRuntimeBackend::OpenXR && m_VR->m_System)
+				{
+					leftIdx = m_VR->m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
+					rightIdx = m_VR->m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+				}
 				if (m_VR->m_LeftHanded)
 				{
 					std::swap(leftIdx, rightIdx);

@@ -10,6 +10,7 @@
 #include "usercmd.h"
 #include "trace.h"
 #include "openxr_backend.h"
+#include "openxr_helper_bridge.h"
 #include "vr_hands/vr_hand_manifest.h"
 #include "vr_hands/vr_hand_system.h"
 #include "sdk/ivdebugoverlay.h"
@@ -505,6 +506,106 @@ static inline bool GetPlayerNameUtf8Safe(IEngineClient* engine, int entIndex, ch
     return outName[0] != 0;
 }
 
+
+bool VR::ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) const
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return false;
+
+    if (sampleCount != 1)
+        return false;
+
+    return texID == Texture_LeftEyeSubmit ||
+        texID == Texture_RightEyeSubmit;
+}
+
+void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc)
+{
+    if (!ShouldExportOpenXrEyeTexture(texID, desc.SampleCount))
+        return;
+
+    const bool isLeft = texID == Texture_LeftEye || texID == Texture_LeftEyeSubmit;
+    const bool isRight = texID == Texture_RightEye || texID == Texture_RightEyeSubmit;
+    if (!isLeft && !isRight)
+        return;
+
+    if (!desc.SharedHandleValid || desc.SharedHandle == 0)
+    {
+        static DWORD s_lastMissingSharedTextureLogMs = 0;
+        const DWORD nowMs = ::GetTickCount();
+        if (nowMs - s_lastMissingSharedTextureLogMs >= 1000)
+        {
+            s_lastMissingSharedTextureLogMs = nowMs;
+            Game::logMsg(
+                "[VR][OpenXRHelper] shared texture export missing texID=%d size=%ux%u format=%u samples=%u",
+                static_cast<int>(texID),
+                desc.Width,
+                desc.Height,
+                static_cast<unsigned int>(desc.Format),
+                desc.SampleCount);
+        }
+        return;
+    }
+
+    L4D2VROpenXrSharedTextureDesc shared{};
+    shared.valid = 1;
+    shared.width = desc.Width;
+    shared.height = desc.Height;
+    shared.format = static_cast<uint32_t>(desc.Format);
+    shared.sampleCount = desc.SampleCount;
+    shared.handleType = desc.SharedHandleType;
+    shared.queueFamilyIndex = desc.QueueFamilyIndex;
+    shared.kmtHandle = desc.SharedHandle;
+    shared.image = desc.Image;
+    const uint32_t eyeIndex = isLeft ? L4D2VR_OPENXR_EYE_LEFT : L4D2VR_OPENXR_EYE_RIGHT;
+    const bool submitTexture = texID == Texture_LeftEyeSubmit || texID == Texture_RightEyeSubmit;
+    if (submitTexture)
+    {
+        shared.uMin = 0.0f;
+        shared.vMin = 0.0f;
+        shared.uMax = 1.0f;
+        shared.vMax = 1.0f;
+    }
+    else
+    {
+        shared.uMin = std::clamp(m_TextureBounds[eyeIndex].uMin, 0.0f, 1.0f);
+        shared.vMin = std::clamp(m_TextureBounds[eyeIndex].vMin, 0.0f, 1.0f);
+        shared.uMax = std::clamp(m_TextureBounds[eyeIndex].uMax, 0.0f, 1.0f);
+        shared.vMax = std::clamp(m_TextureBounds[eyeIndex].vMax, 0.0f, 1.0f);
+    }
+    shared.renderFovXDeg = (std::isfinite(m_Fov) && m_Fov > 1.0f && m_Fov < 179.0f) ? m_Fov : 90.0f;
+    shared.renderAspect = (std::isfinite(m_Aspect) && m_Aspect > 0.1f && m_Aspect < 10.0f)
+        ? m_Aspect
+        : ((desc.Height > 0) ? (static_cast<float>(desc.Width) / static_cast<float>(desc.Height)) : 1.0f);
+    if (shared.uMax <= shared.uMin)
+    {
+        shared.uMin = 0.0f;
+        shared.uMax = 1.0f;
+    }
+    if (shared.vMax <= shared.vMin)
+    {
+        shared.vMin = 0.0f;
+        shared.vMax = 1.0f;
+    }
+
+    L4D2VR_PublishOpenXrSharedTexture(eyeIndex, shared);
+
+    Game::logMsg(
+        "[VR][OpenXRHelper] published shared %s eye texture texID=%d handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f)",
+        isLeft ? "left" : "right",
+        static_cast<int>(texID),
+        static_cast<unsigned long long>(shared.kmtHandle),
+        static_cast<unsigned long long>(shared.image),
+        shared.width,
+        shared.height,
+        shared.format,
+        shared.uMin,
+        shared.vMin,
+        shared.uMax,
+        shared.vMax,
+        shared.renderFovXDeg,
+        shared.renderAspect);
+}
 
 void VR::UpdateHudLiftGestureState(bool inGame)
 {
@@ -10906,12 +11007,24 @@ bool VR::CopyEyeToDesktopMirrorTexture(int eyeIndex)
     const float top = -0.5f;
     const float right = static_cast<float>(dstDesc.Width) - 0.5f;
     const float bottom = static_cast<float>(dstDesc.Height) - 0.5f;
+    float u0 = std::clamp(m_TextureBounds[eyeIndex].uMin, 0.0f, 1.0f);
+    float v0 = std::clamp(m_TextureBounds[eyeIndex].vMin, 0.0f, 1.0f);
+    float u1 = std::clamp(m_TextureBounds[eyeIndex].uMax, 0.0f, 1.0f);
+    float v1 = std::clamp(m_TextureBounds[eyeIndex].vMax, 0.0f, 1.0f);
+    if (u1 <= u0 || v1 <= v0)
+    {
+        u0 = 0.0f;
+        v0 = 0.0f;
+        u1 = 1.0f;
+        v1 = 1.0f;
+    }
+
     const DesktopMirrorCopyVertex quad[4] =
     {
-        { left,  top,    0.0f, 1.0f, 0xFFFFFFFFu, 0.0f, 0.0f },
-        { right, top,    0.0f, 1.0f, 0xFFFFFFFFu, 1.0f, 0.0f },
-        { left,  bottom, 0.0f, 1.0f, 0xFFFFFFFFu, 0.0f, 1.0f },
-        { right, bottom, 0.0f, 1.0f, 0xFFFFFFFFu, 1.0f, 1.0f }
+        { left,  top,    0.0f, 1.0f, 0xFFFFFFFFu, u0, v0 },
+        { right, top,    0.0f, 1.0f, 0xFFFFFFFFu, u1, v0 },
+        { left,  bottom, 0.0f, 1.0f, 0xFFFFFFFFu, u0, v1 },
+        { right, bottom, 0.0f, 1.0f, 0xFFFFFFFFu, u1, v1 }
     };
 
     bool ok = true;

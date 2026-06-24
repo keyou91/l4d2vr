@@ -63,6 +63,15 @@
     <ClInclude Include="openxr_backend.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="openxr_bridge_protocol.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="openxr_helper_bridge.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="openxr_loader_util.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="hooks.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -864,6 +873,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="openxr_backend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="openxr_helper_bridge.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="openxr_loader_util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="vr_hands\vr_hand_asset_loader.cpp">

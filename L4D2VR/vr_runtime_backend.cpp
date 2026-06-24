@@ -1,4 +1,5 @@
 #include "vr_runtime_backend.h"
+#include "openxr_loader_util.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -16,7 +17,7 @@
 
 namespace
 {
-    constexpr bool kNativeOpenXrBackendImplemented = false;
+    constexpr bool kOpenXrHelperBackendImplemented = true;
 
     std::string NormalizeBackendName(std::string value)
     {
@@ -151,16 +152,16 @@ const char* L4D2VR_RuntimeBackendName(VrRuntimeBackend backend)
 
 bool L4D2VR_IsOpenXrLoaderAvailable(std::string* detail)
 {
-    HMODULE loader = LoadLibraryA("openxr_loader.dll");
-    if (!loader)
+    L4D2VR_OpenXrLoaderLoadResult loader = L4D2VR_LoadOpenXrLoader();
+    if (!loader.Loaded())
     {
         if (detail)
-            *detail = "openxr_loader.dll was not found";
+            *detail = loader.detail;
         return false;
     }
 
-    const bool hasEntryPoint = GetProcAddress(loader, "xrGetInstanceProcAddr") != nullptr;
-    FreeLibrary(loader);
+    const bool hasEntryPoint = GetProcAddress(loader.module, "xrGetInstanceProcAddr") != nullptr;
+    FreeLibrary(loader.module);
 
     if (!hasEntryPoint)
     {
@@ -170,7 +171,7 @@ bool L4D2VR_IsOpenXrLoaderAvailable(std::string* detail)
     }
 
     if (detail)
-        *detail = "openxr_loader.dll is present";
+        *detail = "openxr_loader.dll is present at " + loader.path;
     return true;
 }
 
@@ -178,20 +179,21 @@ OpenXrRuntimeProbe L4D2VR_ProbeOpenXrRuntime()
 {
     OpenXrRuntimeProbe probe{};
 
-    HMODULE loader = LoadLibraryA("openxr_loader.dll");
-    if (!loader)
+    L4D2VR_OpenXrLoaderLoadResult loader = L4D2VR_LoadOpenXrLoader();
+    if (!loader.Loaded())
     {
-        probe.detail = "openxr_loader.dll was not found";
+        probe.detail = loader.detail;
         return probe;
     }
     probe.loaderAvailable = true;
+    probe.loaderPath = loader.path;
 
     auto getInstanceProcAddr = reinterpret_cast<PFN_xrGetInstanceProcAddr>(
-        GetProcAddress(loader, "xrGetInstanceProcAddr"));
+        GetProcAddress(loader.module, "xrGetInstanceProcAddr"));
     if (!getInstanceProcAddr)
     {
         probe.detail = "openxr_loader.dll does not export xrGetInstanceProcAddr";
-        FreeLibrary(loader);
+        FreeLibrary(loader.module);
         return probe;
     }
 
@@ -205,7 +207,7 @@ OpenXrRuntimeProbe L4D2VR_ProbeOpenXrRuntime()
     if (!LoadXrFunction(getInstanceProcAddr, XR_NULL_HANDLE, "xrCreateInstance", xrCreateInstanceFn, detail))
     {
         probe.detail = detail;
-        FreeLibrary(loader);
+        FreeLibrary(loader.module);
         return probe;
     }
 
@@ -221,7 +223,7 @@ OpenXrRuntimeProbe L4D2VR_ProbeOpenXrRuntime()
     if (XR_FAILED(result) || instance == XR_NULL_HANDLE)
     {
         probe.detail = FormatXrResult("xrCreateInstance", result);
-        FreeLibrary(loader);
+        FreeLibrary(loader.module);
         return probe;
     }
     probe.instanceCreated = true;
@@ -230,7 +232,7 @@ OpenXrRuntimeProbe L4D2VR_ProbeOpenXrRuntime()
         {
             if (xrDestroyInstanceFn && instance != XR_NULL_HANDLE)
                 xrDestroyInstanceFn(instance);
-            FreeLibrary(loader);
+            FreeLibrary(loader.module);
         };
 
     if (!LoadXrFunction(getInstanceProcAddr, instance, "xrDestroyInstance", xrDestroyInstanceFn, detail) ||
@@ -377,31 +379,19 @@ VrRuntimeBackendConfig L4D2VR_ReadRuntimeBackendConfig()
     if (backendIt != values.end() && !backendIt->second.empty())
         config.requestedBackend = backendIt->second;
 
-    auto fallbackIt = values.find("VRRuntimeFallbackToOpenVR");
-    if (fallbackIt != values.end())
-    {
-        std::string value = fallbackIt->second;
-        trim(value);
-        std::transform(value.begin(), value.end(), value.begin(),
-            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-        if (value == "1" || value == "true" || value == "on" || value == "yes")
-            config.fallbackToOpenVR = true;
-        else if (value == "0" || value == "false" || value == "off" || value == "no")
-            config.fallbackToOpenVR = false;
-    }
+    config.fallbackToOpenVR = false;
 
     return config;
 }
 
 VrRuntimeBackendSelection L4D2VR_SelectRuntimeBackend(
     const std::string& requestedBackend,
-    bool fallbackToOpenVR)
+    bool)
 {
     VrRuntimeBackendSelection result{};
     result.requested = L4D2VR_ParseRuntimeBackend(requestedBackend, VrRuntimeBackend::OpenVR);
-    result.fallbackToOpenVR = fallbackToOpenVR;
-    result.openXrBackendImplemented = kNativeOpenXrBackendImplemented;
+    result.fallbackToOpenVR = false;
+    result.openXrBackendImplemented = kOpenXrHelperBackendImplemented;
 
     if (result.requested == VrRuntimeBackend::OpenVR)
     {
@@ -411,80 +401,19 @@ VrRuntimeBackendSelection L4D2VR_SelectRuntimeBackend(
         return result;
     }
 
-    const OpenXrRuntimeProbe openXrProbe = L4D2VR_ProbeOpenXrRuntime();
-    result.openXrLoaderAvailable = openXrProbe.loaderAvailable;
+    std::string loaderDetail;
+    result.openXrLoaderAvailable = L4D2VR_IsOpenXrLoaderAvailable(&loaderDetail);
 
     if (!result.openXrLoaderAvailable)
     {
-        if (fallbackToOpenVR)
-        {
-            result.active = VrRuntimeBackend::OpenVR;
-            result.usedFallback = true;
-            result.canStart = true;
-            result.message = "OpenXR requested, but " + openXrProbe.detail + "; falling back to OpenVR";
-        }
-        else
-        {
-            result.active = VrRuntimeBackend::OpenXR;
-            result.canStart = false;
-            result.message = "OpenXR requested, but " + openXrProbe.detail;
-        }
-        return result;
-    }
-
-    if (!openXrProbe.instanceCreated || !openXrProbe.systemAvailable || !openXrProbe.stereoViewsAvailable)
-    {
-        if (fallbackToOpenVR)
-        {
-            result.active = VrRuntimeBackend::OpenVR;
-            result.usedFallback = true;
-            result.canStart = true;
-            result.message = "OpenXR requested, but runtime probe failed: " + openXrProbe.detail + "; falling back to OpenVR";
-        }
-        else
-        {
-            result.active = VrRuntimeBackend::OpenXR;
-            result.canStart = false;
-            result.message = "OpenXR requested, but runtime probe failed: " + openXrProbe.detail;
-        }
-        return result;
-    }
-
-    if (!kNativeOpenXrBackendImplemented)
-    {
-        if (fallbackToOpenVR)
-        {
-            result.active = VrRuntimeBackend::OpenVR;
-            result.usedFallback = true;
-            result.canStart = true;
-            result.message = "OpenXR runtime probe succeeded";
-            if (openXrProbe.runtimeName[0])
-            {
-                result.message += " (runtime=";
-                result.message += openXrProbe.runtimeName;
-                result.message += ", version=" + std::to_string(openXrProbe.runtimeVersionMajor)
-                    + "." + std::to_string(openXrProbe.runtimeVersionMinor)
-                    + "." + std::to_string(openXrProbe.runtimeVersionPatch);
-                result.message += ", stereoViews=" + std::to_string(openXrProbe.stereoViewCount);
-                result.message += ", recommendedEye="
-                    + std::to_string(openXrProbe.recommendedWidth)
-                    + "x"
-                    + std::to_string(openXrProbe.recommendedHeight)
-                    + ")";
-            }
-            result.message += ", but native OpenXR rendering/input is not implemented yet; falling back to OpenVR";
-        }
-        else
-        {
-            result.active = VrRuntimeBackend::OpenXR;
-            result.canStart = false;
-            result.message = "OpenXR requested and loader is available, but native OpenXR rendering/input is not implemented yet";
-        }
+        result.active = VrRuntimeBackend::OpenXR;
+        result.canStart = false;
+        result.message = "OpenXR requested, but " + loaderDetail;
         return result;
     }
 
     result.active = VrRuntimeBackend::OpenXR;
     result.canStart = true;
-    result.message = "OpenXR runtime selected";
+    result.message = "OpenXR helper backend selected; x64 helper owns the OpenXR session";
     return result;
 }

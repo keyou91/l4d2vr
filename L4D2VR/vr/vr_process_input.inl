@@ -3,6 +3,9 @@ void VR::ProcessInput()
     if (!m_IsVREnabled)
         return;
 
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+        return;
+
     if (m_InGameVguiMouseDown && m_Game && m_Game->m_VguiInput)
     {
         m_Game->m_VguiInput->InternalMouseReleased(ButtonCode_t::MOUSE_LEFT);

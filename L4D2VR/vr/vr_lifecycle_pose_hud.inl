@@ -1,5 +1,83 @@
 void VR::GetPoses()
 {
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        L4D2VROpenXrPoseDesc openXrPose{};
+        uint32_t generation = 0;
+        if (!L4D2VR_ReadOpenXrHmdPose(openXrPose, &generation))
+            return;
+
+        float x = openXrPose.orientation[0];
+        float y = openXrPose.orientation[1];
+        float z = openXrPose.orientation[2];
+        float w = openXrPose.orientation[3];
+        const float lenSq = x * x + y * y + z * z + w * w;
+        if (lenSq > 0.000001f)
+        {
+            const float invLen = 1.0f / std::sqrt(lenSq);
+            x *= invLen;
+            y *= invLen;
+            z *= invLen;
+            w *= invLen;
+        }
+        else
+        {
+            x = 0.0f;
+            y = 0.0f;
+            z = 0.0f;
+            w = 1.0f;
+        }
+
+        const float openXrYaw = atan2f(
+            2.0f * (w * y + x * z),
+            1.0f - 2.0f * (y * y + z * z));
+        x = 0.0f;
+        y = sinf(openXrYaw * 0.5f);
+        z = 0.0f;
+        w = cosf(openXrYaw * 0.5f);
+
+        vr::TrackedDevicePose_t hmdPose{};
+        hmdPose.bDeviceIsConnected = true;
+        hmdPose.bPoseIsValid = true;
+        hmdPose.eTrackingResult = vr::TrackingResult_Running_OK;
+        vr::HmdMatrix34_t& mat = hmdPose.mDeviceToAbsoluteTracking;
+        mat.m[0][0] = 1.0f - 2.0f * y * y - 2.0f * z * z;
+        mat.m[0][1] = 2.0f * x * y - 2.0f * z * w;
+        mat.m[0][2] = 2.0f * x * z + 2.0f * y * w;
+        mat.m[1][0] = 2.0f * x * y + 2.0f * z * w;
+        mat.m[1][1] = 1.0f - 2.0f * x * x - 2.0f * z * z;
+        mat.m[1][2] = 2.0f * y * z - 2.0f * x * w;
+        mat.m[2][0] = 2.0f * x * z - 2.0f * y * w;
+        mat.m[2][1] = 2.0f * y * z + 2.0f * x * w;
+        mat.m[2][2] = 1.0f - 2.0f * x * x - 2.0f * y * y;
+        mat.m[0][3] = openXrPose.position[0];
+        mat.m[1][3] = openXrPose.position[1];
+        mat.m[2][3] = openXrPose.position[2];
+
+        m_Poses[vr::k_unTrackedDeviceIndex_Hmd] = hmdPose;
+        GetPoseData(hmdPose, m_HmdPose);
+
+        static uint32_t s_lastLoggedOpenXrPoseGeneration = 0;
+        if (generation != 0 && s_lastLoggedOpenXrPoseGeneration == 0)
+        {
+            s_lastLoggedOpenXrPoseGeneration = generation;
+            Game::logMsg("[VR][OpenXRHelper] consumed OpenXR HMD pose gen=%u pos=(%.3f %.3f %.3f) yawOnlyDeg=%.2f quat=(%.3f %.3f %.3f %.3f)",
+                generation,
+                openXrPose.position[0],
+                openXrPose.position[1],
+                openXrPose.position[2],
+                openXrYaw * (180.0f / 3.141592654f),
+                x,
+                y,
+                z,
+                w);
+        }
+        return;
+    }
+
+    if (!m_System)
+        return;
+
     vr::TrackedDevicePose_t hmdPose = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
 
     const vr::TrackedDeviceIndex_t leftControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
@@ -74,6 +152,15 @@ void VR::PoseWaiterThreadMain()
 
 bool VR::UpdatePosesAndActions()
 {
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        static std::atomic<uint32_t> s_openXrHelperSubmitToken{ 1 };
+        const uint32_t submitToken = s_openXrHelperSubmitToken.fetch_add(1, std::memory_order_acq_rel) + 1;
+        m_SubmitPoseToken.store(submitToken, std::memory_order_release);
+        m_PoseWaiterEnabled.store(false, std::memory_order_release);
+        return true;
+    }
+
     if (!m_Compositor)
         return false;
     const bool queued = (m_Game && (m_Game->GetMatQueueMode() != 0));
@@ -134,6 +221,9 @@ bool VR::UpdatePosesAndActions()
 
 void VR::GetViewParameters()
 {
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_System)
+        return;
+
     vr::HmdMatrix34_t eyeToHeadLeft = m_System->GetEyeToHeadTransform(vr::Eye_Left);
     vr::HmdMatrix34_t eyeToHeadRight = m_System->GetEyeToHeadTransform(vr::Eye_Right);
     m_EyeToHeadTransformPosLeft.x = eyeToHeadLeft.m[0][3];
@@ -160,6 +250,10 @@ bool VR::PressedDigitalAction(vr::VRActionHandle_t& actionHandle, bool checkIfAc
 
 bool VR::GetDigitalActionData(vr::VRActionHandle_t& actionHandle, vr::InputDigitalActionData_t& digitalDataOut)
 {
+    digitalDataOut = {};
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_Input)
+        return false;
+
     const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapDigitalAction(actionHandle);
     vr::EVRInputError result = m_Input->GetDigitalActionData(resolvedActionHandle, &digitalDataOut, sizeof(digitalDataOut), vr::k_ulInvalidInputValueHandle);
 
@@ -168,6 +262,10 @@ bool VR::GetDigitalActionData(vr::VRActionHandle_t& actionHandle, vr::InputDigit
 
 bool VR::GetAnalogActionData(vr::VRActionHandle_t& actionHandle, vr::InputAnalogActionData_t& analogDataOut)
 {
+    analogDataOut = {};
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_Input)
+        return false;
+
     const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapAnalogAction(actionHandle);
     vr::EVRInputError result = m_Input->GetAnalogActionData(resolvedActionHandle, &analogDataOut, sizeof(analogDataOut), vr::k_ulInvalidInputValueHandle);
 

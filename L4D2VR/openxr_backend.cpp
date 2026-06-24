@@ -4,6 +4,7 @@
 #define XR_USE_GRAPHICS_API_VULKAN 1
 
 #include "openxr_backend.h"
+#include "openxr_loader_util.h"
 
 #include <Windows.h>
 #include <d3d9_vr.h>
@@ -180,9 +181,12 @@ bool OpenXrBackend::InitializeSession(
     if (!IsValidGraphicsBinding(graphics))
         return fail("DXVK Vulkan graphics binding is incomplete");
 
-    m_Loader = LoadLibraryA("openxr_loader.dll");
-    if (!m_Loader)
-        return fail("openxr_loader.dll was not found");
+    L4D2VR_OpenXrLoaderLoadResult loader = L4D2VR_LoadOpenXrLoader();
+    if (!loader.Loaded())
+        return fail(loader.detail);
+
+    m_Loader = loader.module;
+    m_LoaderPath = loader.path;
 
     m_xrGetInstanceProcAddr = reinterpret_cast<PFN_xrGetInstanceProcAddr>(
         GetProcAddress(reinterpret_cast<HMODULE>(m_Loader), "xrGetInstanceProcAddr"));
@@ -366,7 +370,8 @@ bool OpenXrBackend::InitializeSession(
     {
         char message[320] = {};
         std::snprintf(message, sizeof(message),
-            "runtime=%s version=%u.%u.%u recommendedEye=%ux%u views=%u swapchainFormats=%u space=%s queueFamily=%u queueIndex=%u",
+            "loader=%s runtime=%s version=%u.%u.%u recommendedEye=%ux%u views=%u swapchainFormats=%u space=%s queueFamily=%u queueIndex=%u",
+            m_LoaderPath.empty() ? "unknown" : m_LoaderPath.c_str(),
             m_RuntimeName[0] ? m_RuntimeName : "unknown",
             m_RuntimeVersionMajor,
             m_RuntimeVersionMinor,
@@ -402,6 +407,7 @@ void OpenXrBackend::Shutdown()
     if (m_Loader)
         FreeLibrary(reinterpret_cast<HMODULE>(m_Loader));
     m_Loader = nullptr;
+    m_LoaderPath.clear();
 
     m_xrGetInstanceProcAddr = nullptr;
     m_xrDestroyInstance = nullptr;

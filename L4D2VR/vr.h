@@ -45,6 +45,7 @@ class CUserCmd;
 struct IDirect3DDevice9;
 struct IDirect3DTexture9;
 struct IDirect3DSurface9;
+struct D3D9_TEXTURE_VR_DESC;
 class ITexture;
 class IMaterial;
 class IMatRenderContext;
@@ -205,10 +206,11 @@ public:
 	Game* m_Game = nullptr;
 	VrRuntimeBackend m_RuntimeBackend = VrRuntimeBackend::OpenVR;
 	VrRuntimeBackend m_RequestedRuntimeBackend = VrRuntimeBackend::OpenVR;
-	bool m_RuntimeBackendFallbackToOpenVR = true;
+	bool m_RuntimeBackendFallbackToOpenVR = false;
 	bool m_OpenXrLoaderAvailable = false;
 	bool m_OpenXrSessionProbeEnabled = false;
 	bool m_OpenXrSessionProbeSucceeded = false;
+	bool m_OpenXrHelperBridgeActive = false;
 	bool m_RuntimeBackendRestartWarningLogged = false;
 	std::unique_ptr<OpenXrBackend> m_OpenXrBackend;
 
@@ -784,6 +786,9 @@ public:
 		Texture_DesktopMirror,
 		Texture_Blank
 	};
+
+	bool ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) const;
+	void PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc);
 
 	ITexture* m_LeftEyeTexture = nullptr;
 	ITexture* m_RightEyeTexture = nullptr;

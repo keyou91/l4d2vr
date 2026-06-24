@@ -111,7 +111,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;advapi32.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>$(SolutionDir)dxvk_new\src\d3d9\d3d9.def</ModuleDefinitionFile>
     </Link>
     <PostBuildEvent>
@@ -140,7 +140,7 @@
       <EnableUAC>false</EnableUAC>
       <ModuleDefinitionFile>$(SolutionDir)dxvk_new\src\d3d9\d3d9.def</ModuleDefinitionFile>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;advapi32.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(OutDir)$(TargetName)$(TargetExt)" "E:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2\$(TargetName)$(TargetExt)"</Command>
@@ -459,6 +459,9 @@
     <ClInclude Include="sdk\vector.h" />
     <ClInclude Include="sigscanner.h" />
     <ClInclude Include="openxr_backend.h" />
+    <ClInclude Include="openxr_bridge_protocol.h" />
+    <ClInclude Include="openxr_helper_bridge.h" />
+    <ClInclude Include="openxr_loader_util.h" />
     <ClInclude Include="vr.h" />
     <ClInclude Include="vr_runtime_backend.h" />
   </ItemGroup>
@@ -649,6 +652,8 @@
     <ClCompile Include="hooks.cpp" />
     <ClCompile Include="sdk\checksum_crc.cpp" />
     <ClCompile Include="openxr_backend.cpp" />
+    <ClCompile Include="openxr_helper_bridge.cpp" />
+    <ClCompile Include="openxr_loader_util.cpp" />
     <ClCompile Include="vr.cpp" />
     <ClCompile Include="vr_hands\vr_hand_asset_loader.cpp" />
     <ClCompile Include="vr_hands\vr_hand_manifest.cpp" />

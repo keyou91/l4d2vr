@@ -13,7 +13,7 @@ struct VrRuntimeBackendSelection
 {
     VrRuntimeBackend requested = VrRuntimeBackend::OpenVR;
     VrRuntimeBackend active = VrRuntimeBackend::OpenVR;
-    bool fallbackToOpenVR = true;
+    bool fallbackToOpenVR = false;
     bool usedFallback = false;
     bool canStart = true;
     bool openXrLoaderAvailable = false;
@@ -24,7 +24,7 @@ struct VrRuntimeBackendSelection
 struct VrRuntimeBackendConfig
 {
     std::string requestedBackend = "openvr";
-    bool fallbackToOpenVR = true;
+    bool fallbackToOpenVR = false;
 };
 
 struct OpenXrRuntimeProbe
@@ -40,6 +40,7 @@ struct OpenXrRuntimeProbe
     uint32_t stereoViewCount = 0;
     uint32_t recommendedWidth = 0;
     uint32_t recommendedHeight = 0;
+    std::string loaderPath;
     std::string detail;
 };
 
