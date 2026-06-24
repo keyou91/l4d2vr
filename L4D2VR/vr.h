@@ -11,6 +11,7 @@
 #undef max
 #endif
 #include "openvr.h"
+#include "vr_runtime_backend.h"
 #include "vector.h"
 #include "vr_hands/vr_hand_types.h"
 #include <cstdint>
@@ -52,6 +53,7 @@ class IGameEvent;
 class IGameEventListener2;
 class IGameEventManager2;
 class VrHandSystem;
+class OpenXrBackend;
 enum class VrHandDrawPass;
 
 struct ViewmodelAdjustment
@@ -201,6 +203,14 @@ class VR
 {
 public:
 	Game* m_Game = nullptr;
+	VrRuntimeBackend m_RuntimeBackend = VrRuntimeBackend::OpenVR;
+	VrRuntimeBackend m_RequestedRuntimeBackend = VrRuntimeBackend::OpenVR;
+	bool m_RuntimeBackendFallbackToOpenVR = true;
+	bool m_OpenXrLoaderAvailable = false;
+	bool m_OpenXrSessionProbeEnabled = false;
+	bool m_OpenXrSessionProbeSucceeded = false;
+	bool m_RuntimeBackendRestartWarningLogged = false;
+	std::unique_ptr<OpenXrBackend> m_OpenXrBackend;
 
 	vr::IVRSystem* m_System = nullptr;
 	vr::IVRInput* m_Input = nullptr;

@@ -1,6 +1,7 @@
 #include "vr.h"
 
 #include "game.h"
+#include "openxr_backend.h"
 #include "sdk.h"
 #include "vr_hand_system.h"
 #include "vr_hand_math.h"

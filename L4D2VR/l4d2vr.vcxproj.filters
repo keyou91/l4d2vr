@@ -57,6 +57,12 @@
     <ClInclude Include="vr.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="vr_runtime_backend.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="openxr_backend.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="hooks.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -852,6 +858,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="vr.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="vr_runtime_backend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="openxr_backend.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="vr_hands\vr_hand_asset_loader.cpp">

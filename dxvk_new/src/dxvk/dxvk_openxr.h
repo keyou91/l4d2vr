@@ -53,6 +53,12 @@ namespace dxvk {
 
     DxvkNameSet parseExtensionList(
       const std::string&              str) const;
+
+    bool shouldUseConfiguredOpenXrRuntime() const;
+
+    bool queryNativeOpenXrExtensions(
+            DxvkNameSet&              instanceExtensions,
+            DxvkNameSet&              deviceExtensions) const;
     
     bool loadFunctions();
 

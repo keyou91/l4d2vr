@@ -458,7 +458,9 @@
     <ClInclude Include="sdk\trace.h" />
     <ClInclude Include="sdk\vector.h" />
     <ClInclude Include="sigscanner.h" />
+    <ClInclude Include="openxr_backend.h" />
     <ClInclude Include="vr.h" />
+    <ClInclude Include="vr_runtime_backend.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_adapter.cpp" />
@@ -646,6 +648,7 @@
     <ClCompile Include="game.cpp" />
     <ClCompile Include="hooks.cpp" />
     <ClCompile Include="sdk\checksum_crc.cpp" />
+    <ClCompile Include="openxr_backend.cpp" />
     <ClCompile Include="vr.cpp" />
     <ClCompile Include="vr_hands\vr_hand_asset_loader.cpp" />
     <ClCompile Include="vr_hands\vr_hand_manifest.cpp" />
@@ -654,6 +657,7 @@
     <ClCompile Include="vr_hands\vr_hand_system.cpp" />
     <ClCompile Include="vr_hands\vr_hand_vm_pose.cpp" />
     <ClCompile Include="vr_hands\vr_hand_vr_bridge.cpp" />
+    <ClCompile Include="vr_runtime_backend.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\dxvk_new\lib32\libd3dcompiler_43.def" />

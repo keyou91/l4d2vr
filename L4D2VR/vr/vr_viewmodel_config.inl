@@ -882,6 +882,27 @@ void VR::ParseConfigFile()
         return values;
         };
 
+    {
+        const std::string configuredRuntimeBackend =
+            getString("VRRuntimeBackend", L4D2VR_RuntimeBackendName(m_RequestedRuntimeBackend));
+        const VrRuntimeBackend parsedRuntimeBackend =
+            L4D2VR_ParseRuntimeBackend(configuredRuntimeBackend, m_RequestedRuntimeBackend);
+        m_RuntimeBackendFallbackToOpenVR =
+            getBool("VRRuntimeFallbackToOpenVR", m_RuntimeBackendFallbackToOpenVR);
+
+        if (parsedRuntimeBackend == m_RequestedRuntimeBackend)
+        {
+            m_RuntimeBackendRestartWarningLogged = false;
+        }
+        else if (m_IsInitialized && !m_RuntimeBackendRestartWarningLogged)
+        {
+            Game::logMsg("[VR][Runtime] VRRuntimeBackend changed from %s to %s; restart the game to apply the runtime backend change",
+                L4D2VR_RuntimeBackendName(m_RequestedRuntimeBackend),
+                L4D2VR_RuntimeBackendName(parsedRuntimeBackend));
+            m_RuntimeBackendRestartWarningLogged = true;
+        }
+    }
+
     const std::string injectedCmd = getString("cmd", getString("Cmd", "exec cam.cfg"));
     if (!injectedCmd.empty())
     {

@@ -920,6 +920,37 @@ VR::VR(Game* game)
 
     char errorString[MAX_STR_LEN];
 
+    const VrRuntimeBackendConfig runtimeConfig = L4D2VR_ReadRuntimeBackendConfig();
+    m_RuntimeBackendFallbackToOpenVR = runtimeConfig.fallbackToOpenVR;
+    m_OpenXrSessionProbeEnabled = ReadEarlyConfigBool("OpenXRSessionProbe", m_OpenXrSessionProbeEnabled);
+
+    const VrRuntimeBackendSelection runtimeSelection =
+        L4D2VR_SelectRuntimeBackend(runtimeConfig.requestedBackend, m_RuntimeBackendFallbackToOpenVR);
+    m_RequestedRuntimeBackend = runtimeSelection.requested;
+    m_RuntimeBackend = runtimeSelection.active;
+    m_OpenXrLoaderAvailable = runtimeSelection.openXrLoaderAvailable;
+
+    Game::logMsg("[VR][Runtime] requested=%s active=%s fallback=%d usedFallback=%d openxrLoader=%d openxrBackendImplemented=%d detail=%s",
+        L4D2VR_RuntimeBackendName(runtimeSelection.requested),
+        L4D2VR_RuntimeBackendName(runtimeSelection.active),
+        runtimeSelection.fallbackToOpenVR ? 1 : 0,
+        runtimeSelection.usedFallback ? 1 : 0,
+        runtimeSelection.openXrLoaderAvailable ? 1 : 0,
+        runtimeSelection.openXrBackendImplemented ? 1 : 0,
+        runtimeSelection.message.c_str());
+
+    if (!runtimeSelection.canStart)
+    {
+        Game::errorMsg(runtimeSelection.message.c_str());
+        return;
+    }
+
+    if (runtimeSelection.active == VrRuntimeBackend::OpenXR)
+    {
+        Game::errorMsg("Native OpenXR runtime selected, but the OpenXR rendering/input backend is not wired yet.");
+        return;
+    }
+
     vr::HmdError error = vr::VRInitError_None;
     m_System = vr::VR_Init(&error, vr::VRApplication_Scene);
 
@@ -1037,6 +1068,35 @@ VR::VR(Game* game)
 
     while (!g_D3DVR9)
         Sleep(10);
+
+    if (m_RequestedRuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        Game::logMsg("[VR][OpenXR] sessionProbe=%d", m_OpenXrSessionProbeEnabled ? 1 : 0);
+    }
+
+    if (m_RequestedRuntimeBackend == VrRuntimeBackend::OpenXR && m_OpenXrSessionProbeEnabled)
+    {
+        D3D9_OPENXR_GRAPHICS_BINDING_DESC openXrGraphics{};
+        const HRESULT graphicsHr = g_D3DVR9->GetOpenXRGraphicsBinding(&openXrGraphics);
+        if (FAILED(graphicsHr))
+        {
+            Game::logMsg("[VR][OpenXR] session probe skipped: GetOpenXRGraphicsBinding failed hr=0x%08X",
+                static_cast<unsigned int>(graphicsHr));
+        }
+        else
+        {
+            std::string openXrSessionDetail;
+            m_OpenXrBackend = std::make_unique<OpenXrBackend>();
+            m_OpenXrSessionProbeSucceeded =
+                m_OpenXrBackend->InitializeSession(openXrGraphics, &openXrSessionDetail);
+            Game::logMsg("[VR][OpenXR] session probe %s: %s",
+                m_OpenXrSessionProbeSucceeded ? "succeeded" : "failed",
+                openXrSessionDetail.c_str());
+
+            m_OpenXrBackend->Shutdown();
+            m_OpenXrBackend.reset();
+        }
+    }
 
     RefreshBackBufferTexture(true);
     m_Overlay = vr::VROverlay();

@@ -1,5 +1,8 @@
 VRScale=43.2
 IPDScale=1.0
+VRRuntimeBackend=openxr
+VRRuntimeFallbackToOpenVR=true
+OpenXRSessionProbe=false
 TurnSpeed=0.3
 SnapTurning=false
 SnapTurnAngle=45.0

@@ -8,6 +8,8 @@
 
 #include <openvr.h>
 
+#include "L4D2VR/vr_runtime_backend.h"
+
 #include "../util/util_singleton.h"
 
 #include <algorithm>
@@ -300,7 +302,22 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
     const bool noHmd = IsNoHmdLaunchArgPresent();
+    VrRuntimeBackendSelection runtimeSelection{};
     if (!noHmd) {
+      const VrRuntimeBackendConfig runtimeConfig = L4D2VR_ReadRuntimeBackendConfig();
+      runtimeSelection = L4D2VR_SelectRuntimeBackend(
+        runtimeConfig.requestedBackend,
+        runtimeConfig.fallbackToOpenVR);
+      if (!runtimeSelection.canStart) {
+        MessageBox(0, runtimeSelection.message.c_str(), "L4D2VR", MB_ICONERROR | MB_OK);
+        ExitProcess(0);
+      }
+    }
+
+    const bool useOpenVrBootstrap =
+      !noHmd && runtimeSelection.active == VrRuntimeBackend::OpenVR;
+
+    if (useOpenVrBootstrap) {
       vr::HmdError error = vr::VRInitError_None;
       vr::IVRSystem* system = vr::VR_Init(&error, vr::VRApplication_Scene);
 
@@ -331,7 +348,8 @@ namespace dxvk {
     if (SUCCEEDED(result)
      && ppReturnedDeviceInterface != nullptr
      && *ppReturnedDeviceInterface != nullptr
-     && !noHmd)
+     && !noHmd
+     && runtimeSelection.canStart)
       Direct3DCreateVRImpl(*ppReturnedDeviceInterface, &g_D3DVR9);
 
     return result;
