@@ -161,23 +161,6 @@ namespace dxvk {
       return res;
     }
 
-    HRESULT STDMETHODCALLTYPE GetOpenXRGraphicsBinding(D3D9_OPENXR_GRAPHICS_BINDING_DESC* pDesc) {
-      if (unlikely(pDesc == nullptr))
-        return D3DERR_INVALIDCALL;
-
-      const auto& device = m_device->GetDXVKDevice();
-      const auto& queue = device->queues().graphics;
-
-      pDesc->Instance = device->instance()->handle();
-      pDesc->PhysicalDevice = device->adapter()->handle();
-      pDesc->Device = device->handle();
-      pDesc->Queue = queue.queueHandle;
-      pDesc->QueueFamilyIndex = queue.queueFamily;
-      pDesc->QueueIndex = queue.queueIndex;
-
-      return D3D_OK;
-    }
-
   private:
 
     D3D9DeviceEx* m_device;

@@ -36,7 +36,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <mutex>
 #include <vector>
 #ifdef MSC_VER
@@ -620,7 +619,7 @@ namespace dxvk {
                 resolveResult = device->StretchRect(source, srcRectPtr, submitTarget, dstRectPtr, D3DTEXF_NONE);
 
             if (openXrHelper) {
-                static std::atomic<int> s_openXrResolveLogBudget{ 80 };
+                static std::atomic<int> s_openXrResolveLogBudget{ 4 };
                 int remaining = s_openXrResolveLogBudget.load(std::memory_order_relaxed);
                 if (remaining > 0 && s_openXrResolveLogBudget.compare_exchange_strong(remaining, remaining - 1, std::memory_order_relaxed)) {
                     Game::logMsg(
@@ -782,277 +781,6 @@ namespace dxvk {
                 VrResolveSurfaceToSubmit(device, vrState->m_D9LeftEyeSurface, vrState->m_D9LeftEyeSubmitSurface, "left", vrState->m_OpenXrHelperBridgeActive, leftPrebakeBounds);
             if (vrState->m_D9RightEyeSubmitSurface)
                 VrResolveSurfaceToSubmit(device, vrState->m_D9RightEyeSurface, vrState->m_D9RightEyeSubmitSurface, "right", vrState->m_OpenXrHelperBridgeActive, rightPrebakeBounds);
-        }
-
-        static void VrPrepareOpenXrSharedSubmitSurfaces(VR* vrState) {
-            if (!vrState || !vrState->m_OpenXrHelperBridgeActive || !g_D3DVR9)
-                return;
-
-            static std::atomic<uint32_t> s_logCount{ 0 };
-            const uint32_t logIndex = s_logCount.fetch_add(1, std::memory_order_relaxed);
-            if (logIndex < 8) {
-                Game::logMsg(
-                    "[VR][OpenXRHelper][Prepare] submit surfaces kept in DXVK shared GENERAL layout for helper transfer blit");
-            }
-        }
-
-        static bool VrOpenXrReadbackFormatIs32Bit(D3DFORMAT format) {
-            switch (format) {
-            case D3DFMT_A8R8G8B8:
-            case D3DFMT_X8R8G8B8:
-            case D3DFMT_A8B8G8R8:
-            case D3DFMT_X8B8G8R8:
-                return true;
-            default:
-                return false;
-            }
-        }
-
-        static bool VrOpenXrSubmitReadbackSurface(
-            D3D9DeviceEx* device,
-            IDirect3DSurface9* source,
-            const char* eyeName,
-            const char* outputPath) {
-            if (!device || !source || !eyeName || !outputPath)
-                return false;
-
-            D3DSURFACE_DESC desc{};
-            HRESULT hr = source->GetDesc(&desc);
-            if (FAILED(hr) || desc.Width == 0 || desc.Height == 0) {
-                Game::logMsg("[VR][OpenXRHelper][Readback] eye=%s GetDesc failed hr=0x%08lX",
-                    eyeName, static_cast<unsigned long>(hr));
-                return false;
-            }
-
-            if (!VrOpenXrReadbackFormatIs32Bit(desc.Format)) {
-                Game::logMsg("[VR][OpenXRHelper][Readback] eye=%s unsupported fmt=%u size=%ux%u",
-                    eyeName, static_cast<unsigned int>(desc.Format), desc.Width, desc.Height);
-                return false;
-            }
-
-            IDirect3DSurface9* readback = nullptr;
-            hr = device->CreateOffscreenPlainSurface(
-                desc.Width,
-                desc.Height,
-                desc.Format,
-                D3DPOOL_SYSTEMMEM,
-                &readback,
-                nullptr);
-            if (FAILED(hr) || !readback) {
-                Game::logMsg("[VR][OpenXRHelper][Readback] eye=%s create readback failed fmt=%u size=%ux%u hr=0x%08lX",
-                    eyeName, static_cast<unsigned int>(desc.Format), desc.Width, desc.Height, static_cast<unsigned long>(hr));
-                return false;
-            }
-
-            hr = device->GetRenderTargetData(source, readback);
-            if (FAILED(hr)) {
-                Game::logMsg("[VR][OpenXRHelper][Readback] eye=%s GetRenderTargetData failed fmt=%u size=%ux%u hr=0x%08lX",
-                    eyeName, static_cast<unsigned int>(desc.Format), desc.Width, desc.Height, static_cast<unsigned long>(hr));
-                readback->Release();
-                return false;
-            }
-
-            D3DLOCKED_RECT locked{};
-            hr = readback->LockRect(&locked, nullptr, D3DLOCK_READONLY);
-            if (FAILED(hr) || !locked.pBits || locked.Pitch <= 0) {
-                Game::logMsg("[VR][OpenXRHelper][Readback] eye=%s LockRect failed hr=0x%08lX pitch=%ld",
-                    eyeName, static_cast<unsigned long>(hr), static_cast<long>(locked.Pitch));
-                readback->Release();
-                return false;
-            }
-
-            auto readRgb = [&](UINT x, UINT y, uint8_t& r, uint8_t& g, uint8_t& b) {
-                x = std::min<UINT>(x, desc.Width - 1);
-                y = std::min<UINT>(y, desc.Height - 1);
-                const uint8_t* p = reinterpret_cast<const uint8_t*>(locked.pBits)
-                    + static_cast<size_t>(y) * static_cast<size_t>(locked.Pitch)
-                    + static_cast<size_t>(x) * 4u;
-
-                switch (desc.Format) {
-                case D3DFMT_A8R8G8B8:
-                case D3DFMT_X8R8G8B8:
-                    b = p[0];
-                    g = p[1];
-                    r = p[2];
-                    break;
-                case D3DFMT_A8B8G8R8:
-                case D3DFMT_X8B8G8R8:
-                default:
-                    r = p[0];
-                    g = p[1];
-                    b = p[2];
-                    break;
-                }
-            };
-
-            const UINT outputWidth = std::max<UINT>(1u, std::min<UINT>(360u, desc.Width));
-            const UINT outputHeight = std::max<UINT>(1u, std::min<UINT>(320u, desc.Height));
-            const UINT bmpRowPitch = (outputWidth * 3u + 3u) & ~3u;
-            std::vector<uint8_t> bmpPixels(static_cast<size_t>(bmpRowPitch) * outputHeight, 0u);
-
-            for (UINT oy = 0; oy < outputHeight; ++oy) {
-                const UINT sy = outputHeight > 1
-                    ? static_cast<UINT>((static_cast<uint64_t>(oy) * (desc.Height - 1u)) / (outputHeight - 1u))
-                    : 0u;
-                const UINT bmpY = outputHeight - 1u - oy;
-                uint8_t* outRow = bmpPixels.data() + static_cast<size_t>(bmpY) * bmpRowPitch;
-                for (UINT ox = 0; ox < outputWidth; ++ox) {
-                    const UINT sx = outputWidth > 1
-                        ? static_cast<UINT>((static_cast<uint64_t>(ox) * (desc.Width - 1u)) / (outputWidth - 1u))
-                        : 0u;
-                    uint8_t r = 0, g = 0, b = 0;
-                    readRgb(sx, sy, r, g, b);
-                    outRow[ox * 3u + 0u] = b;
-                    outRow[ox * 3u + 1u] = g;
-                    outRow[ox * 3u + 2u] = r;
-                }
-            }
-
-            uint8_t header[54] = {};
-            auto put16 = [](uint8_t* dst, uint16_t value) {
-                dst[0] = static_cast<uint8_t>(value & 0xFFu);
-                dst[1] = static_cast<uint8_t>((value >> 8) & 0xFFu);
-            };
-            auto put32 = [](uint8_t* dst, uint32_t value) {
-                dst[0] = static_cast<uint8_t>(value & 0xFFu);
-                dst[1] = static_cast<uint8_t>((value >> 8) & 0xFFu);
-                dst[2] = static_cast<uint8_t>((value >> 16) & 0xFFu);
-                dst[3] = static_cast<uint8_t>((value >> 24) & 0xFFu);
-            };
-
-            const uint32_t pixelBytes = static_cast<uint32_t>(bmpPixels.size());
-            header[0] = 'B';
-            header[1] = 'M';
-            put32(header + 2, 54u + pixelBytes);
-            put32(header + 10, 54u);
-            put32(header + 14, 40u);
-            put32(header + 18, outputWidth);
-            put32(header + 22, outputHeight);
-            put16(header + 26, 1u);
-            put16(header + 28, 24u);
-            put32(header + 34, pixelBytes);
-
-            bool wroteBmp = false;
-            {
-                std::ofstream file(outputPath, std::ios::binary);
-                if (file) {
-                    file.write(reinterpret_cast<const char*>(header), sizeof(header));
-                    file.write(reinterpret_cast<const char*>(bmpPixels.data()), static_cast<std::streamsize>(bmpPixels.size()));
-                    wroteBmp = file.good();
-                }
-            }
-
-            const UINT rowYs[5] = {
-                0u,
-                desc.Height / 4u,
-                desc.Height / 2u,
-                (desc.Height * 3u) / 4u,
-                desc.Height - 1u,
-            };
-            UINT rowAvg[5] = {};
-            UINT rowLit[5] = {};
-            const UINT sampleCount = std::max<UINT>(1u, std::min<UINT>(128u, desc.Width));
-            for (UINT ri = 0; ri < 5u; ++ri) {
-                uint64_t lumaSum = 0u;
-                UINT litCount = 0u;
-                for (UINT si = 0; si < sampleCount; ++si) {
-                    const UINT sx = sampleCount > 1
-                        ? static_cast<UINT>((static_cast<uint64_t>(si) * (desc.Width - 1u)) / (sampleCount - 1u))
-                        : 0u;
-                    uint8_t r = 0, g = 0, b = 0;
-                    readRgb(sx, rowYs[ri], r, g, b);
-                    const UINT luma = (static_cast<UINT>(r) * 299u + static_cast<UINT>(g) * 587u + static_cast<UINT>(b) * 114u) / 1000u;
-                    lumaSum += luma;
-                    if (luma > 12u)
-                        ++litCount;
-                }
-                rowAvg[ri] = static_cast<UINT>(lumaSum / sampleCount);
-                rowLit[ri] = litCount;
-            }
-
-            uint8_t centerR = 0, centerG = 0, centerB = 0;
-            readRgb(desc.Width / 2u, desc.Height / 2u, centerR, centerG, centerB);
-            Game::logMsg(
-                "[VR][OpenXRHelper][Readback] eye=%s size=%ux%u fmt=%u pitch=%ld bmp=%s wrote=%d center=(%u,%u,%u) rows(y/avg/lit)=%u/%u/%u,%u/%u/%u,%u/%u/%u,%u/%u/%u,%u/%u/%u",
-                eyeName,
-                desc.Width,
-                desc.Height,
-                static_cast<unsigned int>(desc.Format),
-                static_cast<long>(locked.Pitch),
-                outputPath,
-                wroteBmp ? 1 : 0,
-                static_cast<unsigned int>(centerR),
-                static_cast<unsigned int>(centerG),
-                static_cast<unsigned int>(centerB),
-                rowYs[0], rowAvg[0], rowLit[0],
-                rowYs[1], rowAvg[1], rowLit[1],
-                rowYs[2], rowAvg[2], rowLit[2],
-                rowYs[3], rowAvg[3], rowLit[3],
-                rowYs[4], rowAvg[4], rowLit[4]);
-
-            readback->UnlockRect();
-            readback->Release();
-            return true;
-        }
-
-        static void VrProbeOpenXrSubmitReadback(D3D9DeviceEx* device, VR* vrState) {
-            if (!device || !vrState || !vrState->m_OpenXrHelperBridgeActive)
-                return;
-
-            static std::atomic<bool> s_done{ false };
-            if (s_done.load(std::memory_order_acquire))
-                return;
-
-            if (!vrState->m_D9LeftEyeSubmitSurface && !vrState->m_D9RightEyeSubmitSurface) {
-                static std::atomic<uint32_t> s_waitLogCount{ 0 };
-                const uint32_t logIndex = s_waitLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logIndex < 4u)
-                    Game::logMsg("[VR][OpenXRHelper][Readback] waiting for submit surfaces");
-                return;
-            }
-
-            constexpr DWORD kCaptureDelayMs = 60000;
-            static std::atomic<DWORD> s_readySinceMs{ 0 };
-            static std::atomic<DWORD> s_lastDelayLogMs{ 0 };
-            const DWORD nowMs = ::GetTickCount();
-            DWORD readySinceMs = s_readySinceMs.load(std::memory_order_acquire);
-            if (readySinceMs == 0) {
-                s_readySinceMs.store(nowMs, std::memory_order_release);
-                readySinceMs = nowMs;
-                Game::logMsg("[VR][OpenXRHelper][Readback] submit surfaces ready; delaying capture by %lu ms",
-                    static_cast<unsigned long>(kCaptureDelayMs));
-            }
-
-            const DWORD elapsedMs = nowMs - readySinceMs;
-            if (elapsedMs < kCaptureDelayMs) {
-                DWORD lastDelayLogMs = s_lastDelayLogMs.load(std::memory_order_relaxed);
-                if (lastDelayLogMs == 0 || nowMs - lastDelayLogMs >= 5000u) {
-                    s_lastDelayLogMs.store(nowMs, std::memory_order_relaxed);
-                    Game::logMsg("[VR][OpenXRHelper][Readback] delaying submit capture elapsedMs=%lu targetMs=%lu",
-                        static_cast<unsigned long>(elapsedMs),
-                        static_cast<unsigned long>(kCaptureDelayMs));
-                }
-                return;
-            }
-
-            static std::atomic<uint32_t> s_attempts{ 0 };
-            const uint32_t attempt = s_attempts.fetch_add(1, std::memory_order_relaxed);
-            if (attempt >= 6u)
-                return;
-
-            const bool leftOk = VrOpenXrSubmitReadbackSurface(
-                device,
-                vrState->m_D9LeftEyeSubmitSurface,
-                "left",
-                "D:\\TEMP\\VOS-User\\l4d2vr_openxr_left_submit_probe.bmp");
-            const bool rightOk = VrOpenXrSubmitReadbackSurface(
-                device,
-                vrState->m_D9RightEyeSubmitSurface,
-                "right",
-                "D:\\TEMP\\VOS-User\\l4d2vr_openxr_right_submit_probe.bmp");
-
-            if (leftOk || rightOk)
-                s_done.store(true, std::memory_order_release);
         }
 
         static bool VrGetPositiveRectSize(const RECT* rect, UINT& width, UINT& height) {
@@ -3585,7 +3313,7 @@ namespace dxvk {
 
                     static std::atomic<uint32_t> s_vrViewportForceLogCount{ 0 };
                     const uint32_t logIndex = s_vrViewportForceLogCount.fetch_add(1, std::memory_order_relaxed);
-                    if (logIndex < 20 && (
+                    if (logIndex < 4 && (
                         requestedViewport.X != effectiveViewport.X ||
                         requestedViewport.Y != effectiveViewport.Y ||
                         requestedViewport.Width != effectiveViewport.Width ||
@@ -5827,23 +5555,16 @@ namespace dxvk {
                     VrAimLineDrawOverlaysToSubmitTargets(this, postPresentVR);
                     if (postPresentVR->m_ReShadeVRCompat)
                         postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
-                    if (postPresentVR->m_OpenXrHelperBridgeActive)
-                        VrPrepareOpenXrSharedSubmitSurfaces(postPresentVR);
                     if (g_D3DVR9)
                         g_D3DVR9->WaitDeviceIdle();
-                    if (postPresentVR->m_OpenXrHelperBridgeActive) {
-                        VrProbeOpenXrSubmitReadback(this, postPresentVR);
+                    if (postPresentVR->m_OpenXrHelperBridgeActive)
                         postPresentVR->PublishOpenXrResolvedEyeTextures(completedFrameId);
-                    }
                 }
             }
             else if (!skipPostPresentVRWork && !deferredEyeSubmitResolve && g_D3DVR9) {
-                if (g_Game && g_Game->m_VR && g_Game->m_VR->m_OpenXrHelperBridgeActive)
-                    VrPrepareOpenXrSharedSubmitSurfaces(g_Game->m_VR);
                 g_D3DVR9->WaitDeviceIdle();
                 if (g_Game && g_Game->m_VR && g_Game->m_VR->m_OpenXrHelperBridgeActive) {
                     const uint32_t completedFrameId = g_Game->m_VR->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                    VrProbeOpenXrSubmitReadback(this, g_Game->m_VR);
                     g_Game->m_VR->PublishOpenXrResolvedEyeTextures(completedFrameId);
                 }
             }
@@ -5855,13 +5576,10 @@ namespace dxvk {
                 if (inGame && queued) {
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr);
                     VrAimLineDrawOverlaysToSubmitTargets(this, vr);
-                    if (vr->m_OpenXrHelperBridgeActive)
-                        VrPrepareOpenXrSharedSubmitSurfaces(vr);
                     if (g_D3DVR9)
                         g_D3DVR9->WaitDeviceIdle();
                     if (vr->m_OpenXrHelperBridgeActive) {
                         const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                        VrProbeOpenXrSubmitReadback(this, vr);
                         vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
                     }
                 }
@@ -8653,7 +8371,7 @@ namespace dxvk {
                     sr.bottom != int32_t(vp.Y + vp.Height));
 
             const uint32_t logIndex = s_vrScissorForceLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logIndex < 20 && (enableScissorTest || scissorWouldClip)) {
+            if (logIndex < 4 && (enableScissorTest || scissorWouldClip)) {
                 Game::logMsg("[VR][Scissor] forced target=%s enabled=%d rect=(%ld,%ld %ldx%ld) viewport=(%lu,%lu %lux%lu)",
                     vrTargetName,
                     enableScissorTest ? 1 : 0,

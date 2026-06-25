@@ -922,7 +922,6 @@ VR::VR(Game* game)
 
     const VrRuntimeBackendConfig runtimeConfig = L4D2VR_ReadRuntimeBackendConfig();
     m_RuntimeBackendFallbackToOpenVR = runtimeConfig.fallbackToOpenVR;
-    m_OpenXrSessionProbeEnabled = ReadEarlyConfigBool("OpenXRSessionProbe", m_OpenXrSessionProbeEnabled);
 
     const VrRuntimeBackendSelection runtimeSelection =
         L4D2VR_SelectRuntimeBackend(runtimeConfig.requestedBackend, m_RuntimeBackendFallbackToOpenVR);
@@ -1238,35 +1237,6 @@ VR::VR(Game* game)
 
     while (!g_D3DVR9)
         Sleep(10);
-
-    if (m_RequestedRuntimeBackend == VrRuntimeBackend::OpenXR)
-    {
-        Game::logMsg("[VR][OpenXR] sessionProbe=%d", m_OpenXrSessionProbeEnabled ? 1 : 0);
-    }
-
-    if (m_RequestedRuntimeBackend == VrRuntimeBackend::OpenXR && m_OpenXrSessionProbeEnabled)
-    {
-        D3D9_OPENXR_GRAPHICS_BINDING_DESC openXrGraphics{};
-        const HRESULT graphicsHr = g_D3DVR9->GetOpenXRGraphicsBinding(&openXrGraphics);
-        if (FAILED(graphicsHr))
-        {
-            Game::logMsg("[VR][OpenXR] session probe skipped: GetOpenXRGraphicsBinding failed hr=0x%08X",
-                static_cast<unsigned int>(graphicsHr));
-        }
-        else
-        {
-            std::string openXrSessionDetail;
-            m_OpenXrBackend = std::make_unique<OpenXrBackend>();
-            m_OpenXrSessionProbeSucceeded =
-                m_OpenXrBackend->InitializeSession(openXrGraphics, &openXrSessionDetail);
-            Game::logMsg("[VR][OpenXR] session probe %s: %s",
-                m_OpenXrSessionProbeSucceeded ? "succeeded" : "failed",
-                openXrSessionDetail.c_str());
-
-            m_OpenXrBackend->Shutdown();
-            m_OpenXrBackend.reset();
-        }
-    }
 
     RefreshBackBufferTexture(true);
     m_Overlay = vr::VROverlay();

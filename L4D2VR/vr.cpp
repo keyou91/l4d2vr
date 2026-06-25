@@ -9,7 +9,6 @@
 #include "offsets.h"
 #include "usercmd.h"
 #include "trace.h"
-#include "openxr_backend.h"
 #include "openxr_helper_bridge.h"
 #include "vr_hands/vr_hand_manifest.h"
 #include "vr_hands/vr_hand_system.h"

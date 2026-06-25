@@ -56,39 +56,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 	if (s_originalRenderViewDepth > 0)
 	{
-		if (m_VR && m_VR->m_RenderPipelineDebugLog && m_Game && m_Game->m_MaterialSystem)
-		{
-			static std::atomic<int> s_nestedRenderViewProbeBudget{ 160 };
-			const int probeIndex = s_nestedRenderViewProbeBudget.fetch_sub(1, std::memory_order_acq_rel);
-			if (probeIndex > 0)
-			{
-				IMatRenderContext* probeContext = m_Game->m_MaterialSystem->GetRenderContext();
-				ITexture* probeRt = DebugCurrentRenderTarget(probeContext);
-				int rtMapW = 0;
-				int rtMapH = 0;
-				int rtActualW = 0;
-				int rtActualH = 0;
-				DebugTextureFullSize(probeRt, rtMapW, rtMapH, rtActualW, rtActualH);
-				int vpX = 0;
-				int vpY = 0;
-				int vpW = 0;
-				int vpH = 0;
-				const bool haveVp = DebugGetViewport(probeContext, vpX, vpY, vpW, vpH);
-				const int nestedQueueMode = m_Game ? m_Game->GetMatQueueMode() : 0;
-				Game::logMsg("[VR][RenderView][ProbeNested] left=%d depth=%d eye=%d q=%d tid=%lu rt=%s(map=%dx%d actual=%dx%d) setup=%dx%d unscaled=%dx%d hud=%dx%d vp=%d,%d %dx%d haveVp=%d clear=0x%X draw=0x%X",
-					probeIndex,
-					s_originalRenderViewDepth,
-					s_vrEyeRenderPass,
-					nestedQueueMode,
-					GetCurrentThreadId(),
-					DebugTextureName(probeRt), rtMapW, rtMapH, rtActualW, rtActualH,
-					setup.width, setup.height, setup.m_nUnscaledWidth, setup.m_nUnscaledHeight,
-					hudViewSetup.width, hudViewSetup.height,
-					vpX, vpY, vpW, vpH, haveVp ? 1 : 0,
-					nClearFlags, whatToDraw);
-			}
-		}
-
 		if (s_vrEyeRenderPass != 0 && s_vrSharedCenterValid && m_Game && m_Game->m_MaterialSystem)
 		{
 			IMatRenderContext* nestedContext = m_Game->m_MaterialSystem->GetRenderContext();
@@ -324,64 +291,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		passThroughReason = "water-reflection";
 	else
 		isQueuedOffscreenRenderView(passThroughReason);
-
-	if (m_VR->m_RenderPipelineDebugLog && queueMode != 0)
-	{
-		static std::atomic<int> s_topRenderViewProbeBudget{ 260 };
-		const int probeIndex = s_topRenderViewProbeBudget.fetch_sub(1, std::memory_order_acq_rel);
-		if (probeIndex > 0)
-		{
-			int rtMapW = 0;
-			int rtMapH = 0;
-			int rtActualW = 0;
-			int rtActualH = 0;
-			DebugTextureFullSize(renderContextStateGuard.rt, rtMapW, rtMapH, rtActualW, rtActualH);
-			int backBufferW = 0;
-			int backBufferH = 0;
-			int windowW = 0;
-			int windowH = 0;
-			DebugBackBufferDimensions(m_Game ? m_Game->m_MaterialSystem : nullptr, backBufferW, backBufferH);
-			DebugRenderContextWindowSize(rndrContext, windowW, windowH);
-			const char* rtName = DebugTextureName(renderContextStateGuard.rt);
-			const bool vrManagedRt = isVRManagedRenderTarget(renderContextStateGuard.rt);
-			const bool waterRt = isWaterReflectionRenderTarget(renderContextStateGuard.rt);
-			auto nearSize = [&](int w, int h, int targetW, int targetH) -> bool
-				{
-					return viewSizeMatches(w, h, targetW, targetH);
-				};
-			const bool setupMain =
-				nearSize(setup.width, setup.height, backBufferW, backBufferH) ||
-				nearSize(setup.m_nUnscaledWidth, setup.m_nUnscaledHeight, backBufferW, backBufferH) ||
-				nearSize(setup.width, setup.height, windowW, windowH) ||
-				nearSize(setup.m_nUnscaledWidth, setup.m_nUnscaledHeight, windowW, windowH) ||
-				(renderContextStateGuard.hasViewport &&
-					(nearSize(renderContextStateGuard.w, renderContextStateGuard.h, backBufferW, backBufferH) ||
-						nearSize(renderContextStateGuard.w, renderContextStateGuard.h, windowW, windowH)));
-			const bool rtMain =
-				nearSize(rtMapW, rtMapH, backBufferW, backBufferH) ||
-				nearSize(rtActualW, rtActualH, backBufferW, backBufferH) ||
-				nearSize(rtMapW, rtMapH, windowW, windowH) ||
-				nearSize(rtActualW, rtActualH, windowW, windowH);
-
-			Game::logMsg("[VR][RenderView][ProbeTop] left=%d decision=%s reason=%s tid=%lu q=%d rt=%s(map=%dx%d actual=%dx%d vr=%d water=%d) setup=%dx%d unscaled=%dx%d hud=%dx%d vp=%d,%d %dx%d haveVp=%d win=%dx%d bb=%dx%d setupMain=%d rtMain=%d clear=0x%X draw=0x%X",
-				probeIndex,
-				passThroughReason ? "pass-through" : "vr-hijack",
-				passThroughReason ? passThroughReason : "none",
-				GetCurrentThreadId(),
-				queueMode,
-				rtName, rtMapW, rtMapH, rtActualW, rtActualH,
-				vrManagedRt ? 1 : 0,
-				waterRt ? 1 : 0,
-				setup.width, setup.height, setup.m_nUnscaledWidth, setup.m_nUnscaledHeight,
-				hudViewSetup.width, hudViewSetup.height,
-				renderContextStateGuard.x, renderContextStateGuard.y, renderContextStateGuard.w, renderContextStateGuard.h,
-				renderContextStateGuard.hasViewport ? 1 : 0,
-				windowW, windowH, backBufferW, backBufferH,
-				setupMain ? 1 : 0,
-				rtMain ? 1 : 0,
-				nClearFlags, whatToDraw);
-		}
-	}
 
 	if (passThroughReason != nullptr)
 	{
@@ -2258,61 +2167,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture, LPDIRECT3DSURFACE9 reshadeSurface,
 		CViewSetup& eyeView, CViewSetup& eyeHud, bool drawPreViewLaser)
 		{
-			struct EyeRenderViewProbe
-			{
-				EyeRenderViewProbe(IMatRenderContext* ctx, ITexture* target, const CViewSetup& view, const CViewSetup& hud, int eyeIndex)
-				{
-					static std::atomic<int> s_eyeProbeBudget{ 24 };
-					const int probeIndex = s_eyeProbeBudget.fetch_sub(1, std::memory_order_acq_rel);
-					if (probeIndex <= 0)
-						return;
-
-					int vpX = 0;
-					int vpY = 0;
-					int vpW = 0;
-					int vpH = 0;
-					const bool haveVp = DebugGetViewport(ctx, vpX, vpY, vpW, vpH);
-					ITexture* currentRt = DebugCurrentRenderTarget(ctx);
-					int rtMapW = 0;
-					int rtMapH = 0;
-					int rtActualW = 0;
-					int rtActualH = 0;
-					DebugTextureFullSize(currentRt, rtMapW, rtMapH, rtActualW, rtActualH);
-					int targetMapW = 0;
-					int targetMapH = 0;
-					int targetActualW = 0;
-					int targetActualH = 0;
-					DebugTextureFullSize(target, targetMapW, targetMapH, targetActualW, targetActualH);
-					Game::logMsg("[VR][RenderView][EyeProbe] left=%d eye=%d rt=%s(map=%dx%d actual=%dx%d) target=%s(map=%dx%d actual=%dx%d) setup=%dx%d unscaled=%dx%d hud=%dx%d hudUnscaled=%dx%d vp=%d,%d %dx%d haveVp=%d fov=%.2f aspect=%.4f",
-						probeIndex,
-						eyeIndex,
-						DebugTextureName(currentRt),
-						rtMapW,
-						rtMapH,
-						rtActualW,
-						rtActualH,
-						DebugTextureName(target),
-						targetMapW,
-						targetMapH,
-						targetActualW,
-						targetActualH,
-						view.width,
-						view.height,
-						view.m_nUnscaledWidth,
-						view.m_nUnscaledHeight,
-						hud.width,
-						hud.height,
-						hud.m_nUnscaledWidth,
-						hud.m_nUnscaledHeight,
-						vpX,
-						vpY,
-						vpW,
-						vpH,
-						haveVp ? 1 : 0,
-						view.fov,
-						view.m_flAspectRatio);
-				}
-			};
 			struct EyeRenderTargetScope
 			{
 				IMatRenderContext* ctx = nullptr;
@@ -2405,7 +2259,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				static_cast<int>(m_VR->m_RenderHeight));
 			if (hkViewport.fOriginal)
 				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
-			EyeRenderViewProbe eyeProbe(rndrContext, eyeTexture, eyeView, eyeHud, eyeIndex);
 			EyeSharedCenterScope sharedCenterScope(
 				s_vrEyeRenderPass,
 				s_vrSharedCenterValid,

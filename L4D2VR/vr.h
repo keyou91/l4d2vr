@@ -55,7 +55,6 @@ class IGameEvent;
 class IGameEventListener2;
 class IGameEventManager2;
 class VrHandSystem;
-class OpenXrBackend;
 enum class VrHandDrawPass;
 
 struct ViewmodelAdjustment
@@ -209,13 +208,10 @@ public:
 	VrRuntimeBackend m_RequestedRuntimeBackend = VrRuntimeBackend::OpenVR;
 	bool m_RuntimeBackendFallbackToOpenVR = false;
 	bool m_OpenXrLoaderAvailable = false;
-	bool m_OpenXrSessionProbeEnabled = false;
-	bool m_OpenXrSessionProbeSucceeded = false;
 	bool m_OpenXrHelperBridgeActive = false;
 	L4D2VROpenXrPoseDesc m_OpenXrLastHmdPose = {};
 	uint32_t m_OpenXrLastHmdPoseGeneration = 0;
 	bool m_RuntimeBackendRestartWarningLogged = false;
-	std::unique_ptr<OpenXrBackend> m_OpenXrBackend;
 
 	vr::IVRSystem* m_System = nullptr;
 	vr::IVRInput* m_Input = nullptr;

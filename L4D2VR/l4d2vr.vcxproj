@@ -458,7 +458,6 @@
     <ClInclude Include="sdk\trace.h" />
     <ClInclude Include="sdk\vector.h" />
     <ClInclude Include="sigscanner.h" />
-    <ClInclude Include="openxr_backend.h" />
     <ClInclude Include="openxr_bridge_protocol.h" />
     <ClInclude Include="openxr_helper_bridge.h" />
     <ClInclude Include="openxr_loader_util.h" />
@@ -651,7 +650,6 @@
     <ClCompile Include="game.cpp" />
     <ClCompile Include="hooks.cpp" />
     <ClCompile Include="sdk\checksum_crc.cpp" />
-    <ClCompile Include="openxr_backend.cpp" />
     <ClCompile Include="openxr_helper_bridge.cpp" />
     <ClCompile Include="openxr_loader_util.cpp" />
     <ClCompile Include="vr.cpp" />
