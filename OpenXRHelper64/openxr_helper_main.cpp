@@ -41,6 +41,10 @@ namespace
 
     constexpr uint32_t kDefaultTargetFrames = 180;
     constexpr uint32_t kDefaultWaitReadySeconds = 45;
+    constexpr uint32_t kBlitDescriptorSetCount = L4D2VR_OPENXR_EYE_COUNT + L4D2VR_OPENXR_OVERLAY_COUNT;
+    constexpr uint32_t kMaxOpenXrHudCurveSegments = 12;
+    constexpr uint32_t kMaxOpenXrOverlayLayers = L4D2VR_OPENXR_OVERLAY_COUNT + kMaxOpenXrHudCurveSegments - 1;
+    constexpr float kPi = 3.141592654f;
 
     struct Options
     {
@@ -707,6 +711,43 @@ namespace
             return m_State->eyeTextures[eyeIndex];
         }
 
+        uint32_t OverlayGeneration() const
+        {
+            return m_State ? m_State->overlayGeneration : 0;
+        }
+
+        L4D2VROpenXrOverlayDesc Overlay(uint32_t overlayIndex) const
+        {
+            if (!m_State || overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT)
+                return {};
+            return m_State->overlays[overlayIndex];
+        }
+
+        bool ReadOverlayFrame(uint32_t& frameId, uint32_t* generation = nullptr) const
+        {
+            if (!m_State)
+                return false;
+
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint32_t gen0 = m_State->overlayFrameGeneration;
+                if (gen0 == 0 || (gen0 & 1u))
+                    continue;
+
+                const uint32_t snapshotFrameId = m_State->overlayFrameId;
+                const uint32_t gen1 = m_State->overlayFrameGeneration;
+                if (gen0 == gen1 && !(gen1 & 1u) && snapshotFrameId != 0)
+                {
+                    frameId = snapshotFrameId;
+                    if (generation)
+                        *generation = gen1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         bool ReadSharedTextureFrame(uint32_t& frameId, uint32_t* generation = nullptr) const
         {
             if (!m_State)
@@ -850,6 +891,12 @@ namespace
         return std::atan2(
             2.0f * (w * y + x * z),
             1.0f - 2.0f * (y * y + z * z));
+    }
+
+    XrQuaternionf MakeOpenXrYawQuaternion(float yaw)
+    {
+        const float half = yaw * 0.5f;
+        return XrQuaternionf{ 0.0f, std::sin(half), 0.0f, std::cos(half) };
     }
 
     XrQuaternionf NormalizeOpenXrQuaternion(const float orientation[4])
@@ -1779,6 +1826,8 @@ namespace
 
         void DestroyImportedGameEye(VulkanGameEyeTexture& eye)
         {
+            if (eye.view != VK_NULL_HANDLE && m_Vk.vkDestroyImageView)
+                m_Vk.vkDestroyImageView(m_VkDevice, eye.view, nullptr);
             if (eye.image != VK_NULL_HANDLE && m_Vk.vkDestroyImage)
                 m_Vk.vkDestroyImage(m_VkDevice, eye.image, nullptr);
             if (eye.memory != VK_NULL_HANDLE && m_Vk.vkFreeMemory)
@@ -3989,10 +4038,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
             VkDescriptorPoolSize poolSize{};
             poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            poolSize.descriptorCount = L4D2VR_OPENXR_EYE_COUNT;
+            poolSize.descriptorCount = kBlitDescriptorSetCount;
 
             VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-            poolInfo.maxSets = L4D2VR_OPENXR_EYE_COUNT;
+            poolInfo.maxSets = kBlitDescriptorSetCount;
             poolInfo.poolSizeCount = 1;
             poolInfo.pPoolSizes = &poolSize;
 
@@ -4003,7 +4052,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 return false;
             }
 
-            std::array<VkDescriptorSetLayout, L4D2VR_OPENXR_EYE_COUNT> descriptorLayouts{};
+            std::array<VkDescriptorSetLayout, kBlitDescriptorSetCount> descriptorLayouts{};
             descriptorLayouts.fill(m_BlitDescriptorSetLayout);
             VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             allocInfo.descriptorPool = m_BlitDescriptorPool;
@@ -4249,6 +4298,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             }
 
             m_Log.Print("Selected swapchain VkFormat=%u", static_cast<unsigned int>(selectedFormat));
+            m_SelectedSwapchainFormat = selectedFormat;
             m_UseShaderBlit = IsSrgbVkFormat(selectedFormat);
             if (m_UseShaderBlit && !CreateShaderBlitPipeline(selectedFormat))
                 return false;
@@ -4373,6 +4423,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
         void DestroyImportedGameEye(VulkanGameEyeTexture& eye)
         {
+            if (eye.view != VK_NULL_HANDLE && m_Vk.vkDestroyImageView)
+                m_Vk.vkDestroyImageView(m_VkDevice, eye.view, nullptr);
             if (eye.image != VK_NULL_HANDLE && m_Vk.vkDestroyImage)
                 m_Vk.vkDestroyImage(m_VkDevice, eye.image, nullptr);
             if (eye.memory != VK_NULL_HANDLE && m_Vk.vkFreeMemory)
@@ -4620,30 +4672,50 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             return true;
         }
 
-        bool UpdateBlitDescriptorSet(uint32_t eyeIndex)
+        uint32_t OverlayBlitDescriptorIndex(uint32_t overlayIndex) const
+        {
+            return L4D2VR_OPENXR_EYE_COUNT + overlayIndex;
+        }
+
+        bool UpdateBlitDescriptorSet(VkDescriptorSet descriptorSet, const VulkanGameEyeTexture& texture)
         {
             if (!m_UseShaderBlit)
                 return true;
-            if (eyeIndex >= L4D2VR_OPENXR_EYE_COUNT)
-                return false;
-
-            const VulkanGameEyeTexture& eye = m_GameEyes[eyeIndex];
-            if (eye.view == VK_NULL_HANDLE || m_BlitDescriptorSets[eyeIndex] == VK_NULL_HANDLE)
+            if (texture.view == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE)
                 return false;
 
             VkDescriptorImageInfo imageInfo{};
             imageInfo.sampler = m_BlitSampler;
-            imageInfo.imageView = eye.view;
-            imageInfo.imageLayout = eye.layout;
+            imageInfo.imageView = texture.view;
+            imageInfo.imageLayout = texture.layout;
 
             VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            write.dstSet = m_BlitDescriptorSets[eyeIndex];
+            write.dstSet = descriptorSet;
             write.dstBinding = 0;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &imageInfo;
             m_Vk.vkUpdateDescriptorSets(m_VkDevice, 1, &write, 0, nullptr);
             return true;
+        }
+
+        bool UpdateBlitDescriptorSet(uint32_t eyeIndex)
+        {
+            if (!m_UseShaderBlit)
+                return true;
+            if (eyeIndex >= L4D2VR_OPENXR_EYE_COUNT)
+                return false;
+            return UpdateBlitDescriptorSet(m_BlitDescriptorSets[eyeIndex], m_GameEyes[eyeIndex]);
+        }
+
+        bool UpdateOverlayBlitDescriptorSet(uint32_t overlayIndex)
+        {
+            if (!m_UseShaderBlit)
+                return true;
+            const uint32_t descriptorIndex = OverlayBlitDescriptorIndex(overlayIndex);
+            if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT || descriptorIndex >= m_BlitDescriptorSets.size())
+                return false;
+            return UpdateBlitDescriptorSet(m_BlitDescriptorSets[descriptorIndex], m_OverlayTextures[overlayIndex]);
         }
 
         bool ImportSharedGameTexturesIfNeeded()
@@ -4657,6 +4729,429 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     return false;
             }
             return true;
+        }
+
+        bool ImportOverlayTexture(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay, uint32_t generation)
+        {
+            if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT)
+                return false;
+
+            const L4D2VROpenXrSharedTextureDesc& desc = overlay.texture;
+            VulkanGameEyeTexture& texture = m_OverlayTextures[overlayIndex];
+            if (texture.image != VK_NULL_HANDLE &&
+                texture.kmtHandle == desc.kmtHandle &&
+                texture.width == desc.width &&
+                texture.height == desc.height &&
+                texture.format == static_cast<VkFormat>(desc.format))
+            {
+                texture.generation = generation;
+                texture.uMin = std::clamp(desc.uMin, 0.0f, 1.0f);
+                texture.vMin = std::clamp(desc.vMin, 0.0f, 1.0f);
+                texture.uMax = std::clamp(desc.uMax, 0.0f, 1.0f);
+                texture.vMax = std::clamp(desc.vMax, 0.0f, 1.0f);
+                if (texture.uMax <= texture.uMin)
+                {
+                    texture.uMin = 0.0f;
+                    texture.uMax = 1.0f;
+                }
+                if (texture.vMax <= texture.vMin)
+                {
+                    texture.vMin = 0.0f;
+                    texture.vMax = 1.0f;
+                }
+                return true;
+            }
+
+            DestroyImportedGameEye(texture);
+            if (!overlay.valid || !overlay.visible || !desc.valid || desc.kmtHandle == 0 || desc.width == 0 || desc.height == 0)
+                return false;
+
+            const VkExternalMemoryHandleTypeFlagBits handleType = desc.handleType != 0
+                ? static_cast<VkExternalMemoryHandleTypeFlagBits>(desc.handleType)
+                : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
+            const VkFormat format = static_cast<VkFormat>(desc.format);
+            const HANDLE handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(desc.kmtHandle));
+
+            std::array<VkFormat, 2> viewFormats = {};
+            const uint32_t viewFormatCount = BuildMutableViewFormats(format, viewFormats);
+
+            VkImageFormatListCreateInfo formatList{ VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
+            formatList.viewFormatCount = viewFormatCount;
+            formatList.pViewFormats = viewFormats.data();
+
+            VkExternalMemoryImageCreateInfo externalInfo{ VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
+            externalInfo.pNext = viewFormatCount > 1 ? &formatList : nullptr;
+            externalInfo.handleTypes = handleType;
+
+            VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            imageInfo.pNext = &externalInfo;
+            imageInfo.flags = viewFormatCount > 1 ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.format = format;
+            imageInfo.extent = { desc.width, desc.height, 1 };
+            imageInfo.mipLevels = 1;
+            imageInfo.arrayLayers = 1;
+            imageInfo.samples = SampleCountFromDesc(desc.sampleCount);
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+            VkImage importedImage = VK_NULL_HANDLE;
+            VkResult vkResult = m_Vk.vkCreateImage(m_VkDevice, &imageInfo, nullptr, &importedImage);
+            if (vkResult != VK_SUCCESS && imageInfo.flags != 0)
+            {
+                imageInfo.flags = 0;
+                externalInfo.pNext = nullptr;
+                vkResult = m_Vk.vkCreateImage(m_VkDevice, &imageInfo, nullptr, &importedImage);
+            }
+            if (vkResult != VK_SUCCESS || importedImage == VK_NULL_HANDLE)
+            {
+                m_Log.Print("vkCreateImage import overlay=%u handle=0x%llX format=%u size=%ux%u failed: %s (%d)",
+                    overlayIndex, static_cast<unsigned long long>(desc.kmtHandle), desc.format, desc.width, desc.height,
+                    VkResultName(vkResult), static_cast<int>(vkResult));
+                return false;
+            }
+
+            VkMemoryRequirements memoryRequirements{};
+            m_Vk.vkGetImageMemoryRequirements(m_VkDevice, importedImage, &memoryRequirements);
+
+            uint32_t memoryTypeIndex = 0;
+            uint32_t typeBits = memoryRequirements.memoryTypeBits;
+            if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT)
+            {
+                VkMemoryWin32HandlePropertiesKHR handleProperties{ VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR };
+                vkResult = m_Vk.vkGetMemoryWin32HandlePropertiesKHR(m_VkDevice, handleType, handle, &handleProperties);
+                if (vkResult != VK_SUCCESS)
+                {
+                    m_Log.Print("vkGetMemoryWin32HandlePropertiesKHR overlay=%u handle=0x%llX type=0x%X failed: %s (%d)",
+                        overlayIndex, static_cast<unsigned long long>(desc.kmtHandle), desc.handleType,
+                        VkResultName(vkResult), static_cast<int>(vkResult));
+                    m_Vk.vkDestroyImage(m_VkDevice, importedImage, nullptr);
+                    return false;
+                }
+                typeBits &= handleProperties.memoryTypeBits;
+            }
+
+            if (!FindMemoryType(typeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryTypeIndex))
+            {
+                m_Log.Print("No compatible memory type for imported overlay=%u typeBits=0x%X imageMemBits=0x%X",
+                    overlayIndex, typeBits, memoryRequirements.memoryTypeBits);
+                m_Vk.vkDestroyImage(m_VkDevice, importedImage, nullptr);
+                return false;
+            }
+
+            VkImportMemoryWin32HandleInfoKHR importInfo{ VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
+            importInfo.handleType = handleType;
+            importInfo.handle = handle;
+            VkMemoryDedicatedAllocateInfo dedicatedInfo{ VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
+            dedicatedInfo.pNext = &importInfo;
+            dedicatedInfo.image = importedImage;
+            VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            allocInfo.pNext = &dedicatedInfo;
+            allocInfo.allocationSize = memoryRequirements.size;
+            allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+            VkDeviceMemory importedMemory = VK_NULL_HANDLE;
+            vkResult = m_Vk.vkAllocateMemory(m_VkDevice, &allocInfo, nullptr, &importedMemory);
+            if (vkResult != VK_SUCCESS || importedMemory == VK_NULL_HANDLE)
+            {
+                m_Log.Print("vkAllocateMemory import overlay=%u handle=0x%llX size=%llu type=%u failed: %s (%d)",
+                    overlayIndex, static_cast<unsigned long long>(desc.kmtHandle),
+                    static_cast<unsigned long long>(memoryRequirements.size), memoryTypeIndex,
+                    VkResultName(vkResult), static_cast<int>(vkResult));
+                m_Vk.vkDestroyImage(m_VkDevice, importedImage, nullptr);
+                return false;
+            }
+
+            vkResult = m_Vk.vkBindImageMemory(m_VkDevice, importedImage, importedMemory, 0);
+            if (vkResult != VK_SUCCESS)
+            {
+                m_Log.Print("vkBindImageMemory import overlay=%u handle=0x%llX failed: %s (%d)",
+                    overlayIndex, static_cast<unsigned long long>(desc.kmtHandle), VkResultName(vkResult), static_cast<int>(vkResult));
+                m_Vk.vkFreeMemory(m_VkDevice, importedMemory, nullptr);
+                m_Vk.vkDestroyImage(m_VkDevice, importedImage, nullptr);
+                return false;
+            }
+
+            VkImageView importedView = VK_NULL_HANDLE;
+            VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            viewInfo.image = importedImage;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = format;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.layerCount = 1;
+            vkResult = m_Vk.vkCreateImageView(m_VkDevice, &viewInfo, nullptr, &importedView);
+            if (vkResult != VK_SUCCESS || importedView == VK_NULL_HANDLE)
+            {
+                m_Log.Print("vkCreateImageView import overlay=%u failed: %s (%d)",
+                    overlayIndex, VkResultName(vkResult), static_cast<int>(vkResult));
+                m_Vk.vkFreeMemory(m_VkDevice, importedMemory, nullptr);
+                m_Vk.vkDestroyImage(m_VkDevice, importedImage, nullptr);
+                return false;
+            }
+
+            texture.generation = generation;
+            texture.kmtHandle = desc.kmtHandle;
+            texture.width = desc.width;
+            texture.height = desc.height;
+            texture.format = format;
+            texture.image = importedImage;
+            texture.view = importedView;
+            texture.memory = importedMemory;
+            texture.layout = VK_IMAGE_LAYOUT_GENERAL;
+            texture.uMin = std::clamp(desc.uMin, 0.0f, 1.0f);
+            texture.vMin = std::clamp(desc.vMin, 0.0f, 1.0f);
+            texture.uMax = std::clamp(desc.uMax, 0.0f, 1.0f);
+            texture.vMax = std::clamp(desc.vMax, 0.0f, 1.0f);
+            if (texture.uMax <= texture.uMin)
+            {
+                texture.uMin = 0.0f;
+                texture.uMax = 1.0f;
+            }
+            if (texture.vMax <= texture.vMin)
+            {
+                texture.vMin = 0.0f;
+                texture.vMax = 1.0f;
+            }
+
+            return true;
+        }
+
+        void DestroyOverlaySwapchain(VulkanEyeSwapchain& swapchain)
+        {
+            DestroySwapchainRenderTargets(swapchain);
+            if (swapchain.handle != XR_NULL_HANDLE && m_Xr.xrDestroySwapchain)
+                m_Xr.xrDestroySwapchain(swapchain.handle);
+            swapchain = VulkanEyeSwapchain{};
+        }
+
+        bool EnsureOverlaySwapchain(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay)
+        {
+            if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT)
+                return false;
+            if (!overlay.valid || !overlay.visible || !overlay.texture.valid)
+                return false;
+
+            VulkanEyeSwapchain& swapchain = m_OverlaySwapchains[overlayIndex];
+            const uint32_t width = std::clamp(overlay.texture.width, 64u, 4096u);
+            const uint32_t height = std::clamp(overlay.texture.height, 64u, 4096u);
+            const VkFormat format = m_SelectedSwapchainFormat != VK_FORMAT_UNDEFINED
+                ? m_SelectedSwapchainFormat
+                : (!m_Eyes.empty() ? m_Eyes[0].format : VK_FORMAT_B8G8R8A8_UNORM);
+
+            if (swapchain.handle != XR_NULL_HANDLE &&
+                swapchain.width == width &&
+                swapchain.height == height &&
+                swapchain.format == format)
+            {
+                return true;
+            }
+
+            DestroyOverlaySwapchain(swapchain);
+
+            swapchain.width = width;
+            swapchain.height = height;
+            swapchain.format = format;
+
+            XrSwapchainCreateInfo createInfo{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+            createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+            createInfo.format = static_cast<int64_t>(format);
+            createInfo.sampleCount = 1;
+            createInfo.width = swapchain.width;
+            createInfo.height = swapchain.height;
+            createInfo.faceCount = 1;
+            createInfo.arraySize = 1;
+            createInfo.mipCount = 1;
+
+            XrResult xrResult = m_Xr.xrCreateSwapchain(m_Session, &createInfo, &swapchain.handle);
+            if (!Succeeded(m_Log, "xrCreateSwapchain(Vulkan overlay)", xrResult) || swapchain.handle == XR_NULL_HANDLE)
+                return false;
+
+            uint32_t imageCount = 0;
+            xrResult = m_Xr.xrEnumerateSwapchainImages(swapchain.handle, 0, &imageCount, nullptr);
+            if (!Succeeded(m_Log, "xrEnumerateSwapchainImages(overlay count)", xrResult) || imageCount == 0)
+                return false;
+
+            swapchain.images.assign(imageCount, XrSwapchainImageVulkanKHR{ XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR });
+            xrResult = m_Xr.xrEnumerateSwapchainImages(
+                swapchain.handle,
+                imageCount,
+                &imageCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchain.images.data()));
+            if (!Succeeded(m_Log, "xrEnumerateSwapchainImages(overlay data)", xrResult) || imageCount == 0)
+                return false;
+
+            swapchain.images.resize(imageCount);
+            swapchain.layouts.assign(imageCount, VK_IMAGE_LAYOUT_UNDEFINED);
+            if (!CreateSwapchainRenderTargets(swapchain))
+                return false;
+
+            return true;
+        }
+
+        bool RenderOverlaySwapchain(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay)
+        {
+            if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT)
+                return false;
+            if (!ImportOverlayTexture(overlayIndex, overlay, m_Bridge.OverlayGeneration()))
+                return false;
+            if (!EnsureOverlaySwapchain(overlayIndex, overlay))
+                return false;
+
+            VulkanEyeSwapchain& swapchain = m_OverlaySwapchains[overlayIndex];
+            VulkanGameEyeTexture& source = m_OverlayTextures[overlayIndex];
+            if (m_UseShaderBlit && !UpdateOverlayBlitDescriptorSet(overlayIndex))
+                return false;
+
+            XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+            uint32_t imageIndex = 0;
+            XrResult xrResult = m_Xr.xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex);
+            if (!Succeeded(m_Log, "xrAcquireSwapchainImage(overlay)", xrResult))
+                return false;
+
+            XrSwapchainImageWaitInfo waitInfo{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+            waitInfo.timeout = XR_INFINITE_DURATION;
+            xrResult = m_Xr.xrWaitSwapchainImage(swapchain.handle, &waitInfo);
+            if (!Succeeded(m_Log, "xrWaitSwapchainImage(overlay)", xrResult))
+                return false;
+
+            const VkImage dstImage = swapchain.images[imageIndex].image;
+            VkResult vkResult = m_Vk.vkResetCommandBuffer(m_CommandBuffer, 0);
+            if (vkResult != VK_SUCCESS)
+                return false;
+
+            VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkResult = m_Vk.vkBeginCommandBuffer(m_CommandBuffer, &beginInfo);
+            if (vkResult != VK_SUCCESS)
+                return false;
+
+            if (m_UseShaderBlit)
+            {
+                CmdTransitionImage(dstImage, swapchain.layouts[imageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                if (!CmdRenderOverlayShaderBlit(overlayIndex, swapchain, imageIndex, source))
+                    return false;
+                swapchain.layouts[imageIndex] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+            else
+            {
+                CmdTransitionImage(dstImage, swapchain.layouts[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+                const int32_t srcX0 = static_cast<int32_t>(std::floor(source.uMin * static_cast<float>(source.width)));
+                const int32_t srcY0 = static_cast<int32_t>(std::floor(source.vMin * static_cast<float>(source.height)));
+                const int32_t srcX1 = static_cast<int32_t>(std::ceil(source.uMax * static_cast<float>(source.width)));
+                const int32_t srcY1 = static_cast<int32_t>(std::ceil(source.vMax * static_cast<float>(source.height)));
+                const int32_t srcMinX = std::clamp(srcX0, 0, static_cast<int32_t>(source.width) - 1);
+                const int32_t srcMinY = std::clamp(srcY0, 0, static_cast<int32_t>(source.height) - 1);
+                const int32_t srcMaxX = std::clamp(srcX1, srcMinX + 1, static_cast<int32_t>(source.width));
+                const int32_t srcMaxY = std::clamp(srcY1, srcMinY + 1, static_cast<int32_t>(source.height));
+
+                VkImageBlit blit{};
+                blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.srcSubresource.layerCount = 1;
+                blit.srcOffsets[0] = { srcMinX, srcMinY, 0 };
+                blit.srcOffsets[1] = { srcMaxX, srcMaxY, 1 };
+                blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.dstSubresource.layerCount = 1;
+                blit.dstOffsets[1] = { static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1 };
+                m_Vk.vkCmdBlitImage(m_CommandBuffer, source.image, source.layout,
+                    dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+                CmdTransitionImage(dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                swapchain.layouts[imageIndex] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+
+            vkResult = m_Vk.vkEndCommandBuffer(m_CommandBuffer);
+            if (vkResult != VK_SUCCESS)
+                return false;
+
+            VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &m_CommandBuffer;
+            vkResult = m_Vk.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+            if (vkResult != VK_SUCCESS)
+                return false;
+            vkResult = m_Vk.vkQueueWaitIdle(m_GraphicsQueue);
+            if (vkResult != VK_SUCCESS)
+                return false;
+
+            XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+            xrResult = m_Xr.xrReleaseSwapchainImage(swapchain.handle, &releaseInfo);
+            return Succeeded(m_Log, "xrReleaseSwapchainImage(overlay)", xrResult);
+        }
+
+        struct OverlayAnchor
+        {
+            float yaw = 0.0f;
+            XrQuaternionf yawOrientation{ 0.0f, 0.0f, 0.0f, 1.0f };
+            XrVector3f center{ 0.0f, 0.0f, -3.0f };
+            XrVector3f forward{ 0.0f, 0.0f, -1.0f };
+            XrVector3f right{ 1.0f, 0.0f, 0.0f };
+            XrVector3f up{ 0.0f, 1.0f, 0.0f };
+        };
+
+        OverlayAnchor BuildOverlayAnchor(const L4D2VROpenXrOverlayDesc& overlay, const std::vector<XrView>& locatedViews, uint32_t locatedCount)
+        {
+            OverlayAnchor anchor{};
+            if (locatedViews.empty())
+                return anchor;
+
+            XrVector3f hmdPosition = locatedViews[0].pose.position;
+            if (locatedCount >= 2 && locatedViews.size() >= 2)
+            {
+                hmdPosition.x = (locatedViews[0].pose.position.x + locatedViews[1].pose.position.x) * 0.5f;
+                hmdPosition.y = (locatedViews[0].pose.position.y + locatedViews[1].pose.position.y) * 0.5f;
+                hmdPosition.z = (locatedViews[0].pose.position.z + locatedViews[1].pose.position.z) * 0.5f;
+            }
+
+            anchor.yaw = ExtractOpenXrYaw(locatedViews[0].pose.orientation);
+            anchor.yawOrientation = MakeOpenXrYawQuaternion(anchor.yaw);
+            anchor.forward = RotateOpenXrVector(anchor.yawOrientation, XrVector3f{ 0.0f, 0.0f, -1.0f });
+            anchor.right = RotateOpenXrVector(anchor.yawOrientation, XrVector3f{ 1.0f, 0.0f, 0.0f });
+            anchor.up = XrVector3f{ 0.0f, 1.0f, 0.0f };
+            const float distance = (std::isfinite(overlay.distanceMeters) && overlay.distanceMeters > 0.1f && overlay.distanceMeters < 10.0f)
+                ? overlay.distanceMeters
+                : 3.0f;
+
+            anchor.center.x = hmdPosition.x + anchor.forward.x * distance + anchor.right.x * overlay.offsetMeters[0] + anchor.up.x * overlay.offsetMeters[1] + anchor.forward.x * overlay.offsetMeters[2];
+            anchor.center.y = hmdPosition.y + anchor.forward.y * distance + anchor.right.y * overlay.offsetMeters[0] + anchor.up.y * overlay.offsetMeters[1] + anchor.forward.y * overlay.offsetMeters[2];
+            anchor.center.z = hmdPosition.z + anchor.forward.z * distance + anchor.right.z * overlay.offsetMeters[0] + anchor.up.z * overlay.offsetMeters[1] + anchor.forward.z * overlay.offsetMeters[2];
+            return anchor;
+        }
+
+        XrPosef BuildOverlayPose(const L4D2VROpenXrOverlayDesc& overlay, const std::vector<XrView>& locatedViews, uint32_t locatedCount)
+        {
+            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount);
+            XrPosef pose{ anchor.yawOrientation, anchor.center };
+            return pose;
+        }
+
+        XrPosef BuildCurvedOverlaySlicePose(
+            const L4D2VROpenXrOverlayDesc& overlay,
+            const std::vector<XrView>& locatedViews,
+            uint32_t locatedCount,
+            float sliceAngle,
+            float radiusMeters)
+        {
+            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount);
+            const float sideOffset = radiusMeters * std::sin(sliceAngle);
+            const float viewerOffset = radiusMeters * (1.0f - std::cos(sliceAngle));
+
+            XrPosef pose{};
+            pose.orientation = MakeOpenXrYawQuaternion(anchor.yaw - sliceAngle);
+            pose.position.x = anchor.center.x + anchor.right.x * sideOffset - anchor.forward.x * viewerOffset;
+            pose.position.y = anchor.center.y + anchor.right.y * sideOffset - anchor.forward.y * viewerOffset;
+            pose.position.z = anchor.center.z + anchor.right.z * sideOffset - anchor.forward.z * viewerOffset;
+            return pose;
         }
 
         void CmdTransitionImage(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
@@ -4677,35 +5172,34 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             m_Vk.vkCmdPipelineBarrier(m_CommandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
 
-        bool CmdRenderShaderBlit(uint32_t eyeIndex, VulkanEyeSwapchain& eye, uint32_t imageIndex, const VulkanGameEyeTexture& source)
+        bool CmdRenderShaderBlitWithDescriptor(VulkanEyeSwapchain& target, uint32_t imageIndex, const VulkanGameEyeTexture& source, VkDescriptorSet descriptorSet)
         {
             if (!m_UseShaderBlit ||
-                eyeIndex >= L4D2VR_OPENXR_EYE_COUNT ||
-                imageIndex >= eye.framebuffers.size() ||
+                imageIndex >= target.framebuffers.size() ||
                 source.view == VK_NULL_HANDLE ||
                 m_BlitPipeline == VK_NULL_HANDLE ||
                 m_BlitPipelineLayout == VK_NULL_HANDLE ||
-                m_BlitDescriptorSets[eyeIndex] == VK_NULL_HANDLE)
+                descriptorSet == VK_NULL_HANDLE)
             {
                 return false;
             }
 
             VkRenderPassBeginInfo beginInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
             beginInfo.renderPass = m_BlitRenderPass;
-            beginInfo.framebuffer = eye.framebuffers[imageIndex];
-            beginInfo.renderArea.extent = { eye.width, eye.height };
+            beginInfo.framebuffer = target.framebuffers[imageIndex];
+            beginInfo.renderArea.extent = { target.width, target.height };
 
             m_Vk.vkCmdBeginRenderPass(m_CommandBuffer, &beginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
             VkViewport viewport{};
-            viewport.width = static_cast<float>(eye.width);
-            viewport.height = static_cast<float>(eye.height);
+            viewport.width = static_cast<float>(target.width);
+            viewport.height = static_cast<float>(target.height);
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
             m_Vk.vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
 
             VkRect2D scissor{};
-            scissor.extent = { eye.width, eye.height };
+            scissor.extent = { target.width, target.height };
             m_Vk.vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
 
             m_Vk.vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_BlitPipeline);
@@ -4715,7 +5209,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 m_BlitPipelineLayout,
                 0,
                 1,
-                &m_BlitDescriptorSets[eyeIndex],
+                &descriptorSet,
                 0,
                 nullptr);
 
@@ -4733,6 +5227,21 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             m_Vk.vkCmdDraw(m_CommandBuffer, 3, 1, 0, 0);
             m_Vk.vkCmdEndRenderPass(m_CommandBuffer);
             return true;
+        }
+
+        bool CmdRenderShaderBlit(uint32_t eyeIndex, VulkanEyeSwapchain& eye, uint32_t imageIndex, const VulkanGameEyeTexture& source)
+        {
+            if (eyeIndex >= L4D2VR_OPENXR_EYE_COUNT)
+                return false;
+            return CmdRenderShaderBlitWithDescriptor(eye, imageIndex, source, m_BlitDescriptorSets[eyeIndex]);
+        }
+
+        bool CmdRenderOverlayShaderBlit(uint32_t overlayIndex, VulkanEyeSwapchain& swapchain, uint32_t imageIndex, const VulkanGameEyeTexture& source)
+        {
+            const uint32_t descriptorIndex = OverlayBlitDescriptorIndex(overlayIndex);
+            if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT || descriptorIndex >= m_BlitDescriptorSets.size())
+                return false;
+            return CmdRenderShaderBlitWithDescriptor(swapchain, imageIndex, source, m_BlitDescriptorSets[descriptorIndex]);
         }
 
         bool RenderEye(uint32_t eyeIndex, uint32_t frameIndex)
@@ -4902,6 +5411,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             const bool requireSharedTextures = m_Bridge.HasState();
             uint32_t lastLoggedSharedTextureGeneration = 0;
             uint32_t lastSubmittedSharedTextureFrameGeneration = 0;
+            uint32_t lastSubmittedOverlayFrameGeneration = 0;
             ULONGLONG lastWaitingTextureLog = 0;
             ULONGLONG lastWaitingFrameLog = 0;
             m_Log.Print("Entering Vulkan frame loop targetFrames=%u waitReadySeconds=%u parentPid=%lu requireSharedTextures=%u",
@@ -4957,6 +5467,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 const bool sharedTextureFrameReady =
                     !requireSharedTextures ||
                     m_Bridge.ReadSharedTextureFrame(sharedTextureFrameId, &sharedTextureFrameGeneration);
+                uint32_t overlayFrameId = 0;
+                uint32_t overlayFrameGeneration = 0;
+                const bool overlayFrameReady =
+                    m_Bridge.ReadOverlayFrame(overlayFrameId, &overlayFrameGeneration);
                 if (requireSharedTextures && sharedTexturesReady && !sharedTextureFrameReady)
                 {
                     const ULONGLONG now = GetTickCount64();
@@ -4978,7 +5492,11 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     return 23;
 
                 bool layerReady = false;
+                uint32_t overlayLayerCount = 0;
                 std::array<XrCompositionLayerProjectionView, 2> projectionViews{};
+                std::array<XrCompositionLayerQuad, kMaxOpenXrOverlayLayers> overlayLayers{};
+                for (XrCompositionLayerQuad& overlayLayer : overlayLayers)
+                    overlayLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
                 std::vector<XrView> locatedViews(m_ViewConfigs.size(), XrView{ XR_TYPE_VIEW });
                 if (frameState.shouldRender)
                 {
@@ -5093,6 +5611,117 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                             if (requireSharedTextures)
                                 lastSubmittedSharedTextureFrameGeneration = sharedTextureFrameGeneration;
                         }
+
+                        bool blittedAnyOverlayFrame = false;
+                        for (uint32_t overlayIndex = 0; overlayIndex < L4D2VR_OPENXR_OVERLAY_COUNT; ++overlayIndex)
+                        {
+                            const L4D2VROpenXrOverlayDesc overlay = m_Bridge.Overlay(overlayIndex);
+                            if (!overlay.valid || !overlay.visible || !overlay.texture.valid)
+                                continue;
+
+                            VulkanEyeSwapchain& overlaySwapchain = m_OverlaySwapchains[overlayIndex];
+                            const uint32_t overlayGeneration = m_Bridge.OverlayGeneration();
+                            const bool overlayNeedsBlit =
+                                overlayFrameReady &&
+                                (overlayFrameGeneration != lastSubmittedOverlayFrameGeneration ||
+                                    m_OverlayTextures[overlayIndex].generation != overlayGeneration ||
+                                    overlaySwapchain.handle == XR_NULL_HANDLE);
+
+                            bool overlayReadyForSubmit = overlaySwapchain.handle != XR_NULL_HANDLE;
+                            if (overlayNeedsBlit)
+                            {
+                                overlayReadyForSubmit = RenderOverlaySwapchain(overlayIndex, overlay);
+                                if (overlayReadyForSubmit)
+                                    blittedAnyOverlayFrame = true;
+                            }
+
+                            if (overlayReadyForSubmit && overlaySwapchain.handle != XR_NULL_HANDLE)
+                            {
+                                const float widthMeters = (std::isfinite(overlay.widthMeters) && overlay.widthMeters > 0.05f)
+                                    ? overlay.widthMeters
+                                    : 1.5f;
+                                const float heightMeters = (std::isfinite(overlay.heightMeters) && overlay.heightMeters > 0.05f)
+                                    ? overlay.heightMeters
+                                    : widthMeters * (static_cast<float>((std::max)(1u, overlay.texture.height)) /
+                                        static_cast<float>((std::max)(1u, overlay.texture.width)));
+
+                                const float curvature = std::clamp(overlay.curvature, 0.0f, 1.0f);
+                                const bool curvedHud =
+                                    overlayIndex == L4D2VR_OPENXR_OVERLAY_HUD &&
+                                    curvature > 0.001f &&
+                                    overlaySwapchain.width >= kMaxOpenXrHudCurveSegments;
+                                const uint32_t segmentCount = curvedHud
+                                    ? std::clamp(static_cast<uint32_t>(std::ceil(4.0f + curvature * 8.0f)), 4u, kMaxOpenXrHudCurveSegments)
+                                    : 1u;
+                                const float totalArc = curvedHud
+                                    ? std::clamp(curvature * (0.75f * kPi), 0.01f, 0.85f * kPi)
+                                    : 0.0f;
+                                const float radiusMeters = curvedHud ? (widthMeters / totalArc) : 0.0f;
+
+                                const auto appendOverlayLayer = [&](uint32_t segmentIndex)
+                                {
+                                    if (overlayLayerCount >= overlayLayers.size())
+                                        return false;
+
+                                    const float segmentU0 = static_cast<float>(segmentIndex) / static_cast<float>(segmentCount);
+                                    const float segmentU1 = static_cast<float>(segmentIndex + 1u) / static_cast<float>(segmentCount);
+                                    const uint32_t srcX0 = curvedHud
+                                        ? static_cast<uint32_t>(std::floor(segmentU0 * static_cast<float>(overlaySwapchain.width)))
+                                        : 0u;
+                                    const uint32_t srcX1 = curvedHud
+                                        ? static_cast<uint32_t>(std::floor(segmentU1 * static_cast<float>(overlaySwapchain.width)))
+                                        : overlaySwapchain.width;
+                                    const uint32_t clampedSrcX0 = std::min(srcX0, overlaySwapchain.width - 1u);
+                                    const uint32_t clampedSrcX1 = std::clamp(srcX1, clampedSrcX0 + 1u, overlaySwapchain.width);
+
+                                    XrCompositionLayerQuad& overlayLayer = overlayLayers[overlayLayerCount++];
+                                    overlayLayer.layerFlags =
+                                        (overlayIndex == L4D2VR_OPENXR_OVERLAY_HUD)
+                                            ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT
+                                            : 0;
+                                    overlayLayer.space = m_AppSpace;
+                                    overlayLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                                    overlayLayer.subImage.swapchain = overlaySwapchain.handle;
+                                    overlayLayer.subImage.imageRect.offset = {
+                                        static_cast<int32_t>(clampedSrcX0),
+                                        0
+                                    };
+                                    overlayLayer.subImage.imageRect.extent = {
+                                        static_cast<int32_t>(clampedSrcX1 - clampedSrcX0),
+                                        static_cast<int32_t>(overlaySwapchain.height)
+                                    };
+
+                                    if (curvedHud)
+                                    {
+                                        const float theta0 = -totalArc * 0.5f + totalArc * segmentU0;
+                                        const float theta1 = -totalArc * 0.5f + totalArc * segmentU1;
+                                        const float thetaCenter = (theta0 + theta1) * 0.5f;
+                                        overlayLayer.pose = BuildCurvedOverlaySlicePose(
+                                            overlay,
+                                            locatedViews,
+                                            locatedCount,
+                                            thetaCenter,
+                                            radiusMeters);
+                                        overlayLayer.size = XrExtent2Df{
+                                            2.0f * radiusMeters * std::sin((theta1 - theta0) * 0.5f),
+                                            heightMeters
+                                        };
+                                    }
+                                    else
+                                    {
+                                        overlayLayer.pose = BuildOverlayPose(overlay, locatedViews, locatedCount);
+                                        overlayLayer.size = XrExtent2Df{ widthMeters, heightMeters };
+                                    }
+                                    return true;
+                                };
+
+                                for (uint32_t segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex)
+                                    appendOverlayLayer(segmentIndex);
+
+                            }
+                        }
+                        if (blittedAnyOverlayFrame)
+                            lastSubmittedOverlayFrameGeneration = overlayFrameGeneration;
                     }
                 }
 
@@ -5100,21 +5729,28 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 layer.space = m_AppSpace;
                 layer.viewCount = 2;
                 layer.views = projectionViews.data();
-                const XrCompositionLayerBaseHeader* layers[] = { reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer) };
+                std::array<const XrCompositionLayerBaseHeader*, 1 + kMaxOpenXrOverlayLayers> layers{};
+                uint32_t layerCount = 0;
+                if (layerReady)
+                    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
+                for (uint32_t overlayLayerIndex = 0; overlayLayerIndex < overlayLayerCount; ++overlayLayerIndex)
+                    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&overlayLayers[overlayLayerIndex]);
                 XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
                 endInfo.displayTime = frameState.predictedDisplayTime;
                 endInfo.environmentBlendMode = m_BlendMode;
-                endInfo.layerCount = layerReady ? 1u : 0u;
-                endInfo.layers = layerReady ? layers : nullptr;
+                endInfo.layerCount = layerCount;
+                endInfo.layers = layerCount ? layers.data() : nullptr;
                 result = m_Xr.xrEndFrame(m_Session, &endInfo);
                 if (!Succeeded(m_Log, "xrEndFrame", result))
                     return 26;
-                if (layerReady)
+                if (layerCount != 0)
                 {
                     ++submittedFrames;
-                    m_Bridge.Update(L4D2VROpenXrBridgeStatus::SubmittedFrame, 0, submittedFrames, "OpenXR Vulkan projection frame submitted");
+                    m_Bridge.Update(L4D2VROpenXrBridgeStatus::SubmittedFrame, 0, submittedFrames,
+                        overlayLayerCount ? "OpenXR Vulkan projection/quad frame submitted" : "OpenXR Vulkan projection frame submitted");
                     if (submittedFrames == 1 || (submittedFrames % 60) == 0)
-                        m_Log.Print("Submitted OpenXR Vulkan projection frame %u", submittedFrames);
+                        m_Log.Print("Submitted OpenXR Vulkan frame %u layers=%u projection=%u overlays=%u",
+                            submittedFrames, layerCount, layerReady ? 1u : 0u, overlayLayerCount);
                 }
                 if (options.targetFrames > 0 && submittedFrames >= options.targetFrames)
                     break;
@@ -5142,6 +5778,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 m_Vk.vkDeviceWaitIdle(m_VkDevice);
             for (VulkanGameEyeTexture& eye : m_GameEyes)
                 DestroyImportedGameEye(eye);
+            for (VulkanGameEyeTexture& overlay : m_OverlayTextures)
+                DestroyImportedGameEye(overlay);
+            for (VulkanEyeSwapchain& overlaySwapchain : m_OverlaySwapchains)
+                DestroyOverlaySwapchain(overlaySwapchain);
             for (VulkanEyeSwapchain& eye : m_Eyes)
             {
                 DestroySwapchainRenderTargets(eye);
@@ -5195,6 +5835,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         XrSessionState m_SessionState = XR_SESSION_STATE_UNKNOWN;
         XrEnvironmentBlendMode m_BlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         bool m_SessionRunning = false;
+        VkFormat m_SelectedSwapchainFormat = VK_FORMAT_UNDEFINED;
         VkInstance m_VkInstance = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
         VkDevice m_VkDevice = VK_NULL_HANDLE;
@@ -5210,11 +5851,13 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         VkDescriptorPool m_BlitDescriptorPool = VK_NULL_HANDLE;
         VkPipelineLayout m_BlitPipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_BlitPipeline = VK_NULL_HANDLE;
-        std::array<VkDescriptorSet, L4D2VR_OPENXR_EYE_COUNT> m_BlitDescriptorSets{};
+        std::array<VkDescriptorSet, kBlitDescriptorSetCount> m_BlitDescriptorSets{};
         HANDLE m_ParentProcess = nullptr;
         std::vector<XrViewConfigurationView> m_ViewConfigs;
         std::vector<VulkanEyeSwapchain> m_Eyes;
         std::array<VulkanGameEyeTexture, L4D2VR_OPENXR_EYE_COUNT> m_GameEyes;
+        std::array<VulkanGameEyeTexture, L4D2VR_OPENXR_OVERLAY_COUNT> m_OverlayTextures;
+        std::array<VulkanEyeSwapchain, L4D2VR_OPENXR_OVERLAY_COUNT> m_OverlaySwapchains;
     };
 }
 

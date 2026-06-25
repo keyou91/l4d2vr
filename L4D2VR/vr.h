@@ -84,6 +84,9 @@ struct SharedTextureHolder
 {
 	vr::VRVulkanTextureData_t m_VulkanData{};
 	vr::Texture_t m_VRTexture{};
+	uint64_t m_SharedHandle = 0;
+	uint32_t m_SharedHandleType = 0;
+	uint32_t m_SharedHandleValid = 0;
 };
 
 using TextureStateMutex = std::recursive_mutex;
@@ -783,12 +786,17 @@ public:
 		Texture_Scope,
 		Texture_RearMirror,
 		Texture_DesktopMirror,
+		Texture_BackBufferOverlay,
 		Texture_Blank
 	};
 
 	bool ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) const;
 	void PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc);
 	void PublishOpenXrResolvedEyeTextures(uint32_t frameId);
+	void PublishOpenXrBackbufferOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32_t frameId);
+	void HideOpenXrBackbufferOverlay();
+	bool PublishOpenXrHudOverlay(uint32_t frameId);
+	void HideOpenXrHudOverlay();
 
 	ITexture* m_LeftEyeTexture = nullptr;
 	ITexture* m_RightEyeTexture = nullptr;
@@ -798,6 +806,7 @@ public:
 	ITexture* m_ScopeTexture = nullptr;
 	ITexture* m_RearMirrorTexture = nullptr;
 	ITexture* m_DesktopMirrorTexture = nullptr;
+	ITexture* m_BackBufferOverlayTexture = nullptr;
 	ITexture* m_BlankTexture = nullptr;
 
 	IDirect3DSurface9* m_D9LeftEyeSurface = nullptr;
@@ -817,6 +826,7 @@ public:
 	uint32_t m_D9ScopeLensScratchFormat = 0;
 	IDirect3DSurface9* m_D9RearMirrorSurface = nullptr;
 	IDirect3DSurface9* m_D9DesktopMirrorSurface = nullptr;
+	IDirect3DSurface9* m_D9BackBufferOverlaySurface = nullptr;
 	IDirect3DSurface9* m_D9BlankSurface = nullptr;
 
 	SharedTextureHolder m_VKLeftEye;
@@ -831,6 +841,7 @@ public:
 	std::array<L4D2VROpenXrSharedTextureDesc, L4D2VR_OPENXR_EYE_COUNT> m_OpenXrSharedEyeTextures{};
 	std::atomic<uint32_t> m_OpenXrSharedEyeTextureReadyMask{ 0 };
 	std::atomic<uint32_t> m_OpenXrLastPublishedSharedTextureFrameId{ 0 };
+	std::atomic<uint32_t> m_OpenXrSyntheticSharedTextureFrameId{ 0x80000000u };
 
 	// Protects VR texture lifecycle and SteamVR texture submissions when render/update threads overlap.
 	mutable TextureStateMutex m_TextureMutex;
@@ -1778,6 +1789,12 @@ public:
 	bool m_VrRecommendedVideoSettingsEnabled = false;
 	bool m_VrRecommendedVideoSettingsApplyPending = false;
 	bool m_VrRecommendedVideoSettingsAppliedThisSession = false;
+	bool m_OpenXrExposureTonemapLock = true;
+	float m_OpenXrMatAutoExposureMin = 1.0f;
+	float m_OpenXrMatAutoExposureMax = 1.0f;
+	float m_OpenXrMatForceTonemapScale = 0.85f;
+	int m_OpenXrMatDisableBloom = 1;
+	float m_OpenXrMatBloomScaleFactorScalar = 0.0f;
 
 	// Auto fps_max in main menu: set fps_max to match HMD refresh rate when VR is active.
 	bool m_MenuFpsMaxSent = false;

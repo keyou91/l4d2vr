@@ -160,6 +160,8 @@ namespace dxvk {
     UpdatePresentRegion(pSourceRect, pDestRect);
     UpdatePresentParameters();
 
+    m_parent->PublishOpenXrBackbufferOverlayFromPresentSource(m_backBuffers[0].ptr(), &m_srcRect);
+
     if (!SwapWithFrontBuffer() && m_parent->GetOptions()->extraFrontbuffer) {
       // We never actually rotate in the front buffer.
       // Just blit to it for GetFrontBufferData.

@@ -3,7 +3,7 @@
 #include <cstdint>
 
 constexpr uint32_t L4D2VR_OPENXR_BRIDGE_MAGIC = 0x5258344Cu; // L4XR
-constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 7;
+constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 9;
 
 enum class L4D2VROpenXrBridgeStatus : uint32_t
 {
@@ -30,6 +30,15 @@ enum : uint32_t
     L4D2VR_OPENXR_EYES_READY_MASK = L4D2VR_OPENXR_EYE_LEFT_READY | L4D2VR_OPENXR_EYE_RIGHT_READY
 };
 
+enum : uint32_t
+{
+    L4D2VR_OPENXR_OVERLAY_MAIN_MENU = 0,
+    L4D2VR_OPENXR_OVERLAY_HUD = 1,
+    L4D2VR_OPENXR_OVERLAY_COUNT = 2,
+    L4D2VR_OPENXR_OVERLAY_MAIN_MENU_READY = 1u << L4D2VR_OPENXR_OVERLAY_MAIN_MENU,
+    L4D2VR_OPENXR_OVERLAY_HUD_READY = 1u << L4D2VR_OPENXR_OVERLAY_HUD
+};
+
 struct L4D2VROpenXrSharedTextureDesc
 {
     uint32_t valid = 0;
@@ -48,6 +57,21 @@ struct L4D2VROpenXrSharedTextureDesc
     float vMax = 1.0f;
     float renderFovXDeg = 90.0f;
     float renderAspect = 1.0f;
+};
+
+struct L4D2VROpenXrOverlayDesc
+{
+    uint32_t valid = 0;
+    uint32_t visible = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+    L4D2VROpenXrSharedTextureDesc texture = {};
+    float widthMeters = 1.5f;
+    float heightMeters = 0.84375f;
+    float distanceMeters = 3.0f;
+    float curvature = 0.0f;
+    float offsetMeters[3] = { 0.0f, -0.25f, 0.0f };
+    float orientation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 };
 
 struct L4D2VROpenXrPoseDesc
@@ -104,5 +128,10 @@ struct L4D2VROpenXrBridgeState
     L4D2VROpenXrPoseDesc gameRenderPose = {};
     uint32_t runtimeViewConfigGeneration = 0;
     L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig = {};
+    uint32_t overlayGeneration = 0;
+    uint32_t overlayReadyMask = 0;
+    uint32_t overlayFrameGeneration = 0;
+    uint32_t overlayFrameId = 0;
+    L4D2VROpenXrOverlayDesc overlays[L4D2VR_OPENXR_OVERLAY_COUNT] = {};
     char detail[256] = {};
 };

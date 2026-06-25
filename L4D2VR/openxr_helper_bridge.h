@@ -20,3 +20,5 @@ bool L4D2VR_ReadOpenXrRuntimeViewConfig(L4D2VROpenXrRuntimeViewConfigDesc& confi
 void L4D2VR_PublishOpenXrGameRenderPose(const L4D2VROpenXrPoseDesc& pose);
 void L4D2VR_PublishOpenXrSharedTexture(uint32_t eyeIndex, const L4D2VROpenXrSharedTextureDesc& texture);
 void L4D2VR_PublishOpenXrSharedTextureFrame(uint32_t frameId);
+void L4D2VR_PublishOpenXrOverlay(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay);
+void L4D2VR_PublishOpenXrOverlayFrame(uint32_t frameId);

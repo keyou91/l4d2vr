@@ -2716,6 +2716,27 @@ void VR::ParseConfigFile()
         m_VrRecommendedVideoSettingsApplyPending = false;
         m_VrRecommendedVideoSettingsAppliedThisSession = false;
     }
+    m_OpenXrExposureTonemapLock = getBool("OpenXRExposureTonemapLock", m_OpenXrExposureTonemapLock);
+    m_OpenXrMatAutoExposureMin = std::clamp(
+        getFloat("OpenXRMatAutoExposureMin", m_OpenXrMatAutoExposureMin),
+        -16.0f,
+        16.0f);
+    m_OpenXrMatAutoExposureMax = std::clamp(
+        getFloat("OpenXRMatAutoExposureMax", m_OpenXrMatAutoExposureMax),
+        -16.0f,
+        16.0f);
+    m_OpenXrMatForceTonemapScale = std::clamp(
+        getFloat("OpenXRMatForceTonemapScale", m_OpenXrMatForceTonemapScale),
+        -16.0f,
+        16.0f);
+    m_OpenXrMatDisableBloom = std::clamp(
+        getInt("OpenXRMatDisableBloom", m_OpenXrMatDisableBloom),
+        0,
+        1);
+    m_OpenXrMatBloomScaleFactorScalar = std::clamp(
+        getFloat("OpenXRMatBloomScaleFactorScalar", m_OpenXrMatBloomScaleFactorScalar),
+        -16.0f,
+        16.0f);
 
     // Multicore rendering: explicit minimum render-thread wait budget (ms) for a fresher
     // WaitGetPoses() snapshot in queued mode. 0 disables fixed waiting, but the render hook can

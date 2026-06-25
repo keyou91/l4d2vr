@@ -647,6 +647,9 @@ void VR::UpdateHandHudOverlays()
                         vk.m_VRTexture.handle = &vk.m_VulkanData;
                         vk.m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                         vk.m_VRTexture.eType = vr::TextureType_Vulkan;
+                        vk.m_SharedHandle = desc.SharedHandle;
+                        vk.m_SharedHandleType = desc.SharedHandleType;
+                        vk.m_SharedHandleValid = desc.SharedHandleValid;
                         curW = wantW;
                         curH = wantH;
                     }
@@ -777,6 +780,9 @@ void VR::UpdateHandHudOverlays()
                         vk.m_VRTexture.handle = &vk.m_VulkanData;
                         vk.m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                         vk.m_VRTexture.eType = vr::TextureType_Vulkan;
+                        vk.m_SharedHandle = desc.SharedHandle;
+                        vk.m_SharedHandleType = desc.SharedHandleType;
+                        vk.m_SharedHandleValid = desc.SharedHandleValid;
                         curW = wantW;
                         curH = wantH;
                     }

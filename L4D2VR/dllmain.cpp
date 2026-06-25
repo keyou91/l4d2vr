@@ -2432,6 +2432,12 @@ namespace
         { "2026-06-24_openxr_helper_default_true", "OpenXRHelper", "true" },
         { "2026-06-24_openxr_helper_submit_test_frames_default_0", "OpenXRHelperSubmitTestFrames", "0" },
         { "2026-06-24_openxr_helper_wait_ready_seconds_default_45", "OpenXRHelperWaitReadySeconds", "45" },
+        { "2026-06-25_openxr_exposure_tonemap_lock_default_true", "OpenXRExposureTonemapLock", "true" },
+        { "2026-06-25_openxr_mat_autoexposure_min_default_1_0", "OpenXRMatAutoExposureMin", "1.0" },
+        { "2026-06-25_openxr_mat_autoexposure_max_default_1_0", "OpenXRMatAutoExposureMax", "1.0" },
+        { "2026-06-25_openxr_mat_force_tonemap_scale_default_0_85", "OpenXRMatForceTonemapScale", "0.85" },
+        { "2026-06-25_openxr_mat_disable_bloom_default_1", "OpenXRMatDisableBloom", "1" },
+        { "2026-06-25_openxr_mat_bloom_scale_factor_scalar_default_0_0", "OpenXRMatBloomScaleFactorScalar", "0.0" },
     };
 
     constexpr const char* kPreservedConfigKeysMissingFromOlderSamples[] =
@@ -2439,6 +2445,12 @@ namespace
         "OpenXRHelper",
         "OpenXRHelperSubmitTestFrames",
         "OpenXRHelperWaitReadySeconds",
+        "OpenXRExposureTonemapLock",
+        "OpenXRMatAutoExposureMin",
+        "OpenXRMatAutoExposureMax",
+        "OpenXRMatForceTonemapScale",
+        "OpenXRMatDisableBloom",
+        "OpenXRMatBloomScaleFactorScalar",
         "VRRuntimeBackend",
         "VRRuntimeFallbackToOpenVR",
     };

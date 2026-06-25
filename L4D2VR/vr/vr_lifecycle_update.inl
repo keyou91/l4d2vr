@@ -1347,21 +1347,62 @@ void VR::Update()
 
     if (m_RuntimeBackend == VrRuntimeBackend::OpenXR && m_Game)
     {
-        static bool s_loggedOpenXrExposureLock = false;
-        const bool autoExposureMin = m_Game->SetConVarFloat("mat_autoexposure_min", 1.0f);
-        const bool autoExposureMax = m_Game->SetConVarFloat("mat_autoexposure_max", 1.0f);
-        const bool forceTonemap = m_Game->SetConVarFloat("mat_force_tonemap_scale", 1.0f);
-        const bool disableBloom = m_Game->SetConVarInt("mat_disable_bloom", 1);
-        const bool bloomScale = m_Game->SetConVarFloat("mat_bloom_scalefactor_scalar", 0.0f);
-        if (!s_loggedOpenXrExposureLock)
+        static bool s_loggedOpenXrExposureLockState = false;
+        static bool s_lastOpenXrExposureTonemapLock = false;
+        static float s_lastOpenXrMatAutoExposureMin = 0.0f;
+        static float s_lastOpenXrMatAutoExposureMax = 0.0f;
+        static float s_lastOpenXrMatForceTonemapScale = 0.0f;
+        static int s_lastOpenXrMatDisableBloom = 0;
+        static float s_lastOpenXrMatBloomScaleFactorScalar = 0.0f;
+
+        auto valuesChanged = [&]()->bool
+            {
+                return !s_loggedOpenXrExposureLockState ||
+                    s_lastOpenXrExposureTonemapLock != m_OpenXrExposureTonemapLock ||
+                    std::fabs(s_lastOpenXrMatAutoExposureMin - m_OpenXrMatAutoExposureMin) > 0.0001f ||
+                    std::fabs(s_lastOpenXrMatAutoExposureMax - m_OpenXrMatAutoExposureMax) > 0.0001f ||
+                    std::fabs(s_lastOpenXrMatForceTonemapScale - m_OpenXrMatForceTonemapScale) > 0.0001f ||
+                    s_lastOpenXrMatDisableBloom != m_OpenXrMatDisableBloom ||
+                    std::fabs(s_lastOpenXrMatBloomScaleFactorScalar - m_OpenXrMatBloomScaleFactorScalar) > 0.0001f;
+            };
+
+        const bool logState = valuesChanged();
+        bool autoExposureMin = false;
+        bool autoExposureMax = false;
+        bool forceTonemap = false;
+        bool disableBloom = false;
+        bool bloomScale = false;
+
+        if (m_OpenXrExposureTonemapLock)
         {
-            s_loggedOpenXrExposureLock = true;
+            autoExposureMin = m_Game->SetConVarFloat("mat_autoexposure_min", m_OpenXrMatAutoExposureMin);
+            autoExposureMax = m_Game->SetConVarFloat("mat_autoexposure_max", m_OpenXrMatAutoExposureMax);
+            forceTonemap = m_Game->SetConVarFloat("mat_force_tonemap_scale", m_OpenXrMatForceTonemapScale);
+            disableBloom = m_Game->SetConVarInt("mat_disable_bloom", m_OpenXrMatDisableBloom);
+            bloomScale = m_Game->SetConVarFloat("mat_bloom_scalefactor_scalar", m_OpenXrMatBloomScaleFactorScalar);
+        }
+
+        if (logState)
+        {
+            s_loggedOpenXrExposureLockState = true;
+            s_lastOpenXrExposureTonemapLock = m_OpenXrExposureTonemapLock;
+            s_lastOpenXrMatAutoExposureMin = m_OpenXrMatAutoExposureMin;
+            s_lastOpenXrMatAutoExposureMax = m_OpenXrMatAutoExposureMax;
+            s_lastOpenXrMatForceTonemapScale = m_OpenXrMatForceTonemapScale;
+            s_lastOpenXrMatDisableBloom = m_OpenXrMatDisableBloom;
+            s_lastOpenXrMatBloomScaleFactorScalar = m_OpenXrMatBloomScaleFactorScalar;
             Game::logMsg(
-                "[VR][OpenXR] exposure lock autoMin=%d autoMax=%d tonemap=%d disableBloom=%d bloomScale=%d",
+                "[VR][OpenXR] exposure tonemap lock enabled=%d autoMin=%.3f(%d) autoMax=%.3f(%d) tonemap=%.3f(%d) disableBloom=%d(%d) bloomScale=%.3f(%d)",
+                m_OpenXrExposureTonemapLock ? 1 : 0,
+                m_OpenXrMatAutoExposureMin,
                 autoExposureMin ? 1 : 0,
+                m_OpenXrMatAutoExposureMax,
                 autoExposureMax ? 1 : 0,
+                m_OpenXrMatForceTonemapScale,
                 forceTonemap ? 1 : 0,
+                m_OpenXrMatDisableBloom,
                 disableBloom ? 1 : 0,
+                m_OpenXrMatBloomScaleFactorScalar,
                 bloomScale ? 1 : 0);
         }
     }
@@ -1383,7 +1424,10 @@ void VR::Update()
 
             rndrContext->SetRenderTarget(NULL);
             m_Game->m_CachedArmsModel = false;
-            m_CreatedVRTextures.store(false, std::memory_order_release); // Have to recreate textures otherwise some workshop maps won't render
+            const bool keepOpenXrMenuTextures =
+                m_RuntimeBackend == VrRuntimeBackend::OpenXR && m_OpenXrHelperBridgeActive && !returnedToMainMenu;
+            if (!keepOpenXrMenuTextures)
+                m_CreatedVRTextures.store(false, std::memory_order_release); // Have to recreate textures otherwise some workshop maps won't render
         }
     }
 
@@ -1442,8 +1486,7 @@ void VR::Update()
 
     if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
     {
-        if (inGameAtUpdateStart &&
-            m_OpenXrHelperBridgeActive &&
+        if (m_OpenXrHelperBridgeActive &&
             g_D3DVR9 &&
             !m_CreatedVRTextures.load(std::memory_order_acquire) &&
             m_CreatingTextureID == Texture_None)
@@ -1452,15 +1495,58 @@ void VR::Update()
             if (!s_loggedOpenXrCreateEyeTextures)
             {
                 s_loggedOpenXrCreateEyeTextures = true;
-                Game::logMsg("[VR][OpenXRHelper] creating OpenXR eye render targets from Update renderTarget=%ux%u",
+                Game::logMsg("[VR][OpenXRHelper] creating OpenXR eye render targets from Update inGame=%d renderTarget=%ux%u",
+                    inGameAtUpdateStart ? 1 : 0,
                     m_RenderWidth,
                     m_RenderHeight);
             }
             CreateVRTextures();
         }
         UpdateTracking();
-        if (m_OpenXrHelperBridgeActive && m_OpenXrLastHmdPose.valid)
-            L4D2VR_PublishOpenXrGameRenderPose(m_OpenXrLastHmdPose);
+        if (m_OpenXrHelperBridgeActive && L4D2VR_OpenXrHelperBridgeIsStarted())
+        {
+            if (m_OpenXrLastHmdPose.valid)
+                L4D2VR_PublishOpenXrGameRenderPose(m_OpenXrLastHmdPose);
+
+            auto nextSyntheticOpenXrFrameId = [&]() -> uint32_t
+                {
+                    uint32_t value = m_OpenXrSyntheticSharedTextureFrameId.fetch_add(1, std::memory_order_acq_rel) + 1;
+                    if (value == 0)
+                        value = m_OpenXrSyntheticSharedTextureFrameId.fetch_add(1, std::memory_order_acq_rel) + 1;
+                    return value ? value : 1u;
+                };
+
+            if (!inGameAtUpdateStart)
+            {
+                const uint32_t frameId = nextSyntheticOpenXrFrameId();
+                HideOpenXrHudOverlay();
+                PublishOpenXrResolvedEyeTextures(frameId);
+            }
+            else
+            {
+                HideOpenXrBackbufferOverlay();
+                const bool focusedInGameVgui =
+                    (m_Game->m_EngineClient && m_Game->m_EngineClient->IsPaused()) ||
+                    (m_Game->m_VguiSurface && m_Game->m_VguiSurface->IsCursorVisible());
+                const bool wantsHudOverlay =
+                    focusedInGameVgui ||
+                    IsGameplayHudRequested() ||
+                    m_RenderedHud.load(std::memory_order_acquire) ||
+                    IsQueuedHudFresh();
+                if (wantsHudOverlay)
+                {
+                    uint32_t hudFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                    if (hudFrameId == 0)
+                        hudFrameId = nextSyntheticOpenXrFrameId();
+                    if (!PublishOpenXrHudOverlay(hudFrameId))
+                        HideOpenXrHudOverlay();
+                }
+                else
+                {
+                    HideOpenXrHudOverlay();
+                }
+            }
+        }
         return;
     }
 
@@ -1860,6 +1946,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_RenderedHud.store(false, std::memory_order_release);
     m_OpenXrSharedEyeTextureReadyMask.store(0, std::memory_order_release);
     m_OpenXrLastPublishedSharedTextureFrameId.store(0, std::memory_order_release);
+    m_OpenXrSyntheticSharedTextureFrameId.store(0x80000000u, std::memory_order_release);
     m_OpenXrSharedEyeTextures = {};
     m_HudPaintedThisFrame.store(false, std::memory_order_release);
     ClearQueuedHudFresh();
@@ -1907,6 +1994,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     SafeReleaseD3D(m_D9RearMirrorSurface);
     SafeReleaseD3D(m_D9DesktopCompanionRearMirrorReadback);
     SafeReleaseD3D(m_D9DesktopMirrorSurface);
+    SafeReleaseD3D(m_D9BackBufferOverlaySurface);
     SafeReleaseD3D(m_D9BlankSurface);
 
     SafeReleaseSourceTexture(m_LeftEyeTexture);
@@ -1917,6 +2005,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     SafeReleaseSourceTexture(m_ScopeTexture);
     SafeReleaseSourceTexture(m_RearMirrorTexture);
     SafeReleaseSourceTexture(m_DesktopMirrorTexture);
+    SafeReleaseSourceTexture(m_BackBufferOverlayTexture);
     SafeReleaseSourceTexture(m_BlankTexture);
 
     std::memset(&m_VKLeftEye, 0, sizeof(m_VKLeftEye));
@@ -2041,6 +2130,19 @@ void VR::CreateVRTextures()
 
     m_CreatingTextureID = Texture_HUD;
     m_HUDTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("vrHUD", windowWidth, windowHeight, RT_SIZE_NO_CHANGE, backBufferFormat, MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_NOMIP);
+
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        m_CreatingTextureID = Texture_BackBufferOverlay;
+        m_BackBufferOverlayTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
+            "vrBackBufferOverlay",
+            windowWidth,
+            windowHeight,
+            RT_SIZE_NO_CHANGE,
+            backBufferFormat,
+            MATERIAL_RT_DEPTH_SHARED,
+            TEXTUREFLAGS_NOMIP);
+    }
 
     if (m_RenderPipelineDebugLog)
     {

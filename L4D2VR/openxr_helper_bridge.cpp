@@ -183,6 +183,26 @@ namespace
             lhs.renderFovXDeg == rhs.renderFovXDeg &&
             lhs.renderAspect == rhs.renderAspect;
     }
+
+    bool SameOpenXrOverlayDesc(
+        const L4D2VROpenXrOverlayDesc& lhs,
+        const L4D2VROpenXrOverlayDesc& rhs)
+    {
+        return lhs.valid == rhs.valid &&
+            lhs.visible == rhs.visible &&
+            lhs.widthMeters == rhs.widthMeters &&
+            lhs.heightMeters == rhs.heightMeters &&
+            lhs.distanceMeters == rhs.distanceMeters &&
+            lhs.curvature == rhs.curvature &&
+            lhs.offsetMeters[0] == rhs.offsetMeters[0] &&
+            lhs.offsetMeters[1] == rhs.offsetMeters[1] &&
+            lhs.offsetMeters[2] == rhs.offsetMeters[2] &&
+            lhs.orientation[0] == rhs.orientation[0] &&
+            lhs.orientation[1] == rhs.orientation[1] &&
+            lhs.orientation[2] == rhs.orientation[2] &&
+            lhs.orientation[3] == rhs.orientation[3] &&
+            SameSharedTextureDesc(lhs.texture, rhs.texture);
+    }
 }
 
 OpenXrHelperLaunchConfig L4D2VR_ReadOpenXrHelperLaunchConfig()
@@ -507,5 +527,49 @@ void L4D2VR_PublishOpenXrSharedTextureFrame(uint32_t frameId)
     ++state->sharedTextureFrameGeneration;
     state->sharedTextureFrameId = frameId;
     ++state->sharedTextureFrameGeneration;
+    state->heartbeatTickMs = GetTickCount64();
+}
+
+void L4D2VR_PublishOpenXrOverlay(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay)
+{
+    if (overlayIndex >= L4D2VR_OPENXR_OVERLAY_COUNT)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return;
+
+    const uint32_t readyBit = 1u << overlayIndex;
+    if ((state->overlayReadyMask & readyBit) &&
+        SameOpenXrOverlayDesc(state->overlays[overlayIndex], overlay))
+    {
+        state->heartbeatTickMs = GetTickCount64();
+        return;
+    }
+
+    state->overlays[overlayIndex] = overlay;
+    if (overlay.valid && overlay.visible && overlay.texture.valid)
+        state->overlayReadyMask |= readyBit;
+    else
+        state->overlayReadyMask &= ~readyBit;
+
+    ++state->overlayGeneration;
+    state->heartbeatTickMs = GetTickCount64();
+}
+
+void L4D2VR_PublishOpenXrOverlayFrame(uint32_t frameId)
+{
+    if (frameId == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return;
+
+    ++state->overlayFrameGeneration;
+    state->overlayFrameId = frameId;
+    ++state->overlayFrameGeneration;
     state->heartbeatTickMs = GetTickCount64();
 }

@@ -157,8 +157,31 @@ namespace dxvk {
       backBufferData->m_VRTexture.handle = &backBufferData->m_VulkanData;
       backBufferData->m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
       backBufferData->m_VRTexture.eType = vr::TextureType_Vulkan;
+      backBufferData->m_SharedHandle = textureDesc.SharedHandle;
+      backBufferData->m_SharedHandleType = textureDesc.SharedHandleType;
+      backBufferData->m_SharedHandleValid = textureDesc.SharedHandleValid;
 
       return res;
+    }
+
+    HRESULT STDMETHODCALLTYPE CopyBackBufferToSurface(IDirect3DSurface9* pDestSurface, BOOL waitResourceIdle) {
+      if (unlikely(pDestSurface == nullptr))
+        return D3DERR_INVALIDCALL;
+
+      IDirect3DSurface9* backBufferSurface = nullptr;
+      HRESULT res = m_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBufferSurface);
+      if (FAILED(res) || backBufferSurface == nullptr)
+        return FAILED(res) ? res : D3DERR_INVALIDCALL;
+
+      res = m_device->StretchRect(backBufferSurface, nullptr, pDestSurface, nullptr, D3DTEXF_NONE);
+      backBufferSurface->Release();
+      if (FAILED(res))
+        return res;
+
+      if (waitResourceIdle)
+        return WaitDeviceIdle();
+
+      return D3D_OK;
     }
 
   private:

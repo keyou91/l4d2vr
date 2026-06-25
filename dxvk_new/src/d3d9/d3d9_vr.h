@@ -37,6 +37,7 @@ IDirect3DVR9 : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE UnlockDevice() = 0;
   virtual HRESULT STDMETHODCALLTYPE WaitDeviceIdle() = 0;
   virtual HRESULT STDMETHODCALLTYPE GetBackBufferData(SharedTextureHolder* backBufferData) = 0;
+  virtual HRESULT STDMETHODCALLTYPE CopyBackBufferToSurface(IDirect3DSurface9* pDestSurface, BOOL waitResourceIdle) = 0;
 };
 
 #ifdef _MSC_VER

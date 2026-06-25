@@ -75,6 +75,9 @@ namespace
         return 1.0f / std::max(1.0f, maxHz);
     }
 
+    constexpr float kOpenXrMenuOverlayWidthMeters = 2.22f;
+    constexpr float kOpenXrMenuOverlayHeightMeters = 1.25f;
+
     inline int FindClientEntityIndexByPointer(IClientEntityList* entityList, const void* ptr)
     {
         if (!entityList || !ptr)
@@ -515,7 +518,9 @@ bool VR::ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) con
         return false;
 
     return texID == Texture_LeftEyeSubmit ||
-        texID == Texture_RightEyeSubmit;
+        texID == Texture_RightEyeSubmit ||
+        texID == Texture_HUD ||
+        texID == Texture_BackBufferOverlay;
 }
 
 void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc)
@@ -589,22 +594,6 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
 
     m_OpenXrSharedEyeTextures[eyeIndex] = shared;
     m_OpenXrSharedEyeTextureReadyMask.fetch_or(1u << eyeIndex, std::memory_order_acq_rel);
-
-    Game::logMsg(
-        "[VR][OpenXRHelper] cached shared %s eye texture texID=%d handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f)",
-        isLeft ? "left" : "right",
-        static_cast<int>(texID),
-        static_cast<unsigned long long>(shared.kmtHandle),
-        static_cast<unsigned long long>(shared.image),
-        shared.width,
-        shared.height,
-        shared.format,
-        shared.uMin,
-        shared.vMin,
-        shared.uMax,
-        shared.vMax,
-        shared.renderFovXDeg,
-        shared.renderAspect);
 }
 
 void VR::PublishOpenXrResolvedEyeTextures(uint32_t frameId)
@@ -631,21 +620,120 @@ void VR::PublishOpenXrResolvedEyeTextures(uint32_t frameId)
     L4D2VR_PublishOpenXrSharedTexture(L4D2VR_OPENXR_EYE_RIGHT, right);
     L4D2VR_PublishOpenXrSharedTextureFrame(frameId);
     m_OpenXrLastPublishedSharedTextureFrameId.store(frameId, std::memory_order_release);
+}
 
-    static std::atomic<int> s_logBudget{ 24 };
-    int remaining = s_logBudget.load(std::memory_order_relaxed);
-    if (remaining > 0 && s_logBudget.compare_exchange_strong(remaining, remaining - 1, std::memory_order_relaxed))
+void VR::PublishOpenXrBackbufferOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32_t frameId)
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return;
+
+    if (frameId == 0 || desc.SampleCount != 1 || !desc.SharedHandleValid || desc.SharedHandle == 0 ||
+        desc.Width == 0 || desc.Height == 0)
     {
-        Game::logMsg(
-            "[VR][OpenXRHelper] published resolved shared eye frame=%u L=0x%llX R=0x%llX size=%ux%u/%ux%u",
-            frameId,
-            static_cast<unsigned long long>(left.kmtHandle),
-            static_cast<unsigned long long>(right.kmtHandle),
-            left.width,
-            left.height,
-            right.width,
-            right.height);
+        return;
     }
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 1;
+    overlay.texture.valid = 1;
+    overlay.texture.width = desc.Width;
+    overlay.texture.height = desc.Height;
+    overlay.texture.format = static_cast<uint32_t>(desc.Format);
+    overlay.texture.sampleCount = desc.SampleCount;
+    overlay.texture.handleType = desc.SharedHandleType;
+    overlay.texture.queueFamilyIndex = desc.QueueFamilyIndex;
+    overlay.texture.kmtHandle = desc.SharedHandle;
+    overlay.texture.image = desc.Image;
+    overlay.texture.uMin = 0.0f;
+    overlay.texture.vMin = 0.0f;
+    overlay.texture.uMax = 1.0f;
+    overlay.texture.vMax = 1.0f;
+    overlay.texture.renderFovXDeg = 90.0f;
+    overlay.texture.renderAspect = static_cast<float>(desc.Width) / static_cast<float>(desc.Height);
+
+    overlay.widthMeters = kOpenXrMenuOverlayWidthMeters;
+    overlay.heightMeters = kOpenXrMenuOverlayHeightMeters;
+    overlay.distanceMeters = 3.0f;
+    overlay.offsetMeters[0] = 0.0f;
+    overlay.offsetMeters[1] = -0.25f;
+    overlay.offsetMeters[2] = 0.0f;
+
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
+    L4D2VR_PublishOpenXrOverlayFrame(frameId);
+}
+
+void VR::HideOpenXrBackbufferOverlay()
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return;
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 0;
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
+}
+
+bool VR::PublishOpenXrHudOverlay(uint32_t frameId)
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return false;
+    if (frameId == 0)
+        return false;
+
+    SharedTextureHolder hud{};
+    {
+        std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+        hud = m_VKHUD;
+    }
+
+    const uint32_t width = hud.m_VulkanData.m_nWidth;
+    const uint32_t height = hud.m_VulkanData.m_nHeight;
+    const uint32_t sampleCount = hud.m_VulkanData.m_nSampleCount;
+    if (!hud.m_SharedHandleValid || hud.m_SharedHandle == 0 || width == 0 || height == 0 || sampleCount != 1)
+        return false;
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 1;
+    overlay.texture.valid = 1;
+    overlay.texture.width = width;
+    overlay.texture.height = height;
+    overlay.texture.format = hud.m_VulkanData.m_nFormat;
+    overlay.texture.sampleCount = sampleCount;
+    overlay.texture.handleType = hud.m_SharedHandleType;
+    overlay.texture.queueFamilyIndex = hud.m_VulkanData.m_nQueueFamilyIndex;
+    overlay.texture.kmtHandle = hud.m_SharedHandle;
+    overlay.texture.image = static_cast<uint64_t>(hud.m_VulkanData.m_nImage);
+    overlay.texture.uMin = 0.0f;
+    overlay.texture.vMin = 0.0f;
+    overlay.texture.uMax = 1.0f;
+    overlay.texture.vMax = 1.0f;
+    overlay.texture.renderFovXDeg = 90.0f;
+    overlay.texture.renderAspect = static_cast<float>(width) / static_cast<float>(height);
+
+    overlay.widthMeters = (std::max)(0.10f, m_HudSize);
+    overlay.heightMeters = overlay.widthMeters * (static_cast<float>(height) / static_cast<float>((std::max)(1u, width)));
+    overlay.distanceMeters = (std::max)(0.10f, m_HudDistance + m_FixedHudDistanceOffset);
+    overlay.curvature = std::clamp(m_TopHudCurvature, 0.0f, 1.0f);
+    overlay.offsetMeters[0] = m_FixedHudXOffset;
+    overlay.offsetMeters[1] = -0.25f + m_FixedHudYOffset;
+    overlay.offsetMeters[2] = 0.0f;
+
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_HUD, overlay);
+    L4D2VR_PublishOpenXrOverlayFrame(frameId);
+    return true;
+}
+
+void VR::HideOpenXrHudOverlay()
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return;
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 0;
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_HUD, overlay);
 }
 
 void VR::UpdateHudLiftGestureState(bool inGame)
@@ -7872,6 +7960,9 @@ bool VR::EnsureKillIndicatorOverlayTexture(int materialIndex, int width, int hei
                 texture.sharedTexture.m_VRTexture.handle = &texture.sharedTexture.m_VulkanData;
                 texture.sharedTexture.m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                 texture.sharedTexture.m_VRTexture.eType = vr::TextureType_Vulkan;
+                texture.sharedTexture.m_SharedHandle = desc.SharedHandle;
+                texture.sharedTexture.m_SharedHandleType = desc.SharedHandleType;
+                texture.sharedTexture.m_SharedHandleValid = desc.SharedHandleValid;
                 texture.width = width;
                 texture.height = height;
             }
@@ -10385,6 +10476,9 @@ bool VR::ApplyScopeLensPostProcess()
                 m_VKScopeLens.m_VRTexture.handle = &m_VKScopeLens.m_VulkanData;
                 m_VKScopeLens.m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                 m_VKScopeLens.m_VRTexture.eType = vr::TextureType_Vulkan;
+                m_VKScopeLens.m_SharedHandle = vrDesc.SharedHandle;
+                m_VKScopeLens.m_SharedHandleType = vrDesc.SharedHandleType;
+                m_VKScopeLens.m_SharedHandleValid = vrDesc.SharedHandleValid;
             }
         }
 

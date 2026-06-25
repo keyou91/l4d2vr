@@ -88,6 +88,8 @@ namespace dxvk {
                 return "right-submit";
             if (currentRt == vr->m_D9DesktopMirrorSurface)
                 return "desktop-mirror";
+            if (currentRt == vr->m_D9BackBufferOverlaySurface)
+                return "backbuffer-overlay";
             if (currentRt == vr->m_D9BlankSurface)
                 return "blank";
 
@@ -202,6 +204,8 @@ namespace dxvk {
             D3DPRESENT_PARAMETERS* params,
             D3DDISPLAYMODEEX* fullscreenMode = nullptr) {
             if (!vr || !params || vr->m_RenderWidth == 0 || vr->m_RenderHeight == 0)
+                return false;
+            if (vr->m_RuntimeBackend == VrRuntimeBackend::OpenXR)
                 return false;
 
             const UINT eyeWidth = static_cast<UINT>(vr->m_RenderWidth);
@@ -1054,6 +1058,44 @@ namespace dxvk {
             backBuffer->Release();
         }
 
+        static uint32_t VrNextOpenXrSyntheticSharedTextureFrameId(VR* vr) {
+            if (!vr)
+                return 1;
+
+            uint32_t value = vr->m_OpenXrSyntheticSharedTextureFrameId.fetch_add(1, std::memory_order_acq_rel) + 1;
+            if (value == 0)
+                value = vr->m_OpenXrSyntheticSharedTextureFrameId.fetch_add(1, std::memory_order_acq_rel) + 1;
+            return value ? value : 1;
+        }
+
+        static bool VrShouldPublishOpenXrHudOverlay(const VR* vr) {
+            if (!vr || !vr->m_Game || !vr->m_Game->m_EngineClient || !vr->m_Game->m_EngineClient->IsInGame())
+                return false;
+
+            const bool focusedInGameVgui =
+                (vr->m_Game->m_EngineClient && vr->m_Game->m_EngineClient->IsPaused()) ||
+                (vr->m_Game->m_VguiSurface && vr->m_Game->m_VguiSurface->IsCursorVisible());
+            return focusedInGameVgui ||
+                vr->IsGameplayHudRequested() ||
+                vr->m_RenderedHud.load(std::memory_order_acquire) ||
+                vr->IsQueuedHudFresh();
+        }
+
+        static bool VrPublishOpenXrHudOverlay(VR* vr, uint32_t frameId) {
+            if (!vr || !vr->m_OpenXrHelperBridgeActive)
+                return false;
+
+            if (!VrShouldPublishOpenXrHudOverlay(vr)) {
+                vr->HideOpenXrHudOverlay();
+                return false;
+            }
+
+            const bool published = vr->PublishOpenXrHudOverlay(frameId);
+            if (!published)
+                vr->HideOpenXrHudOverlay();
+            return published;
+        }
+
         static void VrMirrorEyeToDesktopBackBuffer(
             D3D9DeviceEx* device,
             VR* vr,
@@ -1592,10 +1634,10 @@ namespace dxvk {
 
 
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
-        // Source applies video settings through IDirect3DDevice9::Reset. Keep the
-        // implicit swapchain locked to the VR eye size across resets; otherwise a
-        // user-selected desktop resolution leaves viewport, HUD capture, menu overlay,
-        // and desktop mirror paths disagreeing about the active backbuffer size.
+        // Source applies video settings through IDirect3DDevice9::Reset. OpenVR keeps the
+        // implicit swapchain locked to the VR eye size across resets. OpenXR keeps the
+        // menu swapchain desktop-sized because its backbuffer is submitted as a quad
+        // overlay, so desktop/window resolution must remain the UI layout source.
         VR* vr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
         if (vr) {
             vr->ReleaseVRRenderTargetsForDeviceReset();
@@ -1699,6 +1741,56 @@ namespace dxvk {
             hDestWindowOverride,
             pDirtyRegion,
             0);
+    }
+
+
+    void D3D9DeviceEx::PublishOpenXrBackbufferOverlayFromPresentSource(
+        IDirect3DSurface9* pSourceSurface,
+        const RECT* pSourceRect) {
+        if (!pSourceSurface || !g_Game || !g_Game->m_VR || !g_D3DVR9)
+            return;
+
+        VR* vr = g_Game->m_VR;
+        if (!vr->m_OpenXrHelperBridgeActive || !vr->m_D9BackBufferOverlaySurface)
+            return;
+        if (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame())
+            return;
+
+        IDirect3DSurface9* copyTarget = vr->m_D9BackBufferOverlaySurface;
+        copyTarget->AddRef();
+
+        HRESULT copyHr = StretchRect(pSourceSurface, pSourceRect, copyTarget, nullptr, D3DTEXF_LINEAR);
+        if (FAILED(copyHr))
+            copyHr = StretchRect(pSourceSurface, pSourceRect, copyTarget, nullptr, D3DTEXF_NONE);
+
+        if (SUCCEEDED(copyHr))
+        {
+            Flush();
+            SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+            GetDXVKDevice()->waitForIdle();
+
+            D3D9_TEXTURE_VR_DESC desc{};
+            const HRESULT descHr = g_D3DVR9->GetVRDesc(copyTarget, &desc);
+            if (SUCCEEDED(descHr))
+            {
+                const uint32_t overlayFrameId = VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                vr->PublishOpenXrBackbufferOverlay(desc, overlayFrameId);
+            }
+        }
+        else
+        {
+            static DWORD s_lastPresentSourceCopyFailLogMs = 0;
+            const DWORD nowMs = ::GetTickCount();
+            if (nowMs - s_lastPresentSourceCopyFailLogMs >= 1000)
+            {
+                s_lastPresentSourceCopyFailLogMs = nowMs;
+                Game::logMsg(
+                    "[VR][OpenXRHelper][Overlay] failed to copy swapchain present source hr=0x%08lX",
+                    static_cast<unsigned long>(copyHr));
+            }
+        }
+
+        copyTarget->Release();
     }
 
 
@@ -1870,6 +1962,9 @@ namespace dxvk {
                 else if (texID == VR::Texture_DesktopMirror) {
                     texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9DesktopMirrorSurface);
                 }
+                else if (texID == VR::Texture_BackBufferOverlay) {
+                    texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9BackBufferOverlaySurface);
+                }
                 else if (texID == VR::Texture_Blank) {
                     textureTarget = &g_Game->m_VR->m_VKBlankTexture;
                     texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9BlankSurface);
@@ -1881,8 +1976,12 @@ namespace dxvk {
                     textureTarget->m_VRTexture.handle = &textureTarget->m_VulkanData;
                     textureTarget->m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
                     textureTarget->m_VRTexture.eType = vr::TextureType_Vulkan;
+                    textureTarget->m_SharedHandle = texDesc.SharedHandle;
+                    textureTarget->m_SharedHandleType = texDesc.SharedHandleType;
+                    textureTarget->m_SharedHandleValid = texDesc.SharedHandleValid;
                     g_Game->m_VR->PublishOpenXrEyeTexture(texID, texDesc);
                 }
+
             }
 
             if (desc.Pool == D3DPOOL_DEFAULT)
@@ -3270,12 +3369,13 @@ namespace dxvk {
         if (pViewport == nullptr)
             return D3DERR_INVALIDCALL;
 
-        // Main menu/native VGUI is sensitive to Source observing the adjusted viewport.
-        // Preserve the known-good a4a712bf behavior exactly for !IsInGame(): mutate the
-        // caller's viewport before locking/recording instead of using only a local copy.
+        // OpenVR keeps the swapchain backbuffer at the HMD eye size, so the menu/native
+        // VGUI viewport must be promoted to match. OpenXR presents the menu through a
+        // quad overlay sourced from the desktop-sized backbuffer; forcing the viewport
+        // there crops the UI based on the user's desktop resolution.
         if (g_Game && g_Game->m_VR) {
             VR* vr = g_Game->m_VR;
-            if (g_Game->m_EngineClient && !g_Game->m_EngineClient->IsInGame()) {
+            if (vr->m_RuntimeBackend != VrRuntimeBackend::OpenXR && g_Game->m_EngineClient && !g_Game->m_EngineClient->IsInGame()) {
                 D3DVIEWPORT9* menuViewport = const_cast<D3DVIEWPORT9*>(pViewport);
                 menuViewport->Width = vr->m_RenderWidth;
                 menuViewport->Height = vr->m_RenderHeight;
@@ -5461,11 +5561,19 @@ namespace dxvk {
                 }
                 else {
                     VrResolveEyeSurfacesToSubmit(this, vr);
+                    if (inGame)
+                    {
+                        vr->HideOpenXrBackbufferOverlay();
+                    }
+                    else
+                    {
+                        vr->HideOpenXrHudOverlay();
+                    }
                 }
 
-                if (!(inGame && queued) || useOriginalQueuedPresentPath)
+                if (inGame && (!queued || useOriginalQueuedPresentPath))
                     VrMirrorEyeToDesktopBackBuffer(this, vr, pDestRect, hDestWindowOverride);
-                else if (vr->m_DesktopMirrorEnabled)
+                else if (inGame && vr->m_DesktopMirrorEnabled)
                     VrCompositeNativeHudToDesktopBackBuffer(this, vr);
             }
 
@@ -5553,19 +5661,32 @@ namespace dxvk {
                     VrResolveEyeSurfacesToSubmit(this, postPresentVR);
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, postPresentVR);
                     VrAimLineDrawOverlaysToSubmitTargets(this, postPresentVR);
+                    postPresentVR->HideOpenXrBackbufferOverlay();
                     if (postPresentVR->m_ReShadeVRCompat)
                         postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
                     if (g_D3DVR9)
                         g_D3DVR9->WaitDeviceIdle();
-                    if (postPresentVR->m_OpenXrHelperBridgeActive)
+                    if (postPresentVR->m_OpenXrHelperBridgeActive) {
                         postPresentVR->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(postPresentVR);
+                        VrPublishOpenXrHudOverlay(postPresentVR, hudFrameId);
+                    }
                 }
             }
             else if (!skipPostPresentVRWork && !deferredEyeSubmitResolve && g_D3DVR9) {
                 g_D3DVR9->WaitDeviceIdle();
                 if (g_Game && g_Game->m_VR && g_Game->m_VR->m_OpenXrHelperBridgeActive) {
-                    const uint32_t completedFrameId = g_Game->m_VR->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                    g_Game->m_VR->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                    VR* vr = g_Game->m_VR;
+                    const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                    const bool inGameNow = (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame());
+                    vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                    if (inGameNow) {
+                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                        VrPublishOpenXrHudOverlay(vr, hudFrameId);
+                    }
+                    else {
+                        vr->HideOpenXrHudOverlay();
+                    }
                 }
             }
 
@@ -5576,11 +5697,14 @@ namespace dxvk {
                 if (inGame && queued) {
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr);
                     VrAimLineDrawOverlaysToSubmitTargets(this, vr);
+                    vr->HideOpenXrBackbufferOverlay();
                     if (g_D3DVR9)
                         g_D3DVR9->WaitDeviceIdle();
                     if (vr->m_OpenXrHelperBridgeActive) {
                         const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
                         vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                        VrPublishOpenXrHudOverlay(vr, hudFrameId);
                     }
                 }
             }

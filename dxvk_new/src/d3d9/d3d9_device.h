@@ -179,6 +179,10 @@ namespace dxvk {
       const RECT* pDestRect, HWND hDestWindowOverride,
       const RGNDATA* pDirtyRegion);
 
+    void PublishOpenXrBackbufferOverlayFromPresentSource(
+            IDirect3DSurface9* pSourceSurface,
+      const RECT*              pSourceRect);
+
     HRESULT STDMETHODCALLTYPE GetBackBuffer(
       UINT iSwapChain,
       UINT iBackBuffer,
