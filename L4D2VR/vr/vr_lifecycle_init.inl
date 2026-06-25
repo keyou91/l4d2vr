@@ -965,13 +965,119 @@ VR::VR(Game* game)
             return;
         }
 
-        m_RenderWidth = 3600;
-        m_RenderHeight = 3200;
+        L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig{};
+        uint32_t runtimeViewConfigGeneration = 0;
+        const ULONGLONG runtimeViewStartMs = GetTickCount64();
+        const ULONGLONG runtimeViewTimeoutMs = (std::max)(1000u, helperConfig.waitReadySeconds * 1000u);
+        while (!L4D2VR_ReadOpenXrRuntimeViewConfig(runtimeViewConfig, &runtimeViewConfigGeneration))
+        {
+            if (GetTickCount64() - runtimeViewStartMs > runtimeViewTimeoutMs)
+            {
+                Game::errorMsg("OpenXR helper backend selected, but runtime view projection was not published in time.");
+                return;
+            }
+            Sleep(10);
+        }
+
+        auto getOpenXrRawProjection = [](const L4D2VROpenXrRuntimeViewDesc& view, float& left, float& right, float& top, float& bottom) -> bool
+            {
+                if (!view.valid || view.width == 0 || view.height == 0)
+                    return false;
+
+                left = std::tan(view.angleLeft);
+                right = std::tan(view.angleRight);
+                // Match OpenVR GetProjectionRaw's texture-bound convention:
+                // top is the negative down tangent and bottom is the positive up tangent.
+                top = std::tan(view.angleDown);
+                bottom = std::tan(view.angleUp);
+                return std::isfinite(left) && std::isfinite(right) &&
+                    std::isfinite(top) && std::isfinite(bottom) &&
+                    left < -0.001f && right > 0.001f &&
+                    top < -0.001f && bottom > 0.001f;
+            };
+
+        float l_left = 0.0f, l_right = 0.0f, l_top = 0.0f, l_bottom = 0.0f;
+        float r_left = 0.0f, r_right = 0.0f, r_top = 0.0f, r_bottom = 0.0f;
+        if (!getOpenXrRawProjection(runtimeViewConfig.views[L4D2VR_OPENXR_EYE_LEFT], l_left, l_right, l_top, l_bottom) ||
+            !getOpenXrRawProjection(runtimeViewConfig.views[L4D2VR_OPENXR_EYE_RIGHT], r_left, r_right, r_top, r_bottom))
+        {
+            Game::errorMsg("OpenXR helper backend selected, but runtime view projection is invalid.");
+            return;
+        }
+
+        float tanHalfFov[2];
+        tanHalfFov[0] = (std::max)({ -l_left, l_right, -r_left, r_right });
+        tanHalfFov[1] = (std::max)({ -l_top, l_bottom, -r_top, r_bottom });
+        if (!(std::isfinite(tanHalfFov[0]) && tanHalfFov[0] > 0.001f &&
+            std::isfinite(tanHalfFov[1]) && tanHalfFov[1] > 0.001f))
+        {
+            Game::errorMsg("OpenXR helper backend selected, but runtime view FOV is invalid.");
+            return;
+        }
+
+        m_RenderWidth = (std::max)(
+            runtimeViewConfig.views[L4D2VR_OPENXR_EYE_LEFT].width,
+            runtimeViewConfig.views[L4D2VR_OPENXR_EYE_RIGHT].width);
+        m_RenderHeight = (std::max)(
+            runtimeViewConfig.views[L4D2VR_OPENXR_EYE_LEFT].height,
+            runtimeViewConfig.views[L4D2VR_OPENXR_EYE_RIGHT].height);
         m_AntiAliasing = 0;
-        m_TextureBounds[0] = vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 0.5f };
-        m_TextureBounds[1] = vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 0.5f };
-        m_Aspect = static_cast<float>(m_RenderWidth) / static_cast<float>(m_RenderHeight);
-        m_Fov = 90.0f;
+
+        m_TextureBounds[0].uMin = 0.5f + 0.5f * l_left / tanHalfFov[0];
+        m_TextureBounds[0].uMax = 0.5f + 0.5f * l_right / tanHalfFov[0];
+        m_TextureBounds[0].vMin = 0.5f - 0.5f * l_bottom / tanHalfFov[1];
+        m_TextureBounds[0].vMax = 0.5f - 0.5f * l_top / tanHalfFov[1];
+
+        m_TextureBounds[1].uMin = 0.5f + 0.5f * r_left / tanHalfFov[0];
+        m_TextureBounds[1].uMax = 0.5f + 0.5f * r_right / tanHalfFov[0];
+        m_TextureBounds[1].vMin = 0.5f - 0.5f * r_bottom / tanHalfFov[1];
+        m_TextureBounds[1].vMax = 0.5f - 0.5f * r_top / tanHalfFov[1];
+
+        auto sanitizeTextureBounds = [](vr::VRTextureBounds_t& bounds)
+            {
+                bounds.uMin = std::clamp(bounds.uMin, 0.0f, 1.0f);
+                bounds.uMax = std::clamp(bounds.uMax, 0.0f, 1.0f);
+                bounds.vMin = std::clamp(bounds.vMin, 0.0f, 1.0f);
+                bounds.vMax = std::clamp(bounds.vMax, 0.0f, 1.0f);
+                if (bounds.uMax <= bounds.uMin || bounds.vMax <= bounds.vMin)
+                    bounds = vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 1.0f };
+            };
+        sanitizeTextureBounds(m_TextureBounds[0]);
+        sanitizeTextureBounds(m_TextureBounds[1]);
+
+        m_Aspect = tanHalfFov[0] / tanHalfFov[1];
+        m_Fov = 2.0f * atan(tanHalfFov[0]) * 360 / (3.14159265358979323846 * 2);
+
+        const uint32_t recommendedRenderWidth = m_RenderWidth;
+        const uint32_t recommendedRenderHeight = m_RenderHeight;
+        m_EyeRenderTargetMatchProjectionAspect =
+            ReadEarlyConfigBool("EyeRenderTargetMatchProjectionAspect", m_EyeRenderTargetMatchProjectionAspect);
+        const float recommendedAspect = (recommendedRenderHeight > 0)
+            ? static_cast<float>(recommendedRenderWidth) / static_cast<float>(recommendedRenderHeight)
+            : 0.0f;
+        const bool validProjectionAspect =
+            std::isfinite(m_Aspect) && m_Aspect > 0.1f && m_Aspect < 10.0f;
+        if (m_EyeRenderTargetMatchProjectionAspect &&
+            validProjectionAspect &&
+            recommendedRenderWidth > 0 &&
+            recommendedRenderHeight > 0 &&
+            std::fabs(recommendedAspect - m_Aspect) > 0.01f)
+        {
+            const uint32_t preservedSide = (std::max)(recommendedRenderWidth, recommendedRenderHeight);
+            if (m_Aspect >= 1.0f)
+            {
+                m_RenderWidth = preservedSide;
+                m_RenderHeight = static_cast<uint32_t>(
+                    (std::max)(1.0f, std::round(static_cast<float>(preservedSide) / m_Aspect)));
+            }
+            else
+            {
+                m_RenderHeight = preservedSide;
+                m_RenderWidth = static_cast<uint32_t>(
+                    (std::max)(1.0f, std::round(static_cast<float>(preservedSide) * m_Aspect)));
+            }
+        }
+
         m_HmdDisplayFrequencyHz.store(90.0f, std::memory_order_relaxed);
         m_HmdDisplayFrequencyHzLastUpdateMs.store(static_cast<uint32_t>(GetTickCount()), std::memory_order_relaxed);
 
@@ -987,10 +1093,18 @@ VR::VR(Game* game)
         m_RightControllerUp = m_HmdUp;
 
         Game::logMsg(
-            "[VR][OpenXR] helper scene backend initialized renderTarget=%ux%u fov=%.1f fallbackToOpenVR=0",
+            "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) fallbackToOpenVR=0",
+            runtimeViewConfigGeneration,
+            recommendedRenderWidth,
+            recommendedRenderHeight,
             m_RenderWidth,
             m_RenderHeight,
-            m_Fov);
+            m_Fov,
+            m_Aspect,
+            l_left, l_right, l_top, l_bottom,
+            r_left, r_right, r_top, r_bottom,
+            m_TextureBounds[0].uMin, m_TextureBounds[0].vMin, m_TextureBounds[0].uMax, m_TextureBounds[0].vMax,
+            m_TextureBounds[1].uMin, m_TextureBounds[1].vMin, m_TextureBounds[1].uMax, m_TextureBounds[1].vMax);
 
         std::thread configParser(&VR::WaitForConfigUpdate, this);
         configParser.detach();

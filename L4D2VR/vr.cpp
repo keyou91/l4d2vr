@@ -588,10 +588,11 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
         shared.vMax = 1.0f;
     }
 
-    L4D2VR_PublishOpenXrSharedTexture(eyeIndex, shared);
+    m_OpenXrSharedEyeTextures[eyeIndex] = shared;
+    m_OpenXrSharedEyeTextureReadyMask.fetch_or(1u << eyeIndex, std::memory_order_acq_rel);
 
     Game::logMsg(
-        "[VR][OpenXRHelper] published shared %s eye texture texID=%d handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f)",
+        "[VR][OpenXRHelper] cached shared %s eye texture texID=%d handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f)",
         isLeft ? "left" : "right",
         static_cast<int>(texID),
         static_cast<unsigned long long>(shared.kmtHandle),
@@ -605,6 +606,47 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
         shared.vMax,
         shared.renderFovXDeg,
         shared.renderAspect);
+}
+
+void VR::PublishOpenXrResolvedEyeTextures(uint32_t frameId)
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return;
+
+    if (frameId == 0)
+        return;
+
+    if (m_OpenXrLastPublishedSharedTextureFrameId.load(std::memory_order_acquire) == frameId)
+        return;
+
+    const uint32_t readyMask = m_OpenXrSharedEyeTextureReadyMask.load(std::memory_order_acquire);
+    if ((readyMask & L4D2VR_OPENXR_EYES_READY_MASK) != L4D2VR_OPENXR_EYES_READY_MASK)
+        return;
+
+    const L4D2VROpenXrSharedTextureDesc left = m_OpenXrSharedEyeTextures[L4D2VR_OPENXR_EYE_LEFT];
+    const L4D2VROpenXrSharedTextureDesc right = m_OpenXrSharedEyeTextures[L4D2VR_OPENXR_EYE_RIGHT];
+    if (!left.valid || !right.valid)
+        return;
+
+    L4D2VR_PublishOpenXrSharedTexture(L4D2VR_OPENXR_EYE_LEFT, left);
+    L4D2VR_PublishOpenXrSharedTexture(L4D2VR_OPENXR_EYE_RIGHT, right);
+    L4D2VR_PublishOpenXrSharedTextureFrame(frameId);
+    m_OpenXrLastPublishedSharedTextureFrameId.store(frameId, std::memory_order_release);
+
+    static std::atomic<int> s_logBudget{ 24 };
+    int remaining = s_logBudget.load(std::memory_order_relaxed);
+    if (remaining > 0 && s_logBudget.compare_exchange_strong(remaining, remaining - 1, std::memory_order_relaxed))
+    {
+        Game::logMsg(
+            "[VR][OpenXRHelper] published resolved shared eye frame=%u L=0x%llX R=0x%llX size=%ux%u/%ux%u",
+            frameId,
+            static_cast<unsigned long long>(left.kmtHandle),
+            static_cast<unsigned long long>(right.kmtHandle),
+            left.width,
+            left.height,
+            right.width,
+            right.height);
+    }
 }
 
 void VR::UpdateHudLiftGestureState(bool inGame)

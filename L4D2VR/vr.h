@@ -11,6 +11,7 @@
 #undef max
 #endif
 #include "openvr.h"
+#include "openxr_bridge_protocol.h"
 #include "vr_runtime_backend.h"
 #include "vector.h"
 #include "vr_hands/vr_hand_types.h"
@@ -211,6 +212,8 @@ public:
 	bool m_OpenXrSessionProbeEnabled = false;
 	bool m_OpenXrSessionProbeSucceeded = false;
 	bool m_OpenXrHelperBridgeActive = false;
+	L4D2VROpenXrPoseDesc m_OpenXrLastHmdPose = {};
+	uint32_t m_OpenXrLastHmdPoseGeneration = 0;
 	bool m_RuntimeBackendRestartWarningLogged = false;
 	std::unique_ptr<OpenXrBackend> m_OpenXrBackend;
 
@@ -789,6 +792,7 @@ public:
 
 	bool ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) const;
 	void PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc);
+	void PublishOpenXrResolvedEyeTextures(uint32_t frameId);
 
 	ITexture* m_LeftEyeTexture = nullptr;
 	ITexture* m_RightEyeTexture = nullptr;
@@ -828,6 +832,9 @@ public:
 	SharedTextureHolder m_VKRearMirror;
 	SharedTextureHolder m_VKBlankTexture;
 	bool m_BackBufferTextureValid = false;
+	std::array<L4D2VROpenXrSharedTextureDesc, L4D2VR_OPENXR_EYE_COUNT> m_OpenXrSharedEyeTextures{};
+	std::atomic<uint32_t> m_OpenXrSharedEyeTextureReadyMask{ 0 };
+	std::atomic<uint32_t> m_OpenXrLastPublishedSharedTextureFrameId{ 0 };
 
 	// Protects VR texture lifecycle and SteamVR texture submissions when render/update threads overlap.
 	mutable TextureStateMutex m_TextureMutex;

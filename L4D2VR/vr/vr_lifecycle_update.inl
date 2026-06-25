@@ -1459,6 +1459,8 @@ void VR::Update()
             CreateVRTextures();
         }
         UpdateTracking();
+        if (m_OpenXrHelperBridgeActive && m_OpenXrLastHmdPose.valid)
+            L4D2VR_PublishOpenXrGameRenderPose(m_OpenXrLastHmdPose);
         return;
     }
 
@@ -1856,6 +1858,9 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_QueuedSubmitStaleStreak.store(0, std::memory_order_release);
     m_RenderedNewFrame.store(false, std::memory_order_release);
     m_RenderedHud.store(false, std::memory_order_release);
+    m_OpenXrSharedEyeTextureReadyMask.store(0, std::memory_order_release);
+    m_OpenXrLastPublishedSharedTextureFrameId.store(0, std::memory_order_release);
+    m_OpenXrSharedEyeTextures = {};
     m_HudPaintedThisFrame.store(false, std::memory_order_release);
     ClearQueuedHudFresh();
 

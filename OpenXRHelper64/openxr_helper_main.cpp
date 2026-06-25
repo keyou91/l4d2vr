@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
+#include <share.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -58,7 +59,7 @@ namespace
             if (path.empty())
                 return true;
 
-            _wfopen_s(&m_File, path.c_str(), L"w");
+            m_File = _wfsopen(path.c_str(), L"w", _SH_DENYNO);
             return m_File != nullptr;
         }
 
@@ -256,6 +257,60 @@ namespace
 
         log.Print("%s failed: %s (%d)", action, XrResultName(result), static_cast<int>(result));
         return false;
+    }
+
+    bool IsValidRuntimeFov(const XrFovf& fov)
+    {
+        return std::isfinite(fov.angleLeft) &&
+            std::isfinite(fov.angleRight) &&
+            std::isfinite(fov.angleUp) &&
+            std::isfinite(fov.angleDown) &&
+            fov.angleLeft < -0.001f &&
+            fov.angleRight > 0.001f &&
+            fov.angleUp > 0.001f &&
+            fov.angleDown < -0.001f;
+    }
+
+    L4D2VROpenXrRuntimeViewConfigDesc BuildRuntimeViewConfig(
+        const std::vector<XrViewConfigurationView>& viewConfigs,
+        const std::vector<XrView>& locatedViews,
+        uint32_t locatedCount)
+    {
+        L4D2VROpenXrRuntimeViewConfigDesc config{};
+        if (viewConfigs.size() < L4D2VR_OPENXR_EYE_COUNT ||
+            locatedViews.size() < L4D2VR_OPENXR_EYE_COUNT ||
+            locatedCount < L4D2VR_OPENXR_EYE_COUNT)
+        {
+            return config;
+        }
+
+        config.viewCount = L4D2VR_OPENXR_EYE_COUNT;
+        for (uint32_t eye = 0; eye < L4D2VR_OPENXR_EYE_COUNT; ++eye)
+        {
+            const XrViewConfigurationView& viewConfig = viewConfigs[eye];
+            const XrView& locatedView = locatedViews[eye];
+            L4D2VROpenXrRuntimeViewDesc& out = config.views[eye];
+            out.width = viewConfig.recommendedImageRectWidth;
+            out.height = viewConfig.recommendedImageRectHeight;
+            out.recommendedSampleCount = viewConfig.recommendedSwapchainSampleCount;
+            out.angleLeft = locatedView.fov.angleLeft;
+            out.angleRight = locatedView.fov.angleRight;
+            out.angleUp = locatedView.fov.angleUp;
+            out.angleDown = locatedView.fov.angleDown;
+            out.valid =
+                out.width > 0 &&
+                out.height > 0 &&
+                IsValidRuntimeFov(locatedView.fov)
+                    ? 1u
+                    : 0u;
+        }
+
+        config.valid =
+            config.views[L4D2VR_OPENXR_EYE_LEFT].valid &&
+            config.views[L4D2VR_OPENXR_EYE_RIGHT].valid
+                ? 1u
+                : 0u;
+        return config;
     }
 
     bool SameLuid(const LUID& a, const LUID& b)
@@ -652,6 +707,56 @@ namespace
             return m_State->eyeTextures[eyeIndex];
         }
 
+        bool ReadSharedTextureFrame(uint32_t& frameId, uint32_t* generation = nullptr) const
+        {
+            if (!m_State)
+                return false;
+
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint32_t gen0 = m_State->sharedTextureFrameGeneration;
+                if (gen0 == 0 || (gen0 & 1u))
+                    continue;
+
+                const uint32_t snapshotFrameId = m_State->sharedTextureFrameId;
+                const uint32_t gen1 = m_State->sharedTextureFrameGeneration;
+                if (gen0 == gen1 && !(gen1 & 1u) && snapshotFrameId != 0)
+                {
+                    frameId = snapshotFrameId;
+                    if (generation)
+                        *generation = gen1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        bool ReadGameRenderPose(L4D2VROpenXrPoseDesc& pose, uint32_t* generation = nullptr) const
+        {
+            if (!m_State)
+                return false;
+
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint32_t gen0 = m_State->gameRenderPoseGeneration;
+                if (gen0 == 0 || (gen0 & 1u))
+                    continue;
+
+                L4D2VROpenXrPoseDesc snapshot = m_State->gameRenderPose;
+                const uint32_t gen1 = m_State->gameRenderPoseGeneration;
+                if (gen0 == gen1 && !(gen1 & 1u) && snapshot.valid)
+                {
+                    pose = snapshot;
+                    if (generation)
+                        *generation = gen1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         void PublishHmdPose(const L4D2VROpenXrPoseDesc& pose)
         {
             if (!m_State || !pose.valid)
@@ -660,6 +765,17 @@ namespace
             ++m_State->trackingPoseGeneration;
             m_State->hmdPose = pose;
             ++m_State->trackingPoseGeneration;
+            m_State->heartbeatTickMs = GetTickCount64();
+        }
+
+        void PublishRuntimeViewConfig(const L4D2VROpenXrRuntimeViewConfigDesc& config)
+        {
+            if (!m_State || !config.valid)
+                return;
+
+            ++m_State->runtimeViewConfigGeneration;
+            m_State->runtimeViewConfig = config;
+            ++m_State->runtimeViewConfigGeneration;
             m_State->heartbeatTickMs = GetTickCount64();
         }
 
@@ -706,6 +822,186 @@ namespace
             pose.position[2] *= invCount;
         }
         return pose;
+    }
+
+    float ExtractOpenXrYaw(const XrQuaternionf& orientation)
+    {
+        float x = orientation.x;
+        float y = orientation.y;
+        float z = orientation.z;
+        float w = orientation.w;
+        const float lenSq = x * x + y * y + z * z + w * w;
+        if (lenSq > 0.000001f)
+        {
+            const float invLen = 1.0f / std::sqrt(lenSq);
+            x *= invLen;
+            y *= invLen;
+            z *= invLen;
+            w *= invLen;
+        }
+        else
+        {
+            x = 0.0f;
+            y = 0.0f;
+            z = 0.0f;
+            w = 1.0f;
+        }
+
+        return std::atan2(
+            2.0f * (w * y + x * z),
+            1.0f - 2.0f * (y * y + z * z));
+    }
+
+    XrQuaternionf NormalizeOpenXrQuaternion(const float orientation[4])
+    {
+        XrQuaternionf q{
+            orientation[0],
+            orientation[1],
+            orientation[2],
+            orientation[3]
+        };
+        const float lenSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+        if (lenSq > 0.000001f)
+        {
+            const float invLen = 1.0f / std::sqrt(lenSq);
+            q.x *= invLen;
+            q.y *= invLen;
+            q.z *= invLen;
+            q.w *= invLen;
+        }
+        else
+        {
+            q = XrQuaternionf{ 0.0f, 0.0f, 0.0f, 1.0f };
+        }
+        return q;
+    }
+
+    XrVector3f RotateOpenXrVector(const XrQuaternionf& q, const XrVector3f& v)
+    {
+        const float tx = 2.0f * (q.y * v.z - q.z * v.y);
+        const float ty = 2.0f * (q.z * v.x - q.x * v.z);
+        const float tz = 2.0f * (q.x * v.y - q.y * v.x);
+        return XrVector3f{
+            v.x + q.w * tx + (q.y * tz - q.z * ty),
+            v.y + q.w * ty + (q.z * tx - q.x * tz),
+            v.z + q.w * tz + (q.x * ty - q.y * tx)
+        };
+    }
+
+    float GetLocatedViewIpd(const std::vector<XrView>& views, uint32_t locatedCount)
+    {
+        if (locatedCount < 2 || views.size() < 2)
+            return 0.063f;
+
+        const XrVector3f& left = views[L4D2VR_OPENXR_EYE_LEFT].pose.position;
+        const XrVector3f& right = views[L4D2VR_OPENXR_EYE_RIGHT].pose.position;
+        const float dx = right.x - left.x;
+        const float dy = right.y - left.y;
+        const float dz = right.z - left.z;
+        const float ipd = std::sqrt(dx * dx + dy * dy + dz * dz);
+        return (std::isfinite(ipd) && ipd > 0.01f && ipd < 0.20f) ? ipd : 0.063f;
+    }
+
+    XrPosef BuildProjectionPoseFromGameRenderPose(
+        const L4D2VROpenXrPoseDesc& renderPose,
+        const std::vector<XrView>& locatedViews,
+        uint32_t locatedCount,
+        uint32_t eyeIndex,
+        float* outYaw = nullptr,
+        float* outIpd = nullptr)
+    {
+        XrPosef pose{};
+        pose.orientation = NormalizeOpenXrQuaternion(renderPose.orientation);
+        pose.position = XrVector3f{
+            renderPose.position[0],
+            renderPose.position[1],
+            renderPose.position[2]
+        };
+
+        const float ipd = GetLocatedViewIpd(locatedViews, locatedCount);
+        XrVector3f right = RotateOpenXrVector(pose.orientation, XrVector3f{ 1.0f, 0.0f, 0.0f });
+        const float rightLen = std::sqrt(right.x * right.x + right.y * right.y + right.z * right.z);
+        if (rightLen > 0.0001f)
+        {
+            const float invLen = 1.0f / rightLen;
+            right.x *= invLen;
+            right.y *= invLen;
+            right.z *= invLen;
+        }
+        else
+        {
+            right = XrVector3f{ 1.0f, 0.0f, 0.0f };
+        }
+
+        const float side = (eyeIndex == L4D2VR_OPENXR_EYE_LEFT) ? -0.5f : 0.5f;
+        pose.position.x += right.x * ipd * side;
+        pose.position.y += right.y * ipd * side;
+        pose.position.z += right.z * ipd * side;
+
+        if (outYaw)
+            *outYaw = ExtractOpenXrYaw(pose.orientation);
+        if (outIpd)
+            *outIpd = ipd;
+        return pose;
+    }
+
+    XrPosef BuildProjectionPose(
+        const std::vector<XrView>& views,
+        uint32_t locatedCount,
+        uint32_t eyeIndex,
+        float* outYaw = nullptr,
+        float* outIpd = nullptr)
+    {
+        if (views.empty() || eyeIndex >= views.size())
+            return XrPosef{ XrQuaternionf{ 0.0f, 0.0f, 0.0f, 1.0f }, XrVector3f{ 0.0f, 0.0f, 0.0f } };
+
+        XrPosef pose = views[eyeIndex].pose;
+        const float yaw = ExtractOpenXrYaw(views[0].pose.orientation);
+
+        if (locatedCount >= 2 && views.size() >= 2)
+        {
+            const XrVector3f& left = views[L4D2VR_OPENXR_EYE_LEFT].pose.position;
+            const XrVector3f& right = views[L4D2VR_OPENXR_EYE_RIGHT].pose.position;
+            const float dx = right.x - left.x;
+            const float dy = right.y - left.y;
+            const float dz = right.z - left.z;
+            const float ipd = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (outIpd)
+                *outIpd = ipd;
+        }
+
+        if (outYaw)
+            *outYaw = yaw;
+        return pose;
+    }
+
+    bool RuntimeViewConfigIsReady(XrSessionState sessionState)
+    {
+        return sessionState == XR_SESSION_STATE_FOCUSED;
+    }
+
+    void LogRuntimeViewConfig(Logger& log, const char* renderer, const L4D2VROpenXrRuntimeViewConfigDesc& config)
+    {
+        if (!config.valid)
+            return;
+
+        const L4D2VROpenXrRuntimeViewDesc& left = config.views[L4D2VR_OPENXR_EYE_LEFT];
+        const L4D2VROpenXrRuntimeViewDesc& right = config.views[L4D2VR_OPENXR_EYE_RIGHT];
+        log.Print(
+            "%s publishing focused runtime view config L(%ux%u fov=%.4f %.4f %.4f %.4f) R(%ux%u fov=%.4f %.4f %.4f %.4f)",
+            renderer,
+            left.width,
+            left.height,
+            left.angleLeft,
+            left.angleRight,
+            left.angleUp,
+            left.angleDown,
+            right.width,
+            right.height,
+            right.angleLeft,
+            right.angleRight,
+            right.angleUp,
+            right.angleDown);
     }
 
 #if 0
@@ -2408,7 +2704,8 @@ namespace
                     continue;
                 }
 
-                if (requireSharedTextures && !m_Bridge.SharedTexturesReady())
+                const bool sharedTexturesReady = !requireSharedTextures || m_Bridge.SharedTexturesReady();
+                if (requireSharedTextures && !sharedTexturesReady)
                 {
                     const ULONGLONG now = GetTickCount64();
                     if (now - lastWaitingTextureLog > 1000ull)
@@ -2418,33 +2715,34 @@ namespace
                         lastWaitingTextureLog = now;
                     }
 
-                    Sleep(10);
-                    continue;
                 }
 
-                const uint32_t sharedTextureGeneration = m_Bridge.SharedTextureGeneration();
-                if (requireSharedTextures && sharedTextureGeneration != lastLoggedSharedTextureGeneration)
+                if (sharedTexturesReady)
                 {
-                    const auto left = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_LEFT);
-                    const auto right = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_RIGHT);
-                    m_Log.Print(
-                        "Shared game eye textures ready gen=%u L(handle=0x%llX image=0x%llX %ux%u fmt=%u) R(handle=0x%llX image=0x%llX %ux%u fmt=%u)",
-                        sharedTextureGeneration,
-                        static_cast<unsigned long long>(left.kmtHandle),
-                        static_cast<unsigned long long>(left.image),
-                        left.width,
-                        left.height,
-                        left.format,
-                        static_cast<unsigned long long>(right.kmtHandle),
-                        static_cast<unsigned long long>(right.image),
-                        right.width,
-                        right.height,
-                        right.format);
-                    lastLoggedSharedTextureGeneration = sharedTextureGeneration;
-                }
+                    const uint32_t sharedTextureGeneration = m_Bridge.SharedTextureGeneration();
+                    if (requireSharedTextures && sharedTextureGeneration != lastLoggedSharedTextureGeneration)
+                    {
+                        const auto left = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_LEFT);
+                        const auto right = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_RIGHT);
+                        m_Log.Print(
+                            "Shared game eye textures ready gen=%u L(handle=0x%llX image=0x%llX %ux%u fmt=%u) R(handle=0x%llX image=0x%llX %ux%u fmt=%u)",
+                            sharedTextureGeneration,
+                            static_cast<unsigned long long>(left.kmtHandle),
+                            static_cast<unsigned long long>(left.image),
+                            left.width,
+                            left.height,
+                            left.format,
+                            static_cast<unsigned long long>(right.kmtHandle),
+                            static_cast<unsigned long long>(right.image),
+                            right.width,
+                            right.height,
+                            right.format);
+                        lastLoggedSharedTextureGeneration = sharedTextureGeneration;
+                    }
 
-                if (requireSharedTextures && (!EnsureBlitPipeline() || !OpenSharedGameTexturesIfNeeded()))
-                    return 28;
+                    if (requireSharedTextures && (!EnsureBlitPipeline() || !OpenSharedGameTexturesIfNeeded()))
+                        return 28;
+                }
 
                 XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
                 XrFrameState frameState{ XR_TYPE_FRAME_STATE };
@@ -2480,29 +2778,52 @@ namespace
                     if (!Succeeded(m_Log, "xrLocateViews", result))
                         return 24;
 
+                    static bool s_loggedRuntimeViewConfig = false;
+                    if (locatedCount >= 2 && RuntimeViewConfigIsReady(m_SessionState))
+                    {
+                        const L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig =
+                            BuildRuntimeViewConfig(m_ViewConfigs, locatedViews, locatedCount);
+                        if (!s_loggedRuntimeViewConfig && runtimeViewConfig.valid)
+                        {
+                            s_loggedRuntimeViewConfig = true;
+                            LogRuntimeViewConfig(m_Log, "D3D11", runtimeViewConfig);
+                        }
+                        m_Bridge.PublishRuntimeViewConfig(runtimeViewConfig);
+                    }
+
+                    L4D2VROpenXrPoseDesc gameRenderPose{};
+                    uint32_t gameRenderPoseGeneration = 0;
+                    const bool haveGameRenderPose =
+                        m_Bridge.ReadGameRenderPose(gameRenderPose, &gameRenderPoseGeneration);
+
                     const bool poseValid =
                         (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
                         locatedCount >= 2;
 
                     if (poseValid)
                     {
-                        for (uint32_t eye = 0; eye < 2; ++eye)
+                        if (sharedTexturesReady)
                         {
-                            if (!RenderEye(eye, submittedFrames))
-                                return 25;
+                            for (uint32_t eye = 0; eye < 2; ++eye)
+                            {
+                                if (!RenderEye(eye, submittedFrames))
+                                    return 25;
 
-                            projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
-                            projectionViews[eye].pose = locatedViews[eye].pose;
-                            projectionViews[eye].fov = locatedViews[eye].fov;
-                            projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
-                            projectionViews[eye].subImage.imageRect.offset = { 0, 0 };
-                            projectionViews[eye].subImage.imageRect.extent = {
-                                static_cast<int32_t>(m_Eyes[eye].width),
-                                static_cast<int32_t>(m_Eyes[eye].height)
-                            };
+                                projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
+                                projectionViews[eye].pose = haveGameRenderPose
+                                    ? BuildProjectionPoseFromGameRenderPose(gameRenderPose, locatedViews, locatedCount, eye)
+                                    : BuildProjectionPose(locatedViews, locatedCount, eye);
+                                projectionViews[eye].fov = locatedViews[eye].fov;
+                                projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
+                                projectionViews[eye].subImage.imageRect.offset = { 0, 0 };
+                                projectionViews[eye].subImage.imageRect.extent = {
+                                    static_cast<int32_t>(m_Eyes[eye].width),
+                                    static_cast<int32_t>(m_Eyes[eye].height)
+                                };
+                            }
+
+                            layerReady = true;
                         }
-
-                        layerReady = true;
                     }
                 }
 
@@ -4289,9 +4610,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             if (!UpdateBlitDescriptorSet(eyeIndex))
                 return false;
 
-            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
+            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u layout=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
                 eyeIndex, generation, static_cast<unsigned long long>(desc.kmtHandle),
                 static_cast<unsigned long long>(desc.image), desc.width, desc.height, desc.format,
+                static_cast<unsigned int>(eye.layout),
                 eye.uMin, eye.vMin, eye.uMax, eye.vMax,
                 eye.renderFovXDeg, eye.renderAspect,
                 static_cast<unsigned long long>(memoryRequirements.size));
@@ -4397,6 +4719,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 0,
                 nullptr);
 
+            // Match OpenVR Submit(texture, bounds): sample the bounded source region
+            // and stretch it into the full OpenXR swapchain image.
             const float bounds[4] = { source.uMin, source.vMin, source.uMax, source.vMax };
             m_Vk.vkCmdPushConstants(
                 m_CommandBuffer,
@@ -4440,7 +4764,16 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 const VulkanGameEyeTexture& source = m_GameEyes[eyeIndex];
                 if (source.image == VK_NULL_HANDLE)
                     return false;
-                if (m_UseShaderBlit)
+                const bool useShaderBlit = m_UseShaderBlit;
+                static bool s_loggedBlitPath = false;
+                if (!s_loggedBlitPath && eyeIndex == 0)
+                {
+                    s_loggedBlitPath = true;
+                    m_Log.Print("Using %s Vulkan eye blit path for swapchain format=%u",
+                        useShaderBlit ? "sRGB shader" : "transfer",
+                        static_cast<unsigned int>(eye.format));
+                }
+                if (useShaderBlit)
                 {
                     CmdTransitionImage(dstImage, eye.layouts[imageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4520,41 +4853,45 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             return Succeeded(m_Log, "xrReleaseSwapchainImage", xrResult);
         }
 
+        XrRect2Di BuildProjectionImageRect(const VulkanGameEyeTexture& source, const VulkanEyeSwapchain& eye)
+        {
+            const float u0 = std::clamp(std::min(source.uMin, source.uMax), 0.0f, 1.0f);
+            const float u1 = std::clamp(std::max(source.uMin, source.uMax), 0.0f, 1.0f);
+            const float v0 = std::clamp(std::min(source.vMin, source.vMax), 0.0f, 1.0f);
+            const float v1 = std::clamp(std::max(source.vMin, source.vMax), 0.0f, 1.0f);
+
+            const int32_t width = static_cast<int32_t>(eye.width);
+            const int32_t height = static_cast<int32_t>(eye.height);
+            if (width <= 0 || height <= 0)
+                return XrRect2Di{ { 0, 0 }, { width, height } };
+
+            const int32_t x0 = std::clamp(static_cast<int32_t>(std::floor(u0 * static_cast<float>(width) + 0.5f)), 0, width - 1);
+            const int32_t y0 = std::clamp(static_cast<int32_t>(std::floor(v0 * static_cast<float>(height) + 0.5f)), 0, height - 1);
+            const int32_t x1 = std::clamp(static_cast<int32_t>(std::floor(u1 * static_cast<float>(width) + 0.5f)), x0 + 1, width);
+            const int32_t y1 = std::clamp(static_cast<int32_t>(std::floor(v1 * static_cast<float>(height) + 0.5f)), y0 + 1, height);
+            return XrRect2Di{ { x0, y0 }, { x1 - x0, y1 - y0 } };
+        }
+
         XrFovf BuildGameProjectionFov(const VulkanGameEyeTexture& source, const XrFovf& runtimeFov, uint32_t eyeIndex)
         {
             if (!m_Bridge.HasState())
                 return runtimeFov;
-
-            const float fovXDeg = std::clamp(source.renderFovXDeg, 1.0f, 179.0f);
-            const float aspect = std::clamp(source.renderAspect, 0.1f, 10.0f);
-            constexpr float kPi = 3.14159265358979323846f;
-            const float halfX = std::tan(fovXDeg * kPi / 360.0f);
-            const float halfY = halfX / aspect;
-            XrFovf fov{};
-            fov.angleLeft = -std::atan(halfX);
-            fov.angleRight = std::atan(halfX);
-            fov.angleUp = std::atan(halfY);
-            fov.angleDown = -std::atan(halfY);
 
             static bool s_loggedProjection = false;
             if (!s_loggedProjection && eyeIndex == 0)
             {
                 s_loggedProjection = true;
                 m_Log.Print(
-                    "Using game render projection for OpenXR submit fovX=%.2f aspect=%.4f xrFov=(L=%.4f R=%.4f U=%.4f D=%.4f) runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
-                    fovXDeg,
-                    aspect,
-                    fov.angleLeft,
-                    fov.angleRight,
-                    fov.angleUp,
-                    fov.angleDown,
+                    "Using runtime OpenXR projection for submit; game render projection fovX=%.2f aspect=%.4f runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
+                    source.renderFovXDeg,
+                    source.renderAspect,
                     runtimeFov.angleLeft,
                     runtimeFov.angleRight,
                     runtimeFov.angleUp,
                     runtimeFov.angleDown);
             }
 
-            return fov;
+            return runtimeFov;
         }
 
         int FrameLoop(const Options& options)
@@ -4564,7 +4901,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             bool shouldExit = false;
             const bool requireSharedTextures = m_Bridge.HasState();
             uint32_t lastLoggedSharedTextureGeneration = 0;
+            uint32_t lastSubmittedSharedTextureFrameGeneration = 0;
             ULONGLONG lastWaitingTextureLog = 0;
+            ULONGLONG lastWaitingFrameLog = 0;
             m_Log.Print("Entering Vulkan frame loop targetFrames=%u waitReadySeconds=%u parentPid=%lu requireSharedTextures=%u",
                 options.targetFrames, options.waitReadySeconds, static_cast<unsigned long>(options.parentPid), requireSharedTextures ? 1u : 0u);
 
@@ -4584,7 +4923,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     Sleep(10);
                     continue;
                 }
-                if (requireSharedTextures && !m_Bridge.SharedTexturesReady())
+                const bool sharedTexturesReady = !requireSharedTextures || m_Bridge.SharedTexturesReady();
+                if (requireSharedTextures && !sharedTexturesReady)
                 {
                     const ULONGLONG now = GetTickCount64();
                     if (now - lastWaitingTextureLog > 1000ull)
@@ -4593,23 +4933,39 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                         m_Bridge.Update(L4D2VROpenXrBridgeStatus::WaitingForSharedTextures, 0, submittedFrames, "waiting for shared game eye textures");
                         lastWaitingTextureLog = now;
                     }
-                    Sleep(10);
-                    continue;
                 }
-                const uint32_t generation = m_Bridge.SharedTextureGeneration();
-                if (requireSharedTextures && generation != lastLoggedSharedTextureGeneration)
+                if (sharedTexturesReady)
                 {
-                    const auto left = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_LEFT);
-                    const auto right = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_RIGHT);
-                    m_Log.Print("Shared game eye textures ready gen=%u L(handle=0x%llX image=0x%llX %ux%u fmt=%u type=0x%X q=%u) R(handle=0x%llX image=0x%llX %ux%u fmt=%u type=0x%X q=%u)",
-                        generation, static_cast<unsigned long long>(left.kmtHandle), static_cast<unsigned long long>(left.image),
-                        left.width, left.height, left.format, left.handleType, left.queueFamilyIndex,
-                        static_cast<unsigned long long>(right.kmtHandle), static_cast<unsigned long long>(right.image),
-                        right.width, right.height, right.format, right.handleType, right.queueFamilyIndex);
-                    lastLoggedSharedTextureGeneration = generation;
+                    const uint32_t generation = m_Bridge.SharedTextureGeneration();
+                    if (requireSharedTextures && generation != lastLoggedSharedTextureGeneration)
+                    {
+                        const auto left = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_LEFT);
+                        const auto right = m_Bridge.SharedTexture(L4D2VR_OPENXR_EYE_RIGHT);
+                        m_Log.Print("Shared game eye textures ready gen=%u L(handle=0x%llX image=0x%llX %ux%u fmt=%u type=0x%X q=%u) R(handle=0x%llX image=0x%llX %ux%u fmt=%u type=0x%X q=%u)",
+                            generation, static_cast<unsigned long long>(left.kmtHandle), static_cast<unsigned long long>(left.image),
+                            left.width, left.height, left.format, left.handleType, left.queueFamilyIndex,
+                            static_cast<unsigned long long>(right.kmtHandle), static_cast<unsigned long long>(right.image),
+                            right.width, right.height, right.format, right.handleType, right.queueFamilyIndex);
+                        lastLoggedSharedTextureGeneration = generation;
+                    }
+                    if (requireSharedTextures && !ImportSharedGameTexturesIfNeeded())
+                        return 28;
                 }
-                if (requireSharedTextures && !ImportSharedGameTexturesIfNeeded())
-                    return 28;
+
+                uint32_t sharedTextureFrameId = 0;
+                uint32_t sharedTextureFrameGeneration = 0;
+                const bool sharedTextureFrameReady =
+                    !requireSharedTextures ||
+                    m_Bridge.ReadSharedTextureFrame(sharedTextureFrameId, &sharedTextureFrameGeneration);
+                if (requireSharedTextures && sharedTexturesReady && !sharedTextureFrameReady)
+                {
+                    const ULONGLONG now = GetTickCount64();
+                    if (now - lastWaitingFrameLog > 1000ull)
+                    {
+                        m_Log.Print("Waiting for resolved shared eye frame");
+                        lastWaitingFrameLog = now;
+                    }
+                }
 
                 XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
                 XrFrameState frameState{ XR_TYPE_FRAME_STATE };
@@ -4641,19 +4997,102 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                         locatedCount,
                         viewState.viewStateFlags,
                         frameState.predictedDisplayTime));
+                    static bool s_loggedRuntimeViewConfig = false;
+                    if (locatedCount >= 2 && RuntimeViewConfigIsReady(m_SessionState))
+                    {
+                        const L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig =
+                            BuildRuntimeViewConfig(m_ViewConfigs, locatedViews, locatedCount);
+                        if (!s_loggedRuntimeViewConfig && runtimeViewConfig.valid)
+                        {
+                            s_loggedRuntimeViewConfig = true;
+                            LogRuntimeViewConfig(m_Log, "Vulkan", runtimeViewConfig);
+                        }
+                        m_Bridge.PublishRuntimeViewConfig(runtimeViewConfig);
+                    }
+                    L4D2VROpenXrPoseDesc gameRenderPose{};
+                    uint32_t gameRenderPoseGeneration = 0;
+                    const bool haveGameRenderPose =
+                        m_Bridge.ReadGameRenderPose(gameRenderPose, &gameRenderPoseGeneration);
                     if ((viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 && locatedCount >= 2)
                     {
-                        for (uint32_t eye = 0; eye < 2; ++eye)
+                        const bool haveNewResolvedSharedFrame =
+                            !requireSharedTextures ||
+                            (sharedTextureFrameReady &&
+                                sharedTextureFrameGeneration != lastSubmittedSharedTextureFrameGeneration);
+
+                        if (sharedTexturesReady && haveNewResolvedSharedFrame)
                         {
-                            if (!RenderEye(eye, submittedFrames))
-                                return 25;
-                            projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
-                            projectionViews[eye].pose = locatedViews[eye].pose;
-                            projectionViews[eye].fov = BuildGameProjectionFov(m_GameEyes[eye], locatedViews[eye].fov, eye);
-                            projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
-                            projectionViews[eye].subImage.imageRect.extent = { static_cast<int32_t>(m_Eyes[eye].width), static_cast<int32_t>(m_Eyes[eye].height) };
+                            for (uint32_t eye = 0; eye < 2; ++eye)
+                            {
+                                if (!RenderEye(eye, submittedFrames))
+                                    return 25;
+                                projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
+                                float renderYaw = 0.0f;
+                                float renderIpd = 0.0f;
+                                projectionViews[eye].pose = haveGameRenderPose
+                                    ? BuildProjectionPoseFromGameRenderPose(
+                                        gameRenderPose,
+                                        locatedViews,
+                                        locatedCount,
+                                        eye,
+                                        &renderYaw,
+                                        &renderIpd)
+                                    : BuildProjectionPose(
+                                        locatedViews,
+                                        locatedCount,
+                                        eye,
+                                        &renderYaw,
+                                        &renderIpd);
+                                projectionViews[eye].fov = BuildGameProjectionFov(m_GameEyes[eye], locatedViews[eye].fov, eye);
+                                projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
+                                projectionViews[eye].subImage.imageRect.offset = { 0, 0 };
+                                projectionViews[eye].subImage.imageRect.extent = {
+                                    static_cast<int32_t>(m_Eyes[eye].width),
+                                    static_cast<int32_t>(m_Eyes[eye].height)
+                                };
+                                static bool s_loggedProjectionPose = false;
+                                if (!s_loggedProjectionPose && eye == 0)
+                                {
+                                    s_loggedProjectionPose = true;
+                                    const XrPosef& pose = projectionViews[eye].pose;
+                                    m_Log.Print(
+                                        "Using %s OpenXR projection pose for submit gameRenderGen=%u yawDeg=%.2f ipd=%.4f eye0Pos=(%.4f %.4f %.4f) eye0Quat=(%.4f %.4f %.4f %.4f)",
+                                        haveGameRenderPose ? "game render" : "runtime located",
+                                        gameRenderPoseGeneration,
+                                        renderYaw * (180.0f / 3.141592654f),
+                                        renderIpd,
+                                        pose.position.x,
+                                        pose.position.y,
+                                        pose.position.z,
+                                        pose.orientation.x,
+                                        pose.orientation.y,
+                                        pose.orientation.z,
+                                        pose.orientation.w);
+                                }
+                                static bool s_loggedImageRect = false;
+                                if (!s_loggedImageRect && eye == 0)
+                                {
+                                    s_loggedImageRect = true;
+                                    const XrRect2Di& rect = projectionViews[eye].subImage.imageRect;
+                                    m_Log.Print(
+                                        "Using OpenVR-style texture bounds as source crop eye=%u bounds=(%.4f %.4f %.4f %.4f) imageRect=(%d,%d %dx%d) swapchain=%ux%u",
+                                        eye,
+                                        m_GameEyes[eye].uMin,
+                                        m_GameEyes[eye].vMin,
+                                        m_GameEyes[eye].uMax,
+                                        m_GameEyes[eye].vMax,
+                                        rect.offset.x,
+                                        rect.offset.y,
+                                        rect.extent.width,
+                                        rect.extent.height,
+                                        m_Eyes[eye].width,
+                                        m_Eyes[eye].height);
+                                }
+                            }
+                            layerReady = true;
+                            if (requireSharedTextures)
+                                lastSubmittedSharedTextureFrameGeneration = sharedTextureFrameGeneration;
                         }
-                        layerReady = true;
                     }
                 }
 

@@ -401,6 +401,49 @@ bool L4D2VR_ReadOpenXrHmdPose(L4D2VROpenXrPoseDesc& pose, uint32_t* generation)
     return false;
 }
 
+bool L4D2VR_ReadOpenXrRuntimeViewConfig(L4D2VROpenXrRuntimeViewConfigDesc& config, uint32_t* generation)
+{
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    const L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return false;
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const uint32_t gen0 = state->runtimeViewConfigGeneration;
+        if (gen0 == 0 || (gen0 & 1u))
+            continue;
+
+        L4D2VROpenXrRuntimeViewConfigDesc snapshot = state->runtimeViewConfig;
+        const uint32_t gen1 = state->runtimeViewConfigGeneration;
+        if (gen0 == gen1 && !(gen1 & 1u) && snapshot.valid)
+        {
+            config = snapshot;
+            if (generation)
+                *generation = gen1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void L4D2VR_PublishOpenXrGameRenderPose(const L4D2VROpenXrPoseDesc& pose)
+{
+    if (!pose.valid)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return;
+
+    ++state->gameRenderPoseGeneration;
+    state->gameRenderPose = pose;
+    ++state->gameRenderPoseGeneration;
+    state->heartbeatTickMs = GetTickCount64();
+}
+
 void L4D2VR_PublishOpenXrSharedTexture(uint32_t eyeIndex, const L4D2VROpenXrSharedTextureDesc& texture)
 {
     if (eyeIndex >= L4D2VR_OPENXR_EYE_COUNT || !texture.valid)
@@ -446,4 +489,23 @@ void L4D2VR_PublishOpenXrSharedTexture(uint32_t eyeIndex, const L4D2VROpenXrShar
             "waiting for shared eye textures mask=0x%X",
             state->sharedTexturesReadyMask);
     }
+}
+
+void L4D2VR_PublishOpenXrSharedTextureFrame(uint32_t frameId)
+{
+    if (frameId == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return;
+
+    if ((state->sharedTexturesReadyMask & L4D2VR_OPENXR_EYES_READY_MASK) != L4D2VR_OPENXR_EYES_READY_MASK)
+        return;
+
+    ++state->sharedTextureFrameGeneration;
+    state->sharedTextureFrameId = frameId;
+    ++state->sharedTextureFrameGeneration;
+    state->heartbeatTickMs = GetTickCount64();
 }

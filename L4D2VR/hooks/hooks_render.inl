@@ -2258,6 +2258,61 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture, LPDIRECT3DSURFACE9 reshadeSurface,
 		CViewSetup& eyeView, CViewSetup& eyeHud, bool drawPreViewLaser)
 		{
+			struct EyeRenderViewProbe
+			{
+				EyeRenderViewProbe(IMatRenderContext* ctx, ITexture* target, const CViewSetup& view, const CViewSetup& hud, int eyeIndex)
+				{
+					static std::atomic<int> s_eyeProbeBudget{ 24 };
+					const int probeIndex = s_eyeProbeBudget.fetch_sub(1, std::memory_order_acq_rel);
+					if (probeIndex <= 0)
+						return;
+
+					int vpX = 0;
+					int vpY = 0;
+					int vpW = 0;
+					int vpH = 0;
+					const bool haveVp = DebugGetViewport(ctx, vpX, vpY, vpW, vpH);
+					ITexture* currentRt = DebugCurrentRenderTarget(ctx);
+					int rtMapW = 0;
+					int rtMapH = 0;
+					int rtActualW = 0;
+					int rtActualH = 0;
+					DebugTextureFullSize(currentRt, rtMapW, rtMapH, rtActualW, rtActualH);
+					int targetMapW = 0;
+					int targetMapH = 0;
+					int targetActualW = 0;
+					int targetActualH = 0;
+					DebugTextureFullSize(target, targetMapW, targetMapH, targetActualW, targetActualH);
+					Game::logMsg("[VR][RenderView][EyeProbe] left=%d eye=%d rt=%s(map=%dx%d actual=%dx%d) target=%s(map=%dx%d actual=%dx%d) setup=%dx%d unscaled=%dx%d hud=%dx%d hudUnscaled=%dx%d vp=%d,%d %dx%d haveVp=%d fov=%.2f aspect=%.4f",
+						probeIndex,
+						eyeIndex,
+						DebugTextureName(currentRt),
+						rtMapW,
+						rtMapH,
+						rtActualW,
+						rtActualH,
+						DebugTextureName(target),
+						targetMapW,
+						targetMapH,
+						targetActualW,
+						targetActualH,
+						view.width,
+						view.height,
+						view.m_nUnscaledWidth,
+						view.m_nUnscaledHeight,
+						hud.width,
+						hud.height,
+						hud.m_nUnscaledWidth,
+						hud.m_nUnscaledHeight,
+						vpX,
+						vpY,
+						vpW,
+						vpH,
+						haveVp ? 1 : 0,
+						view.fov,
+						view.m_flAspectRatio);
+				}
+			};
 			struct EyeRenderTargetScope
 			{
 				IMatRenderContext* ctx = nullptr;
@@ -2278,6 +2333,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					if (hkPushRenderTargetAndViewport.fOriginal && hkPopRenderTargetAndViewport.fOriginal)
 					{
 						hkPushRenderTargetAndViewport.fOriginal(ctx, target, nullptr, 0, 0, width, height);
+						if (hkViewport.fOriginal)
+							hkViewport.fOriginal(ctx, 0, 0, width, height);
 						pushed = true;
 						return;
 					}
@@ -2346,6 +2403,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				eyeTexture,
 				static_cast<int>(m_VR->m_RenderWidth),
 				static_cast<int>(m_VR->m_RenderHeight));
+			if (hkViewport.fOriginal)
+				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
+			EyeRenderViewProbe eyeProbe(rndrContext, eyeTexture, eyeView, eyeHud, eyeIndex);
 			EyeSharedCenterScope sharedCenterScope(
 				s_vrEyeRenderPass,
 				s_vrSharedCenterValid,

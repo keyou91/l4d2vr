@@ -7,6 +7,9 @@ void VR::GetPoses()
         if (!L4D2VR_ReadOpenXrHmdPose(openXrPose, &generation))
             return;
 
+        m_OpenXrLastHmdPose = openXrPose;
+        m_OpenXrLastHmdPoseGeneration = generation;
+
         float x = openXrPose.orientation[0];
         float y = openXrPose.orientation[1];
         float z = openXrPose.orientation[2];
@@ -31,10 +34,6 @@ void VR::GetPoses()
         const float openXrYaw = atan2f(
             2.0f * (w * y + x * z),
             1.0f - 2.0f * (y * y + z * z));
-        x = 0.0f;
-        y = sinf(openXrYaw * 0.5f);
-        z = 0.0f;
-        w = cosf(openXrYaw * 0.5f);
 
         vr::TrackedDevicePose_t hmdPose{};
         hmdPose.bDeviceIsConnected = true;
@@ -61,7 +60,7 @@ void VR::GetPoses()
         if (generation != 0 && s_lastLoggedOpenXrPoseGeneration == 0)
         {
             s_lastLoggedOpenXrPoseGeneration = generation;
-            Game::logMsg("[VR][OpenXRHelper] consumed OpenXR HMD pose gen=%u pos=(%.3f %.3f %.3f) yawOnlyDeg=%.2f quat=(%.3f %.3f %.3f %.3f)",
+            Game::logMsg("[VR][OpenXRHelper] consumed OpenXR HMD pose gen=%u pos=(%.3f %.3f %.3f) yawDeg=%.2f quat=(%.3f %.3f %.3f %.3f)",
                 generation,
                 openXrPose.position[0],
                 openXrPose.position[1],

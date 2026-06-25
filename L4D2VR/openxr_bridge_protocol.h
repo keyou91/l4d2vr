@@ -3,7 +3,7 @@
 #include <cstdint>
 
 constexpr uint32_t L4D2VR_OPENXR_BRIDGE_MAGIC = 0x5258344Cu; // L4XR
-constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 4;
+constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 7;
 
 enum class L4D2VROpenXrBridgeStatus : uint32_t
 {
@@ -61,6 +61,27 @@ struct L4D2VROpenXrPoseDesc
     float orientation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 };
 
+struct L4D2VROpenXrRuntimeViewDesc
+{
+    uint32_t valid = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t recommendedSampleCount = 0;
+    float angleLeft = 0.0f;
+    float angleRight = 0.0f;
+    float angleUp = 0.0f;
+    float angleDown = 0.0f;
+};
+
+struct L4D2VROpenXrRuntimeViewConfigDesc
+{
+    uint32_t valid = 0;
+    uint32_t viewCount = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+    L4D2VROpenXrRuntimeViewDesc views[L4D2VR_OPENXR_EYE_COUNT] = {};
+};
+
 struct L4D2VROpenXrBridgeState
 {
     uint32_t magic = L4D2VR_OPENXR_BRIDGE_MAGIC;
@@ -74,8 +95,14 @@ struct L4D2VROpenXrBridgeState
     uint64_t heartbeatTickMs = 0;
     uint32_t sharedTextureGeneration = 0;
     uint32_t sharedTexturesReadyMask = 0;
+    uint32_t sharedTextureFrameGeneration = 0;
+    uint32_t sharedTextureFrameId = 0;
     L4D2VROpenXrSharedTextureDesc eyeTextures[L4D2VR_OPENXR_EYE_COUNT] = {};
     uint32_t trackingPoseGeneration = 0;
     L4D2VROpenXrPoseDesc hmdPose = {};
+    uint32_t gameRenderPoseGeneration = 0;
+    L4D2VROpenXrPoseDesc gameRenderPose = {};
+    uint32_t runtimeViewConfigGeneration = 0;
+    L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig = {};
     char detail[256] = {};
 };
