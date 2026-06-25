@@ -9,52 +9,130 @@ void VR::GetPoses()
 
         m_OpenXrLastHmdPose = openXrPose;
         m_OpenXrLastHmdPoseGeneration = generation;
+        L4D2VR_ReadOpenXrInputState(m_OpenXrLastInputState, &m_OpenXrLastInputStateGeneration);
 
-        float x = openXrPose.orientation[0];
-        float y = openXrPose.orientation[1];
-        float z = openXrPose.orientation[2];
-        float w = openXrPose.orientation[3];
-        const float lenSq = x * x + y * y + z * z + w * w;
-        if (lenSq > 0.000001f)
-        {
-            const float invLen = 1.0f / std::sqrt(lenSq);
-            x *= invLen;
-            y *= invLen;
-            z *= invLen;
-            w *= invLen;
-        }
-        else
-        {
-            x = 0.0f;
-            y = 0.0f;
-            z = 0.0f;
-            w = 1.0f;
-        }
+        auto normalizeQuaternion = [](const float* orientation, float& x, float& y, float& z, float& w)
+            {
+                x = orientation[0];
+                y = orientation[1];
+                z = orientation[2];
+                w = orientation[3];
+                const float lenSq = x * x + y * y + z * z + w * w;
+                if (lenSq > 0.000001f)
+                {
+                    const float invLen = 1.0f / std::sqrt(lenSq);
+                    x *= invLen;
+                    y *= invLen;
+                    z *= invLen;
+                    w *= invLen;
+                }
+                else
+                {
+                    x = 0.0f;
+                    y = 0.0f;
+                    z = 0.0f;
+                    w = 1.0f;
+                }
+            };
+
+        auto makeTrackedPose = [&](const float* position, const float* orientation, bool valid)
+            {
+                vr::TrackedDevicePose_t pose{};
+                if (!valid)
+                    return pose;
+
+                float x = 0.0f;
+                float y = 0.0f;
+                float z = 0.0f;
+                float w = 1.0f;
+                normalizeQuaternion(orientation, x, y, z, w);
+
+                pose.bDeviceIsConnected = true;
+                pose.bPoseIsValid = true;
+                pose.eTrackingResult = vr::TrackingResult_Running_OK;
+                vr::HmdMatrix34_t& mat = pose.mDeviceToAbsoluteTracking;
+                mat.m[0][0] = 1.0f - 2.0f * y * y - 2.0f * z * z;
+                mat.m[0][1] = 2.0f * x * y - 2.0f * z * w;
+                mat.m[0][2] = 2.0f * x * z + 2.0f * y * w;
+                mat.m[1][0] = 2.0f * x * y + 2.0f * z * w;
+                mat.m[1][1] = 1.0f - 2.0f * x * x - 2.0f * z * z;
+                mat.m[1][2] = 2.0f * y * z - 2.0f * x * w;
+                mat.m[2][0] = 2.0f * x * z - 2.0f * y * w;
+                mat.m[2][1] = 2.0f * y * z + 2.0f * x * w;
+                mat.m[2][2] = 1.0f - 2.0f * x * x - 2.0f * y * y;
+                mat.m[0][3] = position[0];
+                mat.m[1][3] = position[1];
+                mat.m[2][3] = position[2];
+                return pose;
+            };
+
+        float hmdX = 0.0f;
+        float hmdY = 0.0f;
+        float hmdZ = 0.0f;
+        float hmdW = 1.0f;
+        normalizeQuaternion(openXrPose.orientation, hmdX, hmdY, hmdZ, hmdW);
 
         const float openXrYaw = atan2f(
-            2.0f * (w * y + x * z),
-            1.0f - 2.0f * (y * y + z * z));
+            2.0f * (hmdW * hmdY + hmdX * hmdZ),
+            1.0f - 2.0f * (hmdY * hmdY + hmdZ * hmdZ));
 
-        vr::TrackedDevicePose_t hmdPose{};
-        hmdPose.bDeviceIsConnected = true;
-        hmdPose.bPoseIsValid = true;
-        hmdPose.eTrackingResult = vr::TrackingResult_Running_OK;
-        vr::HmdMatrix34_t& mat = hmdPose.mDeviceToAbsoluteTracking;
-        mat.m[0][0] = 1.0f - 2.0f * y * y - 2.0f * z * z;
-        mat.m[0][1] = 2.0f * x * y - 2.0f * z * w;
-        mat.m[0][2] = 2.0f * x * z + 2.0f * y * w;
-        mat.m[1][0] = 2.0f * x * y + 2.0f * z * w;
-        mat.m[1][1] = 1.0f - 2.0f * x * x - 2.0f * z * z;
-        mat.m[1][2] = 2.0f * y * z - 2.0f * x * w;
-        mat.m[2][0] = 2.0f * x * z - 2.0f * y * w;
-        mat.m[2][1] = 2.0f * y * z + 2.0f * x * w;
-        mat.m[2][2] = 1.0f - 2.0f * x * x - 2.0f * y * y;
-        mat.m[0][3] = openXrPose.position[0];
-        mat.m[1][3] = openXrPose.position[1];
-        mat.m[2][3] = openXrPose.position[2];
+        vr::TrackedDevicePose_t hmdPose = makeTrackedPose(
+            openXrPose.position,
+            openXrPose.orientation,
+            openXrPose.valid != 0);
+
+        const L4D2VROpenXrControllerPoseDesc& physicalLeft =
+            m_OpenXrLastInputState.controllerPoses[L4D2VR_OPENXR_HAND_LEFT];
+        const L4D2VROpenXrControllerPoseDesc& physicalRight =
+            m_OpenXrLastInputState.controllerPoses[L4D2VR_OPENXR_HAND_RIGHT];
+        vr::TrackedDevicePose_t leftControllerPose = makeTrackedPose(
+            physicalLeft.position,
+            physicalLeft.orientation,
+            physicalLeft.valid != 0 && physicalLeft.active != 0);
+        vr::TrackedDevicePose_t rightControllerPose = makeTrackedPose(
+            physicalRight.position,
+            physicalRight.orientation,
+            physicalRight.valid != 0 && physicalRight.active != 0);
+
+        if (m_LeftHanded)
+            std::swap(leftControllerPose, rightControllerPose);
+
+        static bool s_loggedOpenXrInputState = false;
+        if (!s_loggedOpenXrInputState && m_OpenXrLastInputStateGeneration != 0)
+        {
+            s_loggedOpenXrInputState = true;
+            Game::logMsg("[VR][OpenXRHelper] consumed OpenXR input state gen=%u leftValid=%u leftActive=%u rightValid=%u rightActive=%u features=0x%X",
+                m_OpenXrLastInputStateGeneration,
+                physicalLeft.valid,
+                physicalLeft.active,
+                physicalRight.valid,
+                physicalRight.active,
+                m_OpenXrLastInputState.featureFlags);
+        }
+
+        static bool s_loggedOpenXrControllerPose = false;
+        if (!s_loggedOpenXrControllerPose &&
+            ((physicalLeft.valid && physicalLeft.active) || (physicalRight.valid && physicalRight.active)))
+        {
+            s_loggedOpenXrControllerPose = true;
+            Game::logMsg("[VR][OpenXRHelper] consumed OpenXR controller pose gen=%u L(%u/%u %.3f %.3f %.3f) R(%u/%u %.3f %.3f %.3f)",
+                m_OpenXrLastInputStateGeneration,
+                physicalLeft.valid,
+                physicalLeft.active,
+                physicalLeft.position[0],
+                physicalLeft.position[1],
+                physicalLeft.position[2],
+                physicalRight.valid,
+                physicalRight.active,
+                physicalRight.position[0],
+                physicalRight.position[1],
+                physicalRight.position[2]);
+        }
 
         m_Poses[vr::k_unTrackedDeviceIndex_Hmd] = hmdPose;
         GetPoseData(hmdPose, m_HmdPose);
+        GetPoseData(leftControllerPose, m_LeftControllerPose);
+        GetPoseData(rightControllerPose, m_RightControllerPose);
 
         static uint32_t s_lastLoggedOpenXrPoseGeneration = 0;
         if (generation != 0 && s_lastLoggedOpenXrPoseGeneration == 0)
@@ -66,10 +144,10 @@ void VR::GetPoses()
                 openXrPose.position[1],
                 openXrPose.position[2],
                 openXrYaw * (180.0f / 3.141592654f),
-                x,
-                y,
-                z,
-                w);
+                hmdX,
+                hmdY,
+                hmdZ,
+                hmdW);
         }
         return;
     }
@@ -157,6 +235,7 @@ bool VR::UpdatePosesAndActions()
         const uint32_t submitToken = s_openXrHelperSubmitToken.fetch_add(1, std::memory_order_acq_rel) + 1;
         m_SubmitPoseToken.store(submitToken, std::memory_order_release);
         m_PoseWaiterEnabled.store(false, std::memory_order_release);
+        L4D2VR_ReadOpenXrInputState(m_OpenXrLastInputState, &m_OpenXrLastInputStateGeneration);
         return true;
     }
 
@@ -250,7 +329,26 @@ bool VR::PressedDigitalAction(vr::VRActionHandle_t& actionHandle, bool checkIfAc
 bool VR::GetDigitalActionData(vr::VRActionHandle_t& actionHandle, vr::InputDigitalActionData_t& digitalDataOut)
 {
     digitalDataOut = {};
-    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_Input)
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapDigitalAction(actionHandle);
+        const uint32_t actionIndex = static_cast<uint32_t>(resolvedActionHandle);
+        if (actionIndex == 0 || actionIndex >= L4D2VR_OPENXR_ACTION_COUNT)
+            return false;
+
+        const L4D2VROpenXrDigitalActionDesc& action = m_OpenXrLastInputState.digitalActions[actionIndex];
+        if (!action.active)
+            return false;
+
+        digitalDataOut.bActive = true;
+        digitalDataOut.activeOrigin = vr::k_ulInvalidInputValueHandle;
+        digitalDataOut.bState = action.state != 0;
+        digitalDataOut.bChanged = action.changed != 0;
+        digitalDataOut.fUpdateTime = 0.0f;
+        return true;
+    }
+
+    if (!m_Input)
         return false;
 
     const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapDigitalAction(actionHandle);
@@ -262,7 +360,30 @@ bool VR::GetDigitalActionData(vr::VRActionHandle_t& actionHandle, vr::InputDigit
 bool VR::GetAnalogActionData(vr::VRActionHandle_t& actionHandle, vr::InputAnalogActionData_t& analogDataOut)
 {
     analogDataOut = {};
-    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_Input)
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapAnalogAction(actionHandle);
+        const uint32_t actionIndex = static_cast<uint32_t>(resolvedActionHandle);
+        if (actionIndex == 0 || actionIndex >= L4D2VR_OPENXR_ACTION_COUNT)
+            return false;
+
+        const L4D2VROpenXrAnalogActionDesc& action = m_OpenXrLastInputState.analogActions[actionIndex];
+        if (!action.active)
+            return false;
+
+        analogDataOut.bActive = true;
+        analogDataOut.activeOrigin = vr::k_ulInvalidInputValueHandle;
+        analogDataOut.x = action.x;
+        analogDataOut.y = action.y;
+        analogDataOut.z = 0.0f;
+        analogDataOut.deltaX = 0.0f;
+        analogDataOut.deltaY = 0.0f;
+        analogDataOut.deltaZ = 0.0f;
+        analogDataOut.fUpdateTime = 0.0f;
+        return true;
+    }
+
+    if (!m_Input)
         return false;
 
     const vr::VRActionHandle_t resolvedActionHandle = ResolveLeftHandedSwapAnalogAction(actionHandle);
@@ -312,6 +433,47 @@ void VR::ProcessMenuInput()
 {
     const bool inGame = m_Game->m_EngineClient->IsInGame();
     vr::VROverlayHandle_t currentOverlay = inGame ? m_HUDTopHandle : m_MainMenuHandle;
+
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        if (PressedDigitalAction(m_MenuSelect, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_SPACE);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_SPACE);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_SPACE);
+        }
+        if (PressedDigitalAction(m_MenuBack, true) || PressedDigitalAction(m_Pause, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_ESCAPE);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_ESCAPE);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_ESCAPE);
+        }
+        if (PressedDigitalAction(m_MenuUp, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_UP);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_UP);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_UP);
+        }
+        if (PressedDigitalAction(m_MenuDown, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_DOWN);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_DOWN);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_DOWN);
+        }
+        if (PressedDigitalAction(m_MenuLeft, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_LEFT);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_LEFT);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_LEFT);
+        }
+        if (PressedDigitalAction(m_MenuRight, true))
+        {
+            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_RIGHT);
+            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_RIGHT);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_RIGHT);
+        }
+        return;
+    }
 
     vr::IVROverlay* overlayApi = vr::VROverlay();
     if (!overlayApi)

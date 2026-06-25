@@ -3,9 +3,6 @@ void VR::ProcessInput()
     if (!m_IsVREnabled)
         return;
 
-    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
-        return;
-
     if (m_InGameVguiMouseDown && m_Game && m_Game->m_VguiInput)
     {
         m_Game->m_VguiInput->InternalMouseReleased(ButtonCode_t::MOUSE_LEFT);
@@ -17,9 +14,15 @@ void VR::ProcessInput()
     m_ScopeFovAdjustSuppressWalk = false;
     m_ScopeFovAdjustingThisFrame = false;
 
-    vr::VROverlay()->SetOverlayFlag(m_HUDTopHandle, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
-    for (vr::VROverlayHandle_t& overlay : m_HUDBottomHandles)
-        vr::VROverlay()->SetOverlayFlag(overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+    if (m_RuntimeBackend != VrRuntimeBackend::OpenXR)
+    {
+        if (vr::IVROverlay* overlayApi = vr::VROverlay())
+        {
+            overlayApi->SetOverlayFlag(m_HUDTopHandle, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+            for (vr::VROverlayHandle_t& overlay : m_HUDBottomHandles)
+                overlayApi->SetOverlayFlag(overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+        }
+    }
 
     typedef std::chrono::duration<float, std::milli> duration;
     auto currentTime = std::chrono::steady_clock::now();
@@ -1681,18 +1684,32 @@ void VR::ProcessInput()
 
     auto showTopHud = [&]()
         {
-            vr::VROverlay()->ShowOverlay(m_HUDTopHandle);
+            if (m_RuntimeBackend != VrRuntimeBackend::OpenXR)
+            {
+                if (vr::IVROverlay* overlayApi = vr::VROverlay())
+                    overlayApi->ShowOverlay(m_HUDTopHandle);
+            }
         };
 
     auto hideTopHud = [&]()
         {
-            vr::VROverlay()->HideOverlay(m_HUDTopHandle);
+            if (m_RuntimeBackend != VrRuntimeBackend::OpenXR)
+            {
+                if (vr::IVROverlay* overlayApi = vr::VROverlay())
+                    overlayApi->HideOverlay(m_HUDTopHandle);
+            }
         };
 
     auto hideBottomHud = [&]()
         {
-            for (vr::VROverlayHandle_t& overlay : m_HUDBottomHandles)
-                vr::VROverlay()->HideOverlay(overlay);
+            if (m_RuntimeBackend != VrRuntimeBackend::OpenXR)
+            {
+                if (vr::IVROverlay* overlayApi = vr::VROverlay())
+                {
+                    for (vr::VROverlayHandle_t& overlay : m_HUDBottomHandles)
+                        overlayApi->HideOverlay(overlay);
+                }
+            }
         };
 
     const bool menuActive = m_Game->m_EngineClient->IsPaused();

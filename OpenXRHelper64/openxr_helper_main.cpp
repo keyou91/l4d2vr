@@ -363,8 +363,26 @@ namespace
         PFN_xrEnumerateEnvironmentBlendModes xrEnumerateEnvironmentBlendModes = nullptr;
         PFN_xrCreateSession xrCreateSession = nullptr;
         PFN_xrDestroySession xrDestroySession = nullptr;
+        PFN_xrStringToPath xrStringToPath = nullptr;
+        PFN_xrPathToString xrPathToString = nullptr;
+        PFN_xrCreateActionSet xrCreateActionSet = nullptr;
+        PFN_xrDestroyActionSet xrDestroyActionSet = nullptr;
+        PFN_xrCreateAction xrCreateAction = nullptr;
+        PFN_xrDestroyAction xrDestroyAction = nullptr;
+        PFN_xrSuggestInteractionProfileBindings xrSuggestInteractionProfileBindings = nullptr;
+        PFN_xrGetCurrentInteractionProfile xrGetCurrentInteractionProfile = nullptr;
+        PFN_xrAttachSessionActionSets xrAttachSessionActionSets = nullptr;
+        PFN_xrGetActionStateBoolean xrGetActionStateBoolean = nullptr;
+        PFN_xrGetActionStateFloat xrGetActionStateFloat = nullptr;
+        PFN_xrGetActionStateVector2f xrGetActionStateVector2f = nullptr;
+        PFN_xrGetActionStatePose xrGetActionStatePose = nullptr;
+        PFN_xrSyncActions xrSyncActions = nullptr;
+        PFN_xrApplyHapticFeedback xrApplyHapticFeedback = nullptr;
+        PFN_xrStopHapticFeedback xrStopHapticFeedback = nullptr;
         PFN_xrCreateReferenceSpace xrCreateReferenceSpace = nullptr;
         PFN_xrDestroySpace xrDestroySpace = nullptr;
+        PFN_xrCreateActionSpace xrCreateActionSpace = nullptr;
+        PFN_xrLocateSpace xrLocateSpace = nullptr;
         PFN_xrEnumerateSwapchainFormats xrEnumerateSwapchainFormats = nullptr;
         PFN_xrCreateSwapchain xrCreateSwapchain = nullptr;
         PFN_xrDestroySwapchain xrDestroySwapchain = nullptr;
@@ -384,6 +402,9 @@ namespace
         PFN_xrGetVulkanDeviceExtensionsKHR xrGetVulkanDeviceExtensionsKHR = nullptr;
         PFN_xrGetVulkanGraphicsDeviceKHR xrGetVulkanGraphicsDeviceKHR = nullptr;
         PFN_xrGetVulkanGraphicsRequirementsKHR xrGetVulkanGraphicsRequirementsKHR = nullptr;
+        PFN_xrCreateHandTrackerEXT xrCreateHandTrackerEXT = nullptr;
+        PFN_xrDestroyHandTrackerEXT xrDestroyHandTrackerEXT = nullptr;
+        PFN_xrLocateHandJointsEXT xrLocateHandJointsEXT = nullptr;
     };
 
     struct EyeSwapchain
@@ -820,6 +841,41 @@ namespace
             m_State->heartbeatTickMs = GetTickCount64();
         }
 
+        void PublishInputState(const L4D2VROpenXrInputStateDesc& inputState)
+        {
+            if (!m_State || !inputState.valid)
+                return;
+
+            ++m_State->inputStateGeneration;
+            m_State->inputState = inputState;
+            ++m_State->inputStateGeneration;
+            m_State->heartbeatTickMs = GetTickCount64();
+        }
+
+        bool ReadHapticRequest(uint32_t handIndex, L4D2VROpenXrHapticRequestDesc& request) const
+        {
+            if (!m_State || handIndex >= L4D2VR_OPENXR_HAND_COUNT)
+                return false;
+
+            const L4D2VROpenXrHapticRequestDesc& sharedRequest = m_State->hapticRequests[handIndex];
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint32_t seq0 = sharedRequest.sequence;
+                if (seq0 == 0 || (seq0 & 1u))
+                    continue;
+
+                L4D2VROpenXrHapticRequestDesc snapshot = sharedRequest;
+                const uint32_t seq1 = sharedRequest.sequence;
+                if (seq0 == seq1 && !(seq1 & 1u) && snapshot.valid)
+                {
+                    request = snapshot;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
     private:
         HANDLE m_Mapping = nullptr;
         L4D2VROpenXrBridgeState* m_State = nullptr;
@@ -1050,6 +1106,177 @@ namespace
             right.angleUp,
             right.angleDown);
     }
+
+    template <typename T>
+    bool TryLoadXrFunction(PFN_xrGetInstanceProcAddr getInstanceProcAddr, XrInstance instance, const char* name, T& out)
+    {
+        PFN_xrVoidFunction function = nullptr;
+        const XrResult result = getInstanceProcAddr(instance, name, &function);
+        if (XR_FAILED(result) || !function)
+            return false;
+
+        out = reinterpret_cast<T>(function);
+        return true;
+    }
+
+    bool LoadOpenXrInputFunctions(XrDispatch& xr, XrInstance instance, Logger& log)
+    {
+        return
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrStringToPath", xr.xrStringToPath, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrPathToString", xr.xrPathToString, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrCreateActionSet", xr.xrCreateActionSet, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrDestroyActionSet", xr.xrDestroyActionSet, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrCreateAction", xr.xrCreateAction, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrDestroyAction", xr.xrDestroyAction, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrSuggestInteractionProfileBindings", xr.xrSuggestInteractionProfileBindings, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrGetCurrentInteractionProfile", xr.xrGetCurrentInteractionProfile, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrAttachSessionActionSets", xr.xrAttachSessionActionSets, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrGetActionStateBoolean", xr.xrGetActionStateBoolean, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrGetActionStateFloat", xr.xrGetActionStateFloat, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrGetActionStateVector2f", xr.xrGetActionStateVector2f, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrGetActionStatePose", xr.xrGetActionStatePose, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrSyncActions", xr.xrSyncActions, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrCreateActionSpace", xr.xrCreateActionSpace, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrLocateSpace", xr.xrLocateSpace, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrApplyHapticFeedback", xr.xrApplyHapticFeedback, log) &&
+            LoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrStopHapticFeedback", xr.xrStopHapticFeedback, log);
+    }
+
+    void LoadOpenXrOptionalHandTrackingFunctions(XrDispatch& xr, XrInstance instance, Logger& log, bool handTrackingEnabled)
+    {
+        if (!handTrackingEnabled)
+            return;
+
+        const bool loaded =
+            TryLoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrCreateHandTrackerEXT", xr.xrCreateHandTrackerEXT) &&
+            TryLoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrDestroyHandTrackerEXT", xr.xrDestroyHandTrackerEXT) &&
+            TryLoadXrFunction(xr.xrGetInstanceProcAddr, instance, "xrLocateHandJointsEXT", xr.xrLocateHandJointsEXT);
+        if (!loaded)
+        {
+            xr.xrCreateHandTrackerEXT = nullptr;
+            xr.xrDestroyHandTrackerEXT = nullptr;
+            xr.xrLocateHandJointsEXT = nullptr;
+            log.Print("XR_EXT_hand_tracking enabled but extension entry points were unavailable");
+        }
+    }
+
+    class OpenXrInputBridge
+    {
+    public:
+        bool InitializeInstance(XrDispatch& xr, XrInstance instance, Logger& log);
+        bool InitializeSession(XrSession session, XrSpace appSpace, bool handTrackingEnabled, Logger& log);
+        void Shutdown();
+        void UpdateFrame(XrTime displayTime, BridgeWriter& bridge, Logger& log);
+
+    private:
+        struct BooleanActionDef
+        {
+            L4D2VROpenXrActionId id;
+            const char* name;
+            const char* localizedName;
+        };
+
+        struct FloatDigitalActionDef
+        {
+            L4D2VROpenXrActionId id;
+            const char* name;
+            const char* localizedName;
+            float threshold;
+        };
+
+        struct AnalogActionDef
+        {
+            L4D2VROpenXrActionId id;
+            const char* name;
+            const char* localizedName;
+        };
+
+        struct Vec3
+        {
+            float x = 0.0f;
+            float y = 0.0f;
+            float z = 0.0f;
+        };
+
+        static constexpr size_t Index(L4D2VROpenXrActionId id)
+        {
+            return static_cast<size_t>(id);
+        }
+
+        static const std::array<BooleanActionDef, 31>& BooleanDefs();
+        static const std::array<BooleanActionDef, 3>& ExtraBooleanDefs();
+        static const std::array<FloatDigitalActionDef, 4>& FloatDigitalDefs();
+        static const std::array<AnalogActionDef, 2>& AnalogDefs();
+
+        bool Path(const char* text, XrPath& out, Logger& log);
+        bool TryPath(const char* text, XrPath& out);
+        bool CreateAction(XrActionSet set, XrActionType type, const char* name, const char* localizedName, XrAction& out, Logger& log);
+        bool CreateSubactionAction(XrActionSet set, XrActionType type, const char* name, const char* localizedName, XrAction& out, Logger& log);
+        bool CreatePoseAction(Logger& log);
+        bool CreateHapticAction(Logger& log);
+        bool CreateBooleanActions(Logger& log);
+        bool CreateFloatDigitalActions(Logger& log);
+        bool CreateAnalogActions(Logger& log);
+        void AddBinding(std::vector<XrActionSuggestedBinding>& bindings, XrAction action, const char* bindingPath);
+        void SuggestProfile(Logger& log, const char* profilePath, const std::vector<XrActionSuggestedBinding>& bindings);
+        void AddPoseAndHapticBindings(std::vector<XrActionSuggestedBinding>& bindings);
+        void AddStickAndTriggerBindings(std::vector<XrActionSuggestedBinding>& bindings, const char* stickName);
+        void AddGripValueBindings(std::vector<XrActionSuggestedBinding>& bindings, const char* gripValueName);
+        void AddTouchFaceButtonBindings(std::vector<XrActionSuggestedBinding>& bindings);
+        void AddIndexFaceButtonBindings(std::vector<XrActionSuggestedBinding>& bindings);
+        void AddMenuButtonBindings(std::vector<XrActionSuggestedBinding>& bindings);
+        void SuggestBindings(Logger& log);
+        std::string PathToString(XrPath path) const;
+        void LogCurrentInteractionProfiles(Logger& log);
+        void ReadBooleanActions(L4D2VROpenXrInputStateDesc& outState);
+        void ReadFloatDigitalActions(L4D2VROpenXrInputStateDesc& outState);
+        void ReadAnalogActions(L4D2VROpenXrInputStateDesc& outState);
+        void SetDerivedDigital(L4D2VROpenXrInputStateDesc& outState, L4D2VROpenXrActionId id, bool down);
+        void PublishDerivedDpadActions(L4D2VROpenXrInputStateDesc& outState);
+        void LocateControllerPoses(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState, Logger& log);
+        static Vec3 JointPos(const XrHandJointLocationEXT& joint);
+        static Vec3 Sub(Vec3 a, Vec3 b);
+        static float Dot(Vec3 a, Vec3 b);
+        static float Length(Vec3 value);
+        static float Angle(Vec3 a, Vec3 b);
+        static bool JointPositionValid(const XrHandJointLocationEXT& joint);
+        static float ComputeCurl(
+            const std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT>& joints,
+            XrHandJointEXT j0,
+            XrHandJointEXT j1,
+            XrHandJointEXT j2,
+            XrHandJointEXT j3,
+            XrHandJointEXT j4);
+        void LocateHandTracking(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState);
+        void PumpHaptics(BridgeWriter& bridge, Logger& log);
+        void DestroyAction(XrAction& action);
+
+        XrDispatch* m_Xr = nullptr;
+        XrInstance m_Instance = XR_NULL_HANDLE;
+        XrSession m_Session = XR_NULL_HANDLE;
+        XrSpace m_AppSpace = XR_NULL_HANDLE;
+        XrActionSet m_MainActionSet = XR_NULL_HANDLE;
+        XrActionSet m_BaseActionSet = XR_NULL_HANDLE;
+        XrAction m_HandPoseAction = XR_NULL_HANDLE;
+        XrAction m_HapticAction = XR_NULL_HANDLE;
+        std::array<XrPath, L4D2VR_OPENXR_HAND_COUNT> m_HandPaths{};
+        std::array<XrSpace, L4D2VR_OPENXR_HAND_COUNT> m_HandSpaces{};
+        std::array<XrHandTrackerEXT, L4D2VR_OPENXR_HAND_COUNT> m_HandTrackers{};
+        std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_BooleanActions{};
+        std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalActions{};
+        std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_AnalogActions{};
+        std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalDown{};
+        std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalInitialized{};
+        std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_DerivedDigitalDown{};
+        std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_DerivedDigitalInitialized{};
+        std::array<XrPath, L4D2VR_OPENXR_HAND_COUNT> m_LastInteractionProfiles{};
+        std::array<bool, L4D2VR_OPENXR_HAND_COUNT> m_PoseInactiveLogged{};
+        std::array<uint32_t, L4D2VR_OPENXR_HAND_COUNT> m_LastHapticSequences{};
+        uint32_t m_FeatureFlags = 0;
+        bool m_SessionInitialized = false;
+        bool m_SyncFailureLogged = false;
+        bool m_HapticFailureLogged = false;
+    };
 
 #if 0
     class OpenXrSubmitProbe
@@ -2804,6 +3031,8 @@ namespace
                 if (!Succeeded(m_Log, "xrBeginFrame", result))
                     return 23;
 
+                m_InputBridge.UpdateFrame(frameState.predictedDisplayTime, m_Bridge, m_Log);
+
                 bool layerReady = false;
                 std::array<XrCompositionLayerProjectionView, 2> projectionViews{};
                 std::vector<XrView> locatedViews(m_ViewConfigs.size(), XrView{ XR_TYPE_VIEW });
@@ -3292,6 +3521,917 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     };
 
 #endif
+    const std::array<OpenXrInputBridge::BooleanActionDef, 31>& OpenXrInputBridge::BooleanDefs()
+    {
+        static const std::array<BooleanActionDef, 31> defs =
+        {{
+            { L4D2VROpenXrActionId::ActivateVR, "activate_vr", "Activate VR" },
+            { L4D2VROpenXrActionId::Jump, "jump", "Jump" },
+            { L4D2VROpenXrActionId::Use, "use", "Use" },
+            { L4D2VROpenXrActionId::Teleport, "teleport", "Teleport" },
+            { L4D2VROpenXrActionId::NextItem, "next_item", "Next Item" },
+            { L4D2VROpenXrActionId::PrevItem, "prev_item", "Previous Item" },
+            { L4D2VROpenXrActionId::ResetPosition, "reset_position", "Reset Position" },
+            { L4D2VROpenXrActionId::Flashlight, "flashlight", "Flashlight" },
+            { L4D2VROpenXrActionId::InventoryGripLeft, "inventory_grip_left", "Inventory Grip Left" },
+            { L4D2VROpenXrActionId::InventoryGripRight, "inventory_grip_right", "Inventory Grip Right" },
+            { L4D2VROpenXrActionId::InventoryQuickSwitch, "inventory_quick_switch", "Inventory Quick Switch" },
+            { L4D2VROpenXrActionId::SpecialInfectedAutoAimToggle, "special_infected_auto_aim", "Special Infected Auto Aim" },
+            { L4D2VROpenXrActionId::SpecialInfectedDodgeToggle, "special_infected_dodge", "Special Infected Dodge" },
+            { L4D2VROpenXrActionId::LedgeGuardToggle, "ledge_guard", "Ledge Guard" },
+            { L4D2VROpenXrActionId::EffectiveAttackRangeAutoFireToggle, "effective_range_auto_fire", "Effective Range Auto Fire" },
+            { L4D2VROpenXrActionId::SpeechToText, "speech_to_text", "Speech To Text" },
+            { L4D2VROpenXrActionId::MenuSelect, "menu_select", "Menu Select" },
+            { L4D2VROpenXrActionId::MenuBack, "menu_back", "Menu Back" },
+            { L4D2VROpenXrActionId::MenuUp, "menu_up", "Menu Up" },
+            { L4D2VROpenXrActionId::MenuDown, "menu_down", "Menu Down" },
+            { L4D2VROpenXrActionId::MenuLeft, "menu_left", "Menu Left" },
+            { L4D2VROpenXrActionId::MenuRight, "menu_right", "Menu Right" },
+            { L4D2VROpenXrActionId::Spray, "spray", "Spray" },
+            { L4D2VROpenXrActionId::Scoreboard, "scoreboard", "Scoreboard" },
+            { L4D2VROpenXrActionId::ShowHUD, "show_hud", "Show HUD" },
+            { L4D2VROpenXrActionId::Pause, "pause", "Pause" },
+            { L4D2VROpenXrActionId::NonVRServerMovementAngleToggle, "nonvr_server_movement_angle", "Non-VR Server Movement Angle" },
+            { L4D2VROpenXrActionId::ScopeToggle, "scope_toggle", "Scope Toggle" },
+            { L4D2VROpenXrActionId::FriendlyFireBlockToggle, "friendly_fire_block", "Friendly Fire Block" },
+            { L4D2VROpenXrActionId::CustomAction1, "custom_action_1", "Custom Action 1" },
+            { L4D2VROpenXrActionId::CustomAction2, "custom_action_2", "Custom Action 2" },
+        }};
+        return defs;
+    }
+
+    const std::array<OpenXrInputBridge::BooleanActionDef, 3>& OpenXrInputBridge::ExtraBooleanDefs()
+    {
+        static const std::array<BooleanActionDef, 3> defs =
+        {{
+            { L4D2VROpenXrActionId::CustomAction3, "custom_action_3", "Custom Action 3" },
+            { L4D2VROpenXrActionId::CustomAction4, "custom_action_4", "Custom Action 4" },
+            { L4D2VROpenXrActionId::CustomAction5, "custom_action_5", "Custom Action 5" },
+        }};
+        return defs;
+    }
+
+    const std::array<OpenXrInputBridge::FloatDigitalActionDef, 4>& OpenXrInputBridge::FloatDigitalDefs()
+    {
+        static const std::array<FloatDigitalActionDef, 4> defs =
+        {{
+            { L4D2VROpenXrActionId::PrimaryAttack, "primary_attack", "Primary Attack", 0.45f },
+            { L4D2VROpenXrActionId::SecondaryAttack, "secondary_attack", "Secondary Attack", 0.45f },
+            { L4D2VROpenXrActionId::Reload, "reload", "Reload", 0.45f },
+            { L4D2VROpenXrActionId::Crouch, "crouch", "Crouch", 0.45f },
+        }};
+        return defs;
+    }
+
+    const std::array<OpenXrInputBridge::AnalogActionDef, 2>& OpenXrInputBridge::AnalogDefs()
+    {
+        static const std::array<AnalogActionDef, 2> defs =
+        {{
+            { L4D2VROpenXrActionId::Walk, "walk", "Walk" },
+            { L4D2VROpenXrActionId::Turn, "turn", "Turn" },
+        }};
+        return defs;
+    }
+
+    bool OpenXrInputBridge::Path(const char* text, XrPath& out, Logger& log)
+    {
+        const XrResult result = m_Xr->xrStringToPath(m_Instance, text, &out);
+        if (XR_FAILED(result))
+        {
+            log.Print("xrStringToPath(%s) failed: %s (%d)", text, XrResultName(result), static_cast<int>(result));
+            out = XR_NULL_PATH;
+            return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::TryPath(const char* text, XrPath& out)
+    {
+        const XrResult result = m_Xr->xrStringToPath(m_Instance, text, &out);
+        if (XR_FAILED(result))
+        {
+            out = XR_NULL_PATH;
+            return false;
+        }
+        return true;
+    }
+
+    std::string OpenXrInputBridge::PathToString(XrPath path) const
+    {
+        if (path == XR_NULL_PATH)
+            return "<none>";
+        if (!m_Xr || !m_Xr->xrPathToString)
+            return "<path-to-string-unavailable>";
+
+        char buffer[XR_MAX_PATH_LENGTH] = {};
+        uint32_t count = 0;
+        const XrResult result = m_Xr->xrPathToString(m_Instance, path, ARRAYSIZE(buffer), &count, buffer);
+        if (XR_FAILED(result))
+        {
+            char fallback[64] = {};
+            std::snprintf(fallback, sizeof(fallback), "<path 0x%llX>", static_cast<unsigned long long>(path));
+            return fallback;
+        }
+        return buffer;
+    }
+
+    bool OpenXrInputBridge::CreateAction(XrActionSet set, XrActionType type, const char* name, const char* localizedName, XrAction& out, Logger& log)
+    {
+        XrActionCreateInfo createInfo{ XR_TYPE_ACTION_CREATE_INFO };
+        std::snprintf(createInfo.actionName, XR_MAX_ACTION_NAME_SIZE, "%s", name);
+        createInfo.actionType = type;
+        std::snprintf(createInfo.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "%s", localizedName);
+        const XrResult result = m_Xr->xrCreateAction(set, &createInfo, &out);
+        if (XR_FAILED(result) || out == XR_NULL_HANDLE)
+        {
+            log.Print("xrCreateAction(%s) failed: %s (%d)", name, XrResultName(result), static_cast<int>(result));
+            return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::CreateSubactionAction(XrActionSet set, XrActionType type, const char* name, const char* localizedName, XrAction& out, Logger& log)
+    {
+        XrActionCreateInfo createInfo{ XR_TYPE_ACTION_CREATE_INFO };
+        std::snprintf(createInfo.actionName, XR_MAX_ACTION_NAME_SIZE, "%s", name);
+        createInfo.actionType = type;
+        createInfo.countSubactionPaths = static_cast<uint32_t>(m_HandPaths.size());
+        createInfo.subactionPaths = m_HandPaths.data();
+        std::snprintf(createInfo.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "%s", localizedName);
+        const XrResult result = m_Xr->xrCreateAction(set, &createInfo, &out);
+        if (XR_FAILED(result) || out == XR_NULL_HANDLE)
+        {
+            log.Print("xrCreateAction(%s) failed: %s (%d)", name, XrResultName(result), static_cast<int>(result));
+            return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::CreatePoseAction(Logger& log)
+    {
+        return CreateSubactionAction(m_BaseActionSet, XR_ACTION_TYPE_POSE_INPUT, "hand_pose", "Hand Pose", m_HandPoseAction, log);
+    }
+
+    bool OpenXrInputBridge::CreateHapticAction(Logger& log)
+    {
+        return CreateSubactionAction(m_BaseActionSet, XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic", "Haptic", m_HapticAction, log);
+    }
+
+    bool OpenXrInputBridge::CreateBooleanActions(Logger& log)
+    {
+        for (const BooleanActionDef& def : BooleanDefs())
+        {
+            if (!CreateAction(m_MainActionSet, XR_ACTION_TYPE_BOOLEAN_INPUT, def.name, def.localizedName, m_BooleanActions[Index(def.id)], log))
+                return false;
+        }
+        for (const BooleanActionDef& def : ExtraBooleanDefs())
+        {
+            if (!CreateAction(m_MainActionSet, XR_ACTION_TYPE_BOOLEAN_INPUT, def.name, def.localizedName, m_BooleanActions[Index(def.id)], log))
+                return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::CreateFloatDigitalActions(Logger& log)
+    {
+        for (const FloatDigitalActionDef& def : FloatDigitalDefs())
+        {
+            if (!CreateAction(m_MainActionSet, XR_ACTION_TYPE_FLOAT_INPUT, def.name, def.localizedName, m_FloatDigitalActions[Index(def.id)], log))
+                return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::CreateAnalogActions(Logger& log)
+    {
+        for (const AnalogActionDef& def : AnalogDefs())
+        {
+            if (!CreateAction(m_MainActionSet, XR_ACTION_TYPE_VECTOR2F_INPUT, def.name, def.localizedName, m_AnalogActions[Index(def.id)], log))
+                return false;
+        }
+        return true;
+    }
+
+    bool OpenXrInputBridge::InitializeInstance(XrDispatch& xr, XrInstance instance, Logger& log)
+    {
+        m_Xr = &xr;
+        m_Instance = instance;
+
+        if (!Path("/user/hand/left", m_HandPaths[L4D2VR_OPENXR_HAND_LEFT], log) ||
+            !Path("/user/hand/right", m_HandPaths[L4D2VR_OPENXR_HAND_RIGHT], log))
+        {
+            return false;
+        }
+
+        XrActionSetCreateInfo mainSetInfo{ XR_TYPE_ACTION_SET_CREATE_INFO };
+        std::snprintf(mainSetInfo.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "main");
+        std::snprintf(mainSetInfo.localizedActionSetName, XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE, "Main");
+        mainSetInfo.priority = 0;
+        if (!Succeeded(log, "xrCreateActionSet(main)", xr.xrCreateActionSet(instance, &mainSetInfo, &m_MainActionSet)))
+            return false;
+
+        XrActionSetCreateInfo baseSetInfo{ XR_TYPE_ACTION_SET_CREATE_INFO };
+        std::snprintf(baseSetInfo.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "base");
+        std::snprintf(baseSetInfo.localizedActionSetName, XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE, "Base");
+        baseSetInfo.priority = 1;
+        if (!Succeeded(log, "xrCreateActionSet(base)", xr.xrCreateActionSet(instance, &baseSetInfo, &m_BaseActionSet)))
+            return false;
+
+        if (!CreatePoseAction(log) ||
+            !CreateHapticAction(log) ||
+            !CreateBooleanActions(log) ||
+            !CreateFloatDigitalActions(log) ||
+            !CreateAnalogActions(log))
+        {
+            return false;
+        }
+
+        SuggestBindings(log);
+        return true;
+    }
+
+    void OpenXrInputBridge::AddBinding(std::vector<XrActionSuggestedBinding>& bindings, XrAction action, const char* bindingPath)
+    {
+        if (action == XR_NULL_HANDLE || !bindingPath || !bindingPath[0])
+            return;
+
+        XrPath path = XR_NULL_PATH;
+        if (TryPath(bindingPath, path))
+            bindings.push_back(XrActionSuggestedBinding{ action, path });
+    }
+
+    void OpenXrInputBridge::SuggestProfile(Logger& log, const char* profilePath, const std::vector<XrActionSuggestedBinding>& bindings)
+    {
+        if (bindings.empty())
+            return;
+
+        XrPath profile = XR_NULL_PATH;
+        if (!TryPath(profilePath, profile))
+            return;
+
+        XrInteractionProfileSuggestedBinding suggested{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+        suggested.interactionProfile = profile;
+        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+        suggested.suggestedBindings = bindings.data();
+        const XrResult result = m_Xr->xrSuggestInteractionProfileBindings(m_Instance, &suggested);
+        if (XR_FAILED(result))
+        {
+            log.Print(
+                "xrSuggestInteractionProfileBindings(%s) failed/nonfatal: %s (%d)",
+                profilePath,
+                XrResultName(result),
+                static_cast<int>(result));
+        }
+    }
+
+    void OpenXrInputBridge::AddPoseAndHapticBindings(std::vector<XrActionSuggestedBinding>& b)
+    {
+        AddBinding(b, m_HandPoseAction, "/user/hand/left/input/grip/pose");
+        AddBinding(b, m_HandPoseAction, "/user/hand/right/input/grip/pose");
+        AddBinding(b, m_HapticAction, "/user/hand/left/output/haptic");
+        AddBinding(b, m_HapticAction, "/user/hand/right/output/haptic");
+    }
+
+    void OpenXrInputBridge::AddStickAndTriggerBindings(
+        std::vector<XrActionSuggestedBinding>& b,
+        const char* stickName)
+    {
+        const std::string leftStick = std::string("/user/hand/left/input/") + stickName;
+        const std::string rightStick = std::string("/user/hand/right/input/") + stickName;
+
+        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Walk)], (leftStick + "/value").c_str());
+        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Turn)], (rightStick + "/value").c_str());
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::ResetPosition)], (leftStick + "/click").c_str());
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Flashlight)], (rightStick + "/click").c_str());
+
+        AddBinding(b, m_FloatDigitalActions[Index(L4D2VROpenXrActionId::PrimaryAttack)], "/user/hand/right/input/trigger/value");
+        AddBinding(b, m_FloatDigitalActions[Index(L4D2VROpenXrActionId::SecondaryAttack)], "/user/hand/left/input/trigger/value");
+    }
+
+    void OpenXrInputBridge::AddGripValueBindings(
+        std::vector<XrActionSuggestedBinding>& b,
+        const char* gripValueName)
+    {
+        const std::string leftGripValue = std::string("/user/hand/left/input/") + gripValueName;
+        const std::string rightGripValue = std::string("/user/hand/right/input/") + gripValueName;
+        AddBinding(b, m_FloatDigitalActions[Index(L4D2VROpenXrActionId::Reload)], leftGripValue.c_str());
+        AddBinding(b, m_FloatDigitalActions[Index(L4D2VROpenXrActionId::Crouch)], rightGripValue.c_str());
+    }
+
+    void OpenXrInputBridge::AddTouchFaceButtonBindings(std::vector<XrActionSuggestedBinding>& b)
+    {
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Use)], "/user/hand/right/input/b/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::ActivateVR)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Jump)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuSelect)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuBack)], "/user/hand/right/input/b/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Scoreboard)], "/user/hand/left/input/x/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Pause)], "/user/hand/left/input/y/click");
+    }
+
+    void OpenXrInputBridge::AddIndexFaceButtonBindings(std::vector<XrActionSuggestedBinding>& b)
+    {
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Use)], "/user/hand/right/input/b/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::ActivateVR)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Jump)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuSelect)], "/user/hand/right/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuBack)], "/user/hand/right/input/b/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Scoreboard)], "/user/hand/left/input/a/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Pause)], "/user/hand/left/input/b/click");
+    }
+
+    void OpenXrInputBridge::AddMenuButtonBindings(std::vector<XrActionSuggestedBinding>& b)
+    {
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::ActivateVR)], "/user/hand/right/input/menu/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuSelect)], "/user/hand/right/input/menu/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::MenuBack)], "/user/hand/left/input/menu/click");
+        AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Pause)], "/user/hand/left/input/menu/click");
+    }
+
+    void OpenXrInputBridge::SuggestBindings(Logger& log)
+    {
+        const char* poseProfiles[] =
+        {
+            "/interaction_profiles/oculus/touch_controller",
+            "/interaction_profiles/facebook/touch_controller_pro",
+            "/interaction_profiles/meta/touch_controller_plus",
+            "/interaction_profiles/valve/index_controller",
+            "/interaction_profiles/microsoft/motion_controller",
+            "/interaction_profiles/htc/vive_cosmos_controller",
+            "/interaction_profiles/htc/vive_focus3_controller",
+            "/interaction_profiles/htc/vive_controller",
+            "/interaction_profiles/bytedance/pico4_controller",
+            "/interaction_profiles/khr/simple_controller",
+        };
+
+        for (const char* profile : poseProfiles)
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            SuggestProfile(log, profile, b);
+        }
+
+        const char* touchLikeProfiles[] =
+        {
+            "/interaction_profiles/oculus/touch_controller",
+            "/interaction_profiles/facebook/touch_controller_pro",
+            "/interaction_profiles/meta/touch_controller_plus",
+            "/interaction_profiles/bytedance/pico4_controller",
+        };
+        for (const char* profile : touchLikeProfiles)
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddStickAndTriggerBindings(b, "thumbstick");
+            AddGripValueBindings(b, "squeeze/value");
+            AddTouchFaceButtonBindings(b);
+            SuggestProfile(log, profile, b);
+        }
+
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddStickAndTriggerBindings(b, "thumbstick");
+            AddGripValueBindings(b, "squeeze/value");
+            AddIndexFaceButtonBindings(b);
+            SuggestProfile(log, "/interaction_profiles/valve/index_controller", b);
+        }
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddStickAndTriggerBindings(b, "thumbstick");
+            AddMenuButtonBindings(b);
+            SuggestProfile(log, "/interaction_profiles/microsoft/motion_controller", b);
+        }
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddStickAndTriggerBindings(b, "joystick");
+            AddGripValueBindings(b, "grip/value");
+            AddMenuButtonBindings(b);
+            SuggestProfile(log, "/interaction_profiles/htc/vive_cosmos_controller", b);
+            SuggestProfile(log, "/interaction_profiles/htc/vive_focus3_controller", b);
+        }
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddStickAndTriggerBindings(b, "trackpad");
+            AddMenuButtonBindings(b);
+            SuggestProfile(log, "/interaction_profiles/htc/vive_controller", b);
+        }
+        {
+            std::vector<XrActionSuggestedBinding> b;
+            AddPoseAndHapticBindings(b);
+            AddMenuButtonBindings(b);
+            SuggestProfile(log, "/interaction_profiles/khr/simple_controller", b);
+        }
+    }
+
+    void OpenXrInputBridge::LogCurrentInteractionProfiles(Logger& log)
+    {
+        if (!m_Xr || !m_Xr->xrGetCurrentInteractionProfile || m_Session == XR_NULL_HANDLE)
+            return;
+
+        for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+        {
+            XrInteractionProfileState state{ XR_TYPE_INTERACTION_PROFILE_STATE };
+            const XrResult result = m_Xr->xrGetCurrentInteractionProfile(m_Session, m_HandPaths[hand], &state);
+            if (XR_FAILED(result))
+                continue;
+
+            if (state.interactionProfile != m_LastInteractionProfiles[hand])
+            {
+                m_LastInteractionProfiles[hand] = state.interactionProfile;
+                log.Print(
+                    "OpenXR current interaction profile %s: %s",
+                    hand == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                    PathToString(state.interactionProfile).c_str());
+            }
+        }
+    }
+
+    bool OpenXrInputBridge::InitializeSession(XrSession session, XrSpace appSpace, bool handTrackingEnabled, Logger& log)
+    {
+        if (!m_Xr || session == XR_NULL_HANDLE || appSpace == XR_NULL_HANDLE)
+            return false;
+
+        m_Session = session;
+        m_AppSpace = appSpace;
+        m_LastInteractionProfiles.fill(static_cast<XrPath>(~0ull));
+        m_PoseInactiveLogged.fill(false);
+
+        for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+        {
+            XrActionSpaceCreateInfo spaceInfo{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
+            spaceInfo.action = m_HandPoseAction;
+            spaceInfo.subactionPath = m_HandPaths[hand];
+            spaceInfo.poseInActionSpace.orientation.w = 1.0f;
+            if (!Succeeded(log, "xrCreateActionSpace(hand_pose)", m_Xr->xrCreateActionSpace(session, &spaceInfo, &m_HandSpaces[hand])))
+                return false;
+        }
+
+        const XrActionSet actionSets[] = { m_MainActionSet, m_BaseActionSet };
+        XrSessionActionSetsAttachInfo attachInfo{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
+        attachInfo.countActionSets = ARRAYSIZE(actionSets);
+        attachInfo.actionSets = actionSets;
+        if (!Succeeded(log, "xrAttachSessionActionSets", m_Xr->xrAttachSessionActionSets(session, &attachInfo)))
+            return false;
+
+        m_FeatureFlags = L4D2VR_OPENXR_INPUT_FEATURE_CONTROLLERS | L4D2VR_OPENXR_INPUT_FEATURE_HAPTICS;
+        if (handTrackingEnabled && m_Xr->xrCreateHandTrackerEXT && m_Xr->xrLocateHandJointsEXT)
+        {
+            for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+            {
+                XrHandTrackerCreateInfoEXT createInfo{ XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT };
+                createInfo.hand = (hand == L4D2VR_OPENXR_HAND_LEFT) ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+                createInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+                const XrResult result = m_Xr->xrCreateHandTrackerEXT(session, &createInfo, &m_HandTrackers[hand]);
+                if (XR_FAILED(result))
+                {
+                    m_HandTrackers[hand] = XR_NULL_HANDLE;
+                    log.Print("xrCreateHandTrackerEXT(%s) failed: %s (%d)",
+                        hand == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                        XrResultName(result),
+                        static_cast<int>(result));
+                }
+            }
+
+            if (m_HandTrackers[L4D2VR_OPENXR_HAND_LEFT] != XR_NULL_HANDLE ||
+                m_HandTrackers[L4D2VR_OPENXR_HAND_RIGHT] != XR_NULL_HANDLE)
+            {
+                m_FeatureFlags |= L4D2VR_OPENXR_INPUT_FEATURE_HAND_TRACKING;
+            }
+        }
+
+        m_SessionInitialized = true;
+        log.Print("OpenXR input initialized features=0x%X", m_FeatureFlags);
+        return true;
+    }
+
+    void OpenXrInputBridge::Shutdown()
+    {
+        if (m_Xr)
+        {
+            for (XrHandTrackerEXT& tracker : m_HandTrackers)
+            {
+                if (tracker != XR_NULL_HANDLE && m_Xr->xrDestroyHandTrackerEXT)
+                {
+                    m_Xr->xrDestroyHandTrackerEXT(tracker);
+                    tracker = XR_NULL_HANDLE;
+                }
+            }
+            for (XrSpace& space : m_HandSpaces)
+            {
+                if (space != XR_NULL_HANDLE && m_Xr->xrDestroySpace)
+                {
+                    m_Xr->xrDestroySpace(space);
+                    space = XR_NULL_HANDLE;
+                }
+            }
+            DestroyAction(m_HandPoseAction);
+            DestroyAction(m_HapticAction);
+            for (XrAction& action : m_BooleanActions)
+                DestroyAction(action);
+            for (XrAction& action : m_FloatDigitalActions)
+                DestroyAction(action);
+            for (XrAction& action : m_AnalogActions)
+                DestroyAction(action);
+            if (m_BaseActionSet != XR_NULL_HANDLE && m_Xr->xrDestroyActionSet)
+            {
+                m_Xr->xrDestroyActionSet(m_BaseActionSet);
+                m_BaseActionSet = XR_NULL_HANDLE;
+            }
+            if (m_MainActionSet != XR_NULL_HANDLE && m_Xr->xrDestroyActionSet)
+            {
+                m_Xr->xrDestroyActionSet(m_MainActionSet);
+                m_MainActionSet = XR_NULL_HANDLE;
+            }
+        }
+
+        m_SessionInitialized = false;
+        m_Xr = nullptr;
+        m_Instance = XR_NULL_HANDLE;
+        m_Session = XR_NULL_HANDLE;
+        m_AppSpace = XR_NULL_HANDLE;
+        m_LastInteractionProfiles.fill(XR_NULL_PATH);
+        m_PoseInactiveLogged.fill(false);
+    }
+
+    void OpenXrInputBridge::DestroyAction(XrAction& action)
+    {
+        if (action != XR_NULL_HANDLE && m_Xr && m_Xr->xrDestroyAction)
+        {
+            m_Xr->xrDestroyAction(action);
+            action = XR_NULL_HANDLE;
+        }
+    }
+
+    void OpenXrInputBridge::UpdateFrame(XrTime displayTime, BridgeWriter& bridge, Logger& log)
+    {
+        if (!m_SessionInitialized || !m_Xr)
+            return;
+
+        XrActiveActionSet activeSets[] =
+        {
+            { m_MainActionSet, XR_NULL_PATH },
+            { m_BaseActionSet, XR_NULL_PATH }
+        };
+        XrActionsSyncInfo syncInfo{ XR_TYPE_ACTIONS_SYNC_INFO };
+        syncInfo.countActiveActionSets = ARRAYSIZE(activeSets);
+        syncInfo.activeActionSets = activeSets;
+        const XrResult syncResult = m_Xr->xrSyncActions(m_Session, &syncInfo);
+        if (XR_FAILED(syncResult))
+        {
+            if (!m_SyncFailureLogged)
+            {
+                m_SyncFailureLogged = true;
+                log.Print("xrSyncActions failed: %s (%d)", XrResultName(syncResult), static_cast<int>(syncResult));
+            }
+            return;
+        }
+
+        LogCurrentInteractionProfiles(log);
+
+        L4D2VROpenXrInputStateDesc state{};
+        state.valid = 1;
+        state.featureFlags = m_FeatureFlags;
+        state.actionCount = L4D2VR_OPENXR_ACTION_COUNT;
+
+        ReadBooleanActions(state);
+        ReadFloatDigitalActions(state);
+        ReadAnalogActions(state);
+        PublishDerivedDpadActions(state);
+        LocateControllerPoses(displayTime, state, log);
+        LocateHandTracking(displayTime, state);
+        bridge.PublishInputState(state);
+        PumpHaptics(bridge, log);
+    }
+
+    void OpenXrInputBridge::ReadBooleanActions(L4D2VROpenXrInputStateDesc& outState)
+    {
+        for (size_t i = 0; i < m_BooleanActions.size(); ++i)
+        {
+            XrAction action = m_BooleanActions[i];
+            if (action == XR_NULL_HANDLE)
+                continue;
+
+            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+            getInfo.action = action;
+            XrActionStateBoolean state{ XR_TYPE_ACTION_STATE_BOOLEAN };
+            if (XR_SUCCEEDED(m_Xr->xrGetActionStateBoolean(m_Session, &getInfo, &state)) && state.isActive)
+            {
+                outState.digitalActions[i].active = 1;
+                outState.digitalActions[i].state = state.currentState ? 1u : 0u;
+                outState.digitalActions[i].changed = state.changedSinceLastSync ? 1u : 0u;
+                outState.digitalActions[i].lastChangeTime = static_cast<int64_t>(state.lastChangeTime);
+            }
+        }
+    }
+
+    void OpenXrInputBridge::ReadFloatDigitalActions(L4D2VROpenXrInputStateDesc& outState)
+    {
+        for (const FloatDigitalActionDef& def : FloatDigitalDefs())
+        {
+            const size_t i = Index(def.id);
+            XrAction action = m_FloatDigitalActions[i];
+            if (action == XR_NULL_HANDLE)
+                continue;
+
+            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+            getInfo.action = action;
+            XrActionStateFloat state{ XR_TYPE_ACTION_STATE_FLOAT };
+            if (XR_SUCCEEDED(m_Xr->xrGetActionStateFloat(m_Session, &getInfo, &state)) && state.isActive)
+            {
+                const bool down = state.currentState >= def.threshold;
+                outState.digitalActions[i].active = 1;
+                outState.digitalActions[i].state = down ? 1u : 0u;
+                outState.digitalActions[i].changed =
+                    ((m_FloatDigitalInitialized[i] && m_FloatDigitalDown[i] != down) ||
+                        state.changedSinceLastSync) ? 1u : 0u;
+                outState.digitalActions[i].lastChangeTime = static_cast<int64_t>(state.lastChangeTime);
+                m_FloatDigitalDown[i] = down;
+                m_FloatDigitalInitialized[i] = true;
+            }
+        }
+    }
+
+    void OpenXrInputBridge::ReadAnalogActions(L4D2VROpenXrInputStateDesc& outState)
+    {
+        for (const AnalogActionDef& def : AnalogDefs())
+        {
+            const size_t i = Index(def.id);
+            XrAction action = m_AnalogActions[i];
+            if (action == XR_NULL_HANDLE)
+                continue;
+
+            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+            getInfo.action = action;
+            XrActionStateVector2f state{ XR_TYPE_ACTION_STATE_VECTOR2F };
+            if (XR_SUCCEEDED(m_Xr->xrGetActionStateVector2f(m_Session, &getInfo, &state)) && state.isActive)
+            {
+                outState.analogActions[i].active = 1;
+                outState.analogActions[i].changed = state.changedSinceLastSync ? 1u : 0u;
+                outState.analogActions[i].lastChangeTime = static_cast<int64_t>(state.lastChangeTime);
+                outState.analogActions[i].x = state.currentState.x;
+                outState.analogActions[i].y = state.currentState.y;
+            }
+        }
+    }
+
+    void OpenXrInputBridge::SetDerivedDigital(L4D2VROpenXrInputStateDesc& outState, L4D2VROpenXrActionId id, bool down)
+    {
+        const size_t i = Index(id);
+        L4D2VROpenXrDigitalActionDesc& action = outState.digitalActions[i];
+        if (action.active)
+            return;
+
+        action.active = 1;
+        action.state = down ? 1u : 0u;
+        action.changed = (m_DerivedDigitalInitialized[i] && m_DerivedDigitalDown[i] != down) ? 1u : 0u;
+        m_DerivedDigitalDown[i] = down;
+        m_DerivedDigitalInitialized[i] = true;
+    }
+
+    void OpenXrInputBridge::PublishDerivedDpadActions(L4D2VROpenXrInputStateDesc& outState)
+    {
+        constexpr float kPress = 0.70f;
+        const L4D2VROpenXrAnalogActionDesc& turn = outState.analogActions[Index(L4D2VROpenXrActionId::Turn)];
+        if (turn.active)
+        {
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::PrevItem, turn.y > kPress);
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::NextItem, turn.y < -kPress);
+        }
+
+        const L4D2VROpenXrAnalogActionDesc& walk = outState.analogActions[Index(L4D2VROpenXrActionId::Walk)];
+        if (walk.active)
+        {
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuUp, walk.y > kPress);
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuDown, walk.y < -kPress);
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuRight, walk.x > kPress);
+            SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuLeft, walk.x < -kPress);
+        }
+    }
+
+    void OpenXrInputBridge::LocateControllerPoses(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState, Logger& log)
+    {
+        for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+        {
+            if (m_HandSpaces[hand] == XR_NULL_HANDLE)
+                continue;
+
+            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+            getInfo.action = m_HandPoseAction;
+            getInfo.subactionPath = m_HandPaths[hand];
+            XrActionStatePose poseState{ XR_TYPE_ACTION_STATE_POSE };
+            const XrResult poseResult = m_Xr->xrGetActionStatePose(m_Session, &getInfo, &poseState);
+            if (XR_FAILED(poseResult) || !poseState.isActive)
+            {
+                if (!m_PoseInactiveLogged[hand])
+                {
+                    m_PoseInactiveLogged[hand] = true;
+                    log.Print(
+                        "OpenXR hand_pose inactive %s: result=%s (%d) active=%u profile=%s",
+                        hand == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                        XrResultName(poseResult),
+                        static_cast<int>(poseResult),
+                        poseState.isActive ? 1u : 0u,
+                        PathToString(m_LastInteractionProfiles[hand]).c_str());
+                }
+                continue;
+            }
+            m_PoseInactiveLogged[hand] = false;
+
+            XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
+            if (XR_FAILED(m_Xr->xrLocateSpace(m_HandSpaces[hand], m_AppSpace, displayTime, &location)))
+                continue;
+
+            const bool orientationValid = (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+            const bool positionValid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+            if (!orientationValid && !positionValid)
+                continue;
+
+            L4D2VROpenXrControllerPoseDesc& out = outState.controllerPoses[hand];
+            out.valid = 1;
+            out.active = 1;
+            out.locationFlags = static_cast<uint64_t>(location.locationFlags);
+            out.displayTime = static_cast<int64_t>(displayTime);
+            out.position[0] = location.pose.position.x;
+            out.position[1] = location.pose.position.y;
+            out.position[2] = location.pose.position.z;
+            out.orientation[0] = location.pose.orientation.x;
+            out.orientation[1] = location.pose.orientation.y;
+            out.orientation[2] = location.pose.orientation.z;
+            out.orientation[3] = location.pose.orientation.w;
+        }
+    }
+
+    OpenXrInputBridge::Vec3 OpenXrInputBridge::JointPos(const XrHandJointLocationEXT& joint)
+    {
+        return Vec3{ joint.pose.position.x, joint.pose.position.y, joint.pose.position.z };
+    }
+
+    OpenXrInputBridge::Vec3 OpenXrInputBridge::Sub(Vec3 a, Vec3 b)
+    {
+        return Vec3{ a.x - b.x, a.y - b.y, a.z - b.z };
+    }
+
+    float OpenXrInputBridge::Dot(Vec3 a, Vec3 b)
+    {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    }
+
+    float OpenXrInputBridge::Length(Vec3 value)
+    {
+        return std::sqrt(Dot(value, value));
+    }
+
+    float OpenXrInputBridge::Angle(Vec3 a, Vec3 b)
+    {
+        const float denom = Length(a) * Length(b);
+        if (denom <= 0.000001f)
+            return 0.0f;
+        return std::acos(std::clamp(Dot(a, b) / denom, -1.0f, 1.0f));
+    }
+
+    bool OpenXrInputBridge::JointPositionValid(const XrHandJointLocationEXT& joint)
+    {
+        return (joint.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+    }
+
+    float OpenXrInputBridge::ComputeCurl(
+        const std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT>& joints,
+        XrHandJointEXT j0,
+        XrHandJointEXT j1,
+        XrHandJointEXT j2,
+        XrHandJointEXT j3,
+        XrHandJointEXT j4)
+    {
+        const XrHandJointLocationEXT& a = joints[static_cast<size_t>(j0)];
+        const XrHandJointLocationEXT& b = joints[static_cast<size_t>(j1)];
+        const XrHandJointLocationEXT& c = joints[static_cast<size_t>(j2)];
+        const XrHandJointLocationEXT& d = joints[static_cast<size_t>(j3)];
+        const XrHandJointLocationEXT& e = joints[static_cast<size_t>(j4)];
+        if (!JointPositionValid(a) || !JointPositionValid(b) || !JointPositionValid(c) ||
+            !JointPositionValid(d) || !JointPositionValid(e))
+        {
+            return 0.0f;
+        }
+
+        const float curl =
+            Angle(Sub(JointPos(c), JointPos(b)), Sub(JointPos(b), JointPos(a))) +
+            Angle(Sub(JointPos(d), JointPos(c)), Sub(JointPos(c), JointPos(b))) +
+            Angle(Sub(JointPos(e), JointPos(d)), Sub(JointPos(d), JointPos(c)));
+        return std::clamp(curl / 3.20f, 0.0f, 1.0f);
+    }
+
+    void OpenXrInputBridge::LocateHandTracking(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState)
+    {
+        if ((m_FeatureFlags & L4D2VR_OPENXR_INPUT_FEATURE_HAND_TRACKING) == 0 || !m_Xr->xrLocateHandJointsEXT)
+            return;
+
+        for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+        {
+            if (m_HandTrackers[hand] == XR_NULL_HANDLE)
+                continue;
+
+            std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT> joints{};
+            XrHandJointLocationsEXT locations{ XR_TYPE_HAND_JOINT_LOCATIONS_EXT };
+            locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+            locations.jointLocations = joints.data();
+
+            XrHandJointsLocateInfoEXT locateInfo{ XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT };
+            locateInfo.baseSpace = m_AppSpace;
+            locateInfo.time = displayTime;
+            if (XR_FAILED(m_Xr->xrLocateHandJointsEXT(m_HandTrackers[hand], &locateInfo, &locations)) || !locations.isActive)
+                continue;
+
+            L4D2VROpenXrHandTrackingDesc& out = outState.handTracking[hand];
+            out.valid = 1;
+            out.active = 1;
+            out.jointCount = std::min<uint32_t>(locations.jointCount, L4D2VR_OPENXR_HAND_JOINT_COUNT);
+            for (uint32_t i = 0; i < out.jointCount; ++i)
+            {
+                out.joints[i].locationFlags = static_cast<uint64_t>(joints[i].locationFlags);
+                out.joints[i].radius = joints[i].radius;
+                out.joints[i].position[0] = joints[i].pose.position.x;
+                out.joints[i].position[1] = joints[i].pose.position.y;
+                out.joints[i].position[2] = joints[i].pose.position.z;
+                out.joints[i].orientation[0] = joints[i].pose.orientation.x;
+                out.joints[i].orientation[1] = joints[i].pose.orientation.y;
+                out.joints[i].orientation[2] = joints[i].pose.orientation.z;
+                out.joints[i].orientation[3] = joints[i].pose.orientation.w;
+            }
+
+            out.fingerCurls[0] = ComputeCurl(joints,
+                XR_HAND_JOINT_THUMB_METACARPAL_EXT,
+                XR_HAND_JOINT_THUMB_PROXIMAL_EXT,
+                XR_HAND_JOINT_THUMB_DISTAL_EXT,
+                XR_HAND_JOINT_THUMB_TIP_EXT,
+                XR_HAND_JOINT_THUMB_TIP_EXT);
+            out.fingerCurls[1] = ComputeCurl(joints,
+                XR_HAND_JOINT_INDEX_METACARPAL_EXT,
+                XR_HAND_JOINT_INDEX_PROXIMAL_EXT,
+                XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT,
+                XR_HAND_JOINT_INDEX_DISTAL_EXT,
+                XR_HAND_JOINT_INDEX_TIP_EXT);
+            out.fingerCurls[2] = ComputeCurl(joints,
+                XR_HAND_JOINT_MIDDLE_METACARPAL_EXT,
+                XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT,
+                XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT,
+                XR_HAND_JOINT_MIDDLE_DISTAL_EXT,
+                XR_HAND_JOINT_MIDDLE_TIP_EXT);
+            out.fingerCurls[3] = ComputeCurl(joints,
+                XR_HAND_JOINT_RING_METACARPAL_EXT,
+                XR_HAND_JOINT_RING_PROXIMAL_EXT,
+                XR_HAND_JOINT_RING_INTERMEDIATE_EXT,
+                XR_HAND_JOINT_RING_DISTAL_EXT,
+                XR_HAND_JOINT_RING_TIP_EXT);
+            out.fingerCurls[4] = ComputeCurl(joints,
+                XR_HAND_JOINT_LITTLE_METACARPAL_EXT,
+                XR_HAND_JOINT_LITTLE_PROXIMAL_EXT,
+                XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT,
+                XR_HAND_JOINT_LITTLE_DISTAL_EXT,
+                XR_HAND_JOINT_LITTLE_TIP_EXT);
+        }
+    }
+
+    void OpenXrInputBridge::PumpHaptics(BridgeWriter& bridge, Logger& log)
+    {
+        if (m_HapticAction == XR_NULL_HANDLE || !m_Xr->xrApplyHapticFeedback)
+            return;
+
+        for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
+        {
+            L4D2VROpenXrHapticRequestDesc request{};
+            if (!bridge.ReadHapticRequest(hand, request) ||
+                request.sequence == m_LastHapticSequences[hand] ||
+                request.durationSeconds <= 0.0f ||
+                request.amplitude <= 0.0f)
+            {
+                continue;
+            }
+
+            m_LastHapticSequences[hand] = request.sequence;
+            XrHapticVibration vibration{ XR_TYPE_HAPTIC_VIBRATION };
+            vibration.duration = static_cast<XrDuration>(std::max(1.0f, request.durationSeconds * 1000000000.0f));
+            vibration.frequency = request.frequency;
+            vibration.amplitude = std::clamp(request.amplitude, 0.0f, 1.0f);
+
+            XrHapticActionInfo info{ XR_TYPE_HAPTIC_ACTION_INFO };
+            info.action = m_HapticAction;
+            info.subactionPath = m_HandPaths[hand];
+            const XrResult result = m_Xr->xrApplyHapticFeedback(
+                m_Session,
+                &info,
+                reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+            if (XR_FAILED(result) && !m_HapticFailureLogged)
+            {
+                m_HapticFailureLogged = true;
+                log.Print("xrApplyHapticFeedback failed: %s (%d)", XrResultName(result), static_cast<int>(result));
+            }
+        }
+    }
+
     class OpenXrVulkanSubmitProbe
     {
     public:
@@ -3313,16 +4453,18 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 return Fail(12, "OpenXR Vulkan instance creation failed");
             if (!LoadOpenXrInstanceFunctions())
                 return Fail(13, "OpenXR Vulkan function load failed");
+            if (!m_InputBridge.InitializeInstance(m_Xr, m_Instance, m_Log))
+                return Fail(14, "OpenXR input action creation failed");
             if (!CreateOpenXrSystem())
-                return Fail(14, "OpenXR system creation failed");
+                return Fail(15, "OpenXR system creation failed");
             if (!LoadVulkanLibrary())
-                return Fail(15, "Vulkan loader load failed");
+                return Fail(16, "Vulkan loader load failed");
             if (!CreateVulkanObjects())
-                return Fail(16, "Vulkan graphics binding creation failed");
+                return Fail(17, "Vulkan graphics binding creation failed");
             if (!CreateSessionObjects())
-                return Fail(17, "OpenXR Vulkan session creation failed");
+                return Fail(18, "OpenXR Vulkan session creation failed");
             if (!CreateSwapchains())
-                return Fail(18, "OpenXR Vulkan swapchain creation failed");
+                return Fail(19, "OpenXR Vulkan swapchain creation failed");
 
             const int exitCode = FrameLoop(options);
             if (exitCode != 0)
@@ -3433,10 +4575,13 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 return false;
 
             bool hasVulkan = false;
+            bool hasHandTracking = false;
             for (const XrExtensionProperties& extension : extensions)
             {
                 if (std::strcmp(extension.extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0)
                     hasVulkan = true;
+                if (std::strcmp(extension.extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0)
+                    hasHandTracking = true;
             }
 
             if (!hasVulkan)
@@ -3445,7 +4590,13 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 return false;
             }
 
-            const char* enabledExtensions[] = { XR_KHR_VULKAN_ENABLE_EXTENSION_NAME };
+            std::vector<const char*> enabledExtensions;
+            enabledExtensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+            if (hasHandTracking)
+            {
+                enabledExtensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+                m_HandTrackingExtensionEnabled = true;
+            }
 
             XrInstanceCreateInfo createInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
             std::snprintf(createInfo.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "L4D2VR OpenXR Vulkan Helper");
@@ -3453,21 +4604,23 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             std::snprintf(createInfo.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, "L4D2VR");
             createInfo.applicationInfo.engineVersion = 1;
             createInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
-            createInfo.enabledExtensionCount = ARRAYSIZE(enabledExtensions);
-            createInfo.enabledExtensionNames = enabledExtensions;
+            createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+            createInfo.enabledExtensionNames = enabledExtensions.data();
 
             result = m_Xr.xrCreateInstance(&createInfo, &m_Instance);
             if (!Succeeded(m_Log, "xrCreateInstance(Vulkan)", result) || m_Instance == XR_NULL_HANDLE)
                 return false;
 
-            m_Log.Print("Created OpenXR instance with %s", XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+            m_Log.Print("Created OpenXR instance with %s handTracking=%u",
+                XR_KHR_VULKAN_ENABLE_EXTENSION_NAME,
+                m_HandTrackingExtensionEnabled ? 1u : 0u);
             m_Bridge.Update(L4D2VROpenXrBridgeStatus::InstanceCreated, 0, 0, "OpenXR instance created");
             return true;
         }
 
         bool LoadOpenXrInstanceFunctions()
         {
-            return
+            const bool loaded =
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrDestroyInstance", m_Xr.xrDestroyInstance, m_Log) &&
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetInstanceProperties", m_Xr.xrGetInstanceProperties, m_Log) &&
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetSystem", m_Xr.xrGetSystem, m_Log) &&
@@ -3494,7 +4647,11 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetVulkanInstanceExtensionsKHR", m_Xr.xrGetVulkanInstanceExtensionsKHR, m_Log) &&
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetVulkanDeviceExtensionsKHR", m_Xr.xrGetVulkanDeviceExtensionsKHR, m_Log) &&
                 LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetVulkanGraphicsDeviceKHR", m_Xr.xrGetVulkanGraphicsDeviceKHR, m_Log) &&
-                LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetVulkanGraphicsRequirementsKHR", m_Xr.xrGetVulkanGraphicsRequirementsKHR, m_Log);
+                LoadXrFunction(m_Xr.xrGetInstanceProcAddr, m_Instance, "xrGetVulkanGraphicsRequirementsKHR", m_Xr.xrGetVulkanGraphicsRequirementsKHR, m_Log) &&
+                LoadOpenXrInputFunctions(m_Xr, m_Instance, m_Log);
+            if (loaded)
+                LoadOpenXrOptionalHandTrackingFunctions(m_Xr, m_Instance, m_Log, m_HandTrackingExtensionEnabled);
+            return loaded;
         }
 
         bool CreateOpenXrSystem()
@@ -3970,6 +5127,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
             result = m_Xr.xrCreateReferenceSpace(m_Session, &spaceInfo, &m_AppSpace);
             if (!Succeeded(m_Log, "xrCreateReferenceSpace(LOCAL)", result) || m_AppSpace == XR_NULL_HANDLE)
+                return false;
+
+            if (!m_InputBridge.InitializeSession(m_Session, m_AppSpace, m_HandTrackingExtensionEnabled, m_Log))
                 return false;
 
             m_Log.Print("Created OpenXR Vulkan session and LOCAL reference space");
@@ -5491,6 +6651,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 if (!Succeeded(m_Log, "xrBeginFrame", result))
                     return 23;
 
+                m_InputBridge.UpdateFrame(frameState.predictedDisplayTime, m_Bridge, m_Log);
+
                 bool layerReady = false;
                 uint32_t overlayLayerCount = 0;
                 std::array<XrCompositionLayerProjectionView, 2> projectionViews{};
@@ -5776,6 +6938,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         {
             if (m_VkDevice != VK_NULL_HANDLE && m_Vk.vkDeviceWaitIdle)
                 m_Vk.vkDeviceWaitIdle(m_VkDevice);
+            m_InputBridge.Shutdown();
             for (VulkanGameEyeTexture& eye : m_GameEyes)
                 DestroyImportedGameEye(eye);
             for (VulkanGameEyeTexture& overlay : m_OverlayTextures)
@@ -5834,7 +6997,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         XrSpace m_AppSpace = XR_NULL_HANDLE;
         XrSessionState m_SessionState = XR_SESSION_STATE_UNKNOWN;
         XrEnvironmentBlendMode m_BlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        OpenXrInputBridge m_InputBridge;
         bool m_SessionRunning = false;
+        bool m_HandTrackingExtensionEnabled = false;
         VkFormat m_SelectedSwapchainFormat = VK_FORMAT_UNDEFINED;
         VkInstance m_VkInstance = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;

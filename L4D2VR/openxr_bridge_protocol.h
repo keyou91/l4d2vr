@@ -3,7 +3,7 @@
 #include <cstdint>
 
 constexpr uint32_t L4D2VR_OPENXR_BRIDGE_MAGIC = 0x5258344Cu; // L4XR
-constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 9;
+constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 10;
 
 enum class L4D2VROpenXrBridgeStatus : uint32_t
 {
@@ -38,6 +38,70 @@ enum : uint32_t
     L4D2VR_OPENXR_OVERLAY_MAIN_MENU_READY = 1u << L4D2VR_OPENXR_OVERLAY_MAIN_MENU,
     L4D2VR_OPENXR_OVERLAY_HUD_READY = 1u << L4D2VR_OPENXR_OVERLAY_HUD
 };
+
+enum : uint32_t
+{
+    L4D2VR_OPENXR_HAND_LEFT = 0,
+    L4D2VR_OPENXR_HAND_RIGHT = 1,
+    L4D2VR_OPENXR_HAND_COUNT = 2,
+    L4D2VR_OPENXR_HAND_JOINT_COUNT = 26
+};
+
+enum : uint32_t
+{
+    L4D2VR_OPENXR_INPUT_FEATURE_CONTROLLERS = 1u << 0,
+    L4D2VR_OPENXR_INPUT_FEATURE_HAND_TRACKING = 1u << 1,
+    L4D2VR_OPENXR_INPUT_FEATURE_HAPTICS = 1u << 2
+};
+
+enum class L4D2VROpenXrActionId : uint32_t
+{
+    Invalid = 0,
+    ActivateVR,
+    Jump,
+    PrimaryAttack,
+    Reload,
+    Use,
+    Teleport,
+    Walk,
+    Turn,
+    SecondaryAttack,
+    NextItem,
+    PrevItem,
+    ResetPosition,
+    Crouch,
+    Flashlight,
+    InventoryGripLeft,
+    InventoryGripRight,
+    InventoryQuickSwitch,
+    SpecialInfectedAutoAimToggle,
+    SpecialInfectedDodgeToggle,
+    LedgeGuardToggle,
+    EffectiveAttackRangeAutoFireToggle,
+    SpeechToText,
+    MenuSelect,
+    MenuBack,
+    MenuUp,
+    MenuDown,
+    MenuLeft,
+    MenuRight,
+    Spray,
+    Scoreboard,
+    ShowHUD,
+    Pause,
+    NonVRServerMovementAngleToggle,
+    ScopeToggle,
+    FriendlyFireBlockToggle,
+    CustomAction1,
+    CustomAction2,
+    CustomAction3,
+    CustomAction4,
+    CustomAction5,
+    Count
+};
+
+constexpr uint32_t L4D2VR_OPENXR_ACTION_COUNT =
+    static_cast<uint32_t>(L4D2VROpenXrActionId::Count);
 
 struct L4D2VROpenXrSharedTextureDesc
 {
@@ -85,6 +149,75 @@ struct L4D2VROpenXrPoseDesc
     float orientation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 };
 
+struct L4D2VROpenXrControllerPoseDesc
+{
+    uint32_t valid = 0;
+    uint32_t active = 0;
+    uint64_t locationFlags = 0;
+    int64_t displayTime = 0;
+    float position[3] = {};
+    float orientation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+};
+
+struct L4D2VROpenXrDigitalActionDesc
+{
+    uint32_t active = 0;
+    uint32_t state = 0;
+    uint32_t changed = 0;
+    uint32_t activeOrigin = 0;
+    int64_t lastChangeTime = 0;
+};
+
+struct L4D2VROpenXrAnalogActionDesc
+{
+    uint32_t active = 0;
+    uint32_t changed = 0;
+    uint32_t activeOrigin = 0;
+    uint32_t reserved0 = 0;
+    int64_t lastChangeTime = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct L4D2VROpenXrHandJointDesc
+{
+    uint64_t locationFlags = 0;
+    float radius = 0.0f;
+    float position[3] = {};
+    float orientation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+};
+
+struct L4D2VROpenXrHandTrackingDesc
+{
+    uint32_t valid = 0;
+    uint32_t active = 0;
+    uint32_t jointCount = 0;
+    uint32_t reserved0 = 0;
+    float fingerCurls[5] = {};
+    L4D2VROpenXrHandJointDesc joints[L4D2VR_OPENXR_HAND_JOINT_COUNT] = {};
+};
+
+struct L4D2VROpenXrInputStateDesc
+{
+    uint32_t valid = 0;
+    uint32_t featureFlags = 0;
+    uint32_t actionCount = L4D2VR_OPENXR_ACTION_COUNT;
+    uint32_t reserved0 = 0;
+    L4D2VROpenXrControllerPoseDesc controllerPoses[L4D2VR_OPENXR_HAND_COUNT] = {};
+    L4D2VROpenXrDigitalActionDesc digitalActions[L4D2VR_OPENXR_ACTION_COUNT] = {};
+    L4D2VROpenXrAnalogActionDesc analogActions[L4D2VR_OPENXR_ACTION_COUNT] = {};
+    L4D2VROpenXrHandTrackingDesc handTracking[L4D2VR_OPENXR_HAND_COUNT] = {};
+};
+
+struct L4D2VROpenXrHapticRequestDesc
+{
+    uint32_t sequence = 0;
+    uint32_t valid = 0;
+    float durationSeconds = 0.0f;
+    float frequency = 0.0f;
+    float amplitude = 0.0f;
+};
+
 struct L4D2VROpenXrRuntimeViewDesc
 {
     uint32_t valid = 0;
@@ -128,6 +261,9 @@ struct L4D2VROpenXrBridgeState
     L4D2VROpenXrPoseDesc gameRenderPose = {};
     uint32_t runtimeViewConfigGeneration = 0;
     L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig = {};
+    uint32_t inputStateGeneration = 0;
+    L4D2VROpenXrInputStateDesc inputState = {};
+    L4D2VROpenXrHapticRequestDesc hapticRequests[L4D2VR_OPENXR_HAND_COUNT] = {};
     uint32_t overlayGeneration = 0;
     uint32_t overlayReadyMask = 0;
     uint32_t overlayFrameGeneration = 0;

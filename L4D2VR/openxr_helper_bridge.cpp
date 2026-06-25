@@ -448,6 +448,33 @@ bool L4D2VR_ReadOpenXrRuntimeViewConfig(L4D2VROpenXrRuntimeViewConfigDesc& confi
     return false;
 }
 
+bool L4D2VR_ReadOpenXrInputState(L4D2VROpenXrInputStateDesc& inputState, uint32_t* generation)
+{
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    const L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return false;
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const uint32_t gen0 = state->inputStateGeneration;
+        if (gen0 == 0 || (gen0 & 1u))
+            continue;
+
+        L4D2VROpenXrInputStateDesc snapshot = state->inputState;
+        const uint32_t gen1 = state->inputStateGeneration;
+        if (gen0 == gen1 && !(gen1 & 1u) && snapshot.valid)
+        {
+            inputState = snapshot;
+            if (generation)
+                *generation = gen1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void L4D2VR_PublishOpenXrGameRenderPose(const L4D2VROpenXrPoseDesc& pose)
 {
     if (!pose.valid)
@@ -461,6 +488,36 @@ void L4D2VR_PublishOpenXrGameRenderPose(const L4D2VROpenXrPoseDesc& pose)
     ++state->gameRenderPoseGeneration;
     state->gameRenderPose = pose;
     ++state->gameRenderPoseGeneration;
+    state->heartbeatTickMs = GetTickCount64();
+}
+
+void L4D2VR_PublishOpenXrHapticRequest(uint32_t handIndex, float durationSeconds, float frequency, float amplitude)
+{
+    if (handIndex >= L4D2VR_OPENXR_HAND_COUNT)
+        return;
+
+    durationSeconds = std::clamp(durationSeconds, 0.0f, 0.5f);
+    frequency = std::clamp(frequency, 0.0f, 320.0f);
+    amplitude = std::clamp(amplitude, 0.0f, 1.0f);
+    if (durationSeconds <= 0.0f || amplitude <= 0.0f)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_OpenXrBridgeStateMutex);
+    L4D2VROpenXrBridgeState* state = g_OpenXrBridgeState;
+    if (!state)
+        return;
+
+    L4D2VROpenXrHapticRequestDesc& request = state->hapticRequests[handIndex];
+    uint32_t seq = request.sequence;
+    if (seq & 1u)
+        ++seq;
+
+    request.sequence = seq + 1u;
+    request.valid = 1;
+    request.durationSeconds = durationSeconds;
+    request.frequency = frequency;
+    request.amplitude = amplitude;
+    request.sequence = seq + 2u;
     state->heartbeatTickMs = GetTickCount64();
 }
 

@@ -3652,7 +3652,11 @@ void VR::TriggerPhysicalHandHapticPulse(bool leftHand, float durationSeconds, fl
 
 void VR::FlushHapticMixer()
 {
-    if (!m_IsVREnabled || !m_System)
+    if (!m_IsVREnabled)
+        return;
+
+    const bool openXrBackend = m_RuntimeBackend == VrRuntimeBackend::OpenXR;
+    if (!openXrBackend && !m_System)
         return;
 
     const auto now = std::chrono::steady_clock::now();
@@ -3670,10 +3674,21 @@ void VR::FlushHapticMixer()
                     return;
             }
 
-            TriggerLegacyHapticPulse(
-                GetPhysicalControllerIndexForHand(leftHand),
-                mix.durationSeconds,
-                mix.amplitude);
+            if (openXrBackend)
+            {
+                L4D2VR_PublishOpenXrHapticRequest(
+                    leftHand ? L4D2VR_OPENXR_HAND_LEFT : L4D2VR_OPENXR_HAND_RIGHT,
+                    mix.durationSeconds,
+                    mix.frequency,
+                    mix.amplitude);
+            }
+            else
+            {
+                TriggerLegacyHapticPulse(
+                    GetPhysicalControllerIndexForHand(leftHand),
+                    mix.durationSeconds,
+                    mix.amplitude);
+            }
 
             mix.pending = false;
             mix.weight = 0.0f;

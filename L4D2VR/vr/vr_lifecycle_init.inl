@@ -1091,6 +1091,52 @@ VR::VR(Game* game)
         m_RightControllerRight = m_HmdRight;
         m_RightControllerUp = m_HmdUp;
 
+        auto openXrActionHandle = [](L4D2VROpenXrActionId id) -> vr::VRActionHandle_t
+            {
+                return static_cast<vr::VRActionHandle_t>(static_cast<uint32_t>(id));
+            };
+
+        m_ActionActivateVR = openXrActionHandle(L4D2VROpenXrActionId::ActivateVR);
+        m_ActionJump = openXrActionHandle(L4D2VROpenXrActionId::Jump);
+        m_ActionPrimaryAttack = openXrActionHandle(L4D2VROpenXrActionId::PrimaryAttack);
+        m_ActionReload = openXrActionHandle(L4D2VROpenXrActionId::Reload);
+        m_ActionUse = openXrActionHandle(L4D2VROpenXrActionId::Use);
+        m_ActionTeleport = openXrActionHandle(L4D2VROpenXrActionId::Teleport);
+        m_ActionWalk = openXrActionHandle(L4D2VROpenXrActionId::Walk);
+        m_ActionTurn = openXrActionHandle(L4D2VROpenXrActionId::Turn);
+        m_ActionSecondaryAttack = openXrActionHandle(L4D2VROpenXrActionId::SecondaryAttack);
+        m_ActionNextItem = openXrActionHandle(L4D2VROpenXrActionId::NextItem);
+        m_ActionPrevItem = openXrActionHandle(L4D2VROpenXrActionId::PrevItem);
+        m_ActionResetPosition = openXrActionHandle(L4D2VROpenXrActionId::ResetPosition);
+        m_ActionCrouch = openXrActionHandle(L4D2VROpenXrActionId::Crouch);
+        m_ActionFlashlight = openXrActionHandle(L4D2VROpenXrActionId::Flashlight);
+        m_ActionInventoryGripLeft = openXrActionHandle(L4D2VROpenXrActionId::InventoryGripLeft);
+        m_ActionInventoryGripRight = openXrActionHandle(L4D2VROpenXrActionId::InventoryGripRight);
+        m_ActionInventoryQuickSwitch = openXrActionHandle(L4D2VROpenXrActionId::InventoryQuickSwitch);
+        m_ActionSpecialInfectedAutoAimToggle = openXrActionHandle(L4D2VROpenXrActionId::SpecialInfectedAutoAimToggle);
+        m_ActionSpecialInfectedDodgeToggle = openXrActionHandle(L4D2VROpenXrActionId::SpecialInfectedDodgeToggle);
+        m_ActionLedgeGuardToggle = openXrActionHandle(L4D2VROpenXrActionId::LedgeGuardToggle);
+        m_ActionEffectiveAttackRangeAutoFireToggle = openXrActionHandle(L4D2VROpenXrActionId::EffectiveAttackRangeAutoFireToggle);
+        m_ActionSpeechToText = openXrActionHandle(L4D2VROpenXrActionId::SpeechToText);
+        m_MenuSelect = openXrActionHandle(L4D2VROpenXrActionId::MenuSelect);
+        m_MenuBack = openXrActionHandle(L4D2VROpenXrActionId::MenuBack);
+        m_MenuUp = openXrActionHandle(L4D2VROpenXrActionId::MenuUp);
+        m_MenuDown = openXrActionHandle(L4D2VROpenXrActionId::MenuDown);
+        m_MenuLeft = openXrActionHandle(L4D2VROpenXrActionId::MenuLeft);
+        m_MenuRight = openXrActionHandle(L4D2VROpenXrActionId::MenuRight);
+        m_Spray = openXrActionHandle(L4D2VROpenXrActionId::Spray);
+        m_Scoreboard = openXrActionHandle(L4D2VROpenXrActionId::Scoreboard);
+        m_ToggleHUD = openXrActionHandle(L4D2VROpenXrActionId::ShowHUD);
+        m_Pause = openXrActionHandle(L4D2VROpenXrActionId::Pause);
+        m_NonVRServerMovementAngleToggle = openXrActionHandle(L4D2VROpenXrActionId::NonVRServerMovementAngleToggle);
+        m_ActionScopeToggle = openXrActionHandle(L4D2VROpenXrActionId::ScopeToggle);
+        m_ActionFriendlyFireBlockToggle = openXrActionHandle(L4D2VROpenXrActionId::FriendlyFireBlockToggle);
+        m_CustomAction1 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction1);
+        m_CustomAction2 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction2);
+        m_CustomAction3 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction3);
+        m_CustomAction4 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction4);
+        m_CustomAction5 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction5);
+
         Game::logMsg(
             "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) fallbackToOpenVR=0",
             runtimeViewConfigGeneration,

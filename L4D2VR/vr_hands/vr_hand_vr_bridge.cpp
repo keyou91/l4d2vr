@@ -4092,6 +4092,19 @@ void VR::CancelMagazineInteractionManual()
 bool VR::ReadMagazineInteractionFingerCurls(std::array<float, 5>& outCurls)
 {
     outCurls = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+    {
+        const bool physicalLeftHand = IsGameplayHandLeftPhysical(true);
+        const uint32_t handIndex = physicalLeftHand ? L4D2VR_OPENXR_HAND_LEFT : L4D2VR_OPENXR_HAND_RIGHT;
+        const L4D2VROpenXrHandTrackingDesc& handTracking = m_OpenXrLastInputState.handTracking[handIndex];
+        if (!handTracking.valid || !handTracking.active)
+            return false;
+
+        for (size_t i = 0; i < outCurls.size(); ++i)
+            outCurls[i] = std::clamp(handTracking.fingerCurls[i], 0.0f, 1.0f);
+        return true;
+    }
+
     if (!m_Input)
         return false;
 
@@ -4114,15 +4127,32 @@ bool VR::ReadMagazineInteractionFingerCurls(std::array<float, 5>& outCurls)
 void VR::UpdateNativeViewmodelLeftHandOpenVRFingerCurls()
 {
     std::array<float, 5> curls{};
-    const bool valid =
-        m_NativeViewmodelLeftHandOpenVRSkeleton &&
-        m_Input &&
-        ReadOpenVRSkeletalFingerCurls(
-            m_Input,
-            m_NativeViewmodelLeftHandOpenVRAction,
-            "/actions/base/in/skeleton_lefthand",
-            curls,
-            "native viewmodel left hand");
+    bool valid = false;
+    if (m_NativeViewmodelLeftHandOpenVRSkeleton)
+    {
+        if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+        {
+            const L4D2VROpenXrHandTrackingDesc& handTracking =
+                m_OpenXrLastInputState.handTracking[L4D2VR_OPENXR_HAND_LEFT];
+            valid = handTracking.valid != 0 && handTracking.active != 0;
+            if (valid)
+            {
+                for (size_t i = 0; i < curls.size(); ++i)
+                    curls[i] = std::clamp(handTracking.fingerCurls[i], 0.0f, 1.0f);
+            }
+        }
+        else
+        {
+            valid =
+                m_Input &&
+                ReadOpenVRSkeletalFingerCurls(
+                    m_Input,
+                    m_NativeViewmodelLeftHandOpenVRAction,
+                    "/actions/base/in/skeleton_lefthand",
+                    curls,
+                    "native viewmodel left hand");
+        }
+    }
 
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_NativeViewmodelLeftHandOpenVRFingerCurlMutex);
@@ -4137,8 +4167,12 @@ void VR::UpdateNativeViewmodelLeftHandOpenVRFingerCurls()
     const bool stale =
         m_NativeViewmodelLeftHandOpenVRFingerCurlsValid &&
         std::chrono::duration<float>(now - m_NativeViewmodelLeftHandOpenVRFingerCurlsAt).count() > 0.35f;
-    if (!m_NativeViewmodelLeftHandOpenVRSkeleton || !m_Input || stale)
+    if (!m_NativeViewmodelLeftHandOpenVRSkeleton ||
+        (m_RuntimeBackend != VrRuntimeBackend::OpenXR && !m_Input) ||
+        stale)
+    {
         m_NativeViewmodelLeftHandOpenVRFingerCurlsValid = false;
+    }
 }
 
 bool VR::GetNativeViewmodelLeftHandOpenVRFingerCurls(std::array<float, 5>& outCurls) const
