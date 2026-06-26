@@ -5,6 +5,7 @@
 #include "sdk.h"
 #include "sdk_server.h"
 #include "vr.h"
+#include "openxr_helper_bridge.h"
 #include "trace.h"
 #include "offsets.h"
 #include "vr_hands/vr_hand_math.h"
@@ -53,6 +54,127 @@ static inline void NormalizeAndClampViewAngles(QAngle& a)
 static inline bool IsFiniteViewAngle(const QAngle& a)
 {
 	return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
+}
+
+static inline bool NormalizeFiniteVector(Vector& v)
+{
+	if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+		return false;
+	const float lenSq = (v.x * v.x) + (v.y * v.y) + (v.z * v.z);
+	if (lenSq <= 0.000001f)
+		return false;
+	const float invLen = 1.0f / std::sqrt(lenSq);
+	v.x *= invLen;
+	v.y *= invLen;
+	v.z *= invLen;
+	return true;
+}
+
+static inline Vector SourceDirectionToOpenXr(const Vector& source)
+{
+	return Vector(-source.y, source.z, -source.x);
+}
+
+static bool BuildOpenXrOrientationFromSourceAngles(const QAngle& sourceAngles, float outOrientation[4])
+{
+	if (!IsFiniteViewAngle(sourceAngles))
+		return false;
+
+	Vector sourceForward;
+	Vector sourceRight;
+	Vector sourceUp;
+	QAngle::AngleVectors(sourceAngles, &sourceForward, &sourceRight, &sourceUp);
+
+	Vector xrForward = SourceDirectionToOpenXr(sourceForward);
+	Vector xrRight = SourceDirectionToOpenXr(sourceRight);
+	Vector xrUp = SourceDirectionToOpenXr(sourceUp);
+	if (!NormalizeFiniteVector(xrForward) || !NormalizeFiniteVector(xrRight) || !NormalizeFiniteVector(xrUp))
+		return false;
+
+	const Vector xrBack(-xrForward.x, -xrForward.y, -xrForward.z);
+	const float m00 = xrRight.x;
+	const float m01 = xrUp.x;
+	const float m02 = xrBack.x;
+	const float m10 = xrRight.y;
+	const float m11 = xrUp.y;
+	const float m12 = xrBack.y;
+	const float m20 = xrRight.z;
+	const float m21 = xrUp.z;
+	const float m22 = xrBack.z;
+
+	float x = 0.0f;
+	float y = 0.0f;
+	float z = 0.0f;
+	float w = 1.0f;
+	const float trace = m00 + m11 + m22;
+	if (trace > 0.0f)
+	{
+		const float s = std::sqrt(trace + 1.0f) * 2.0f;
+		w = 0.25f * s;
+		x = (m21 - m12) / s;
+		y = (m02 - m20) / s;
+		z = (m10 - m01) / s;
+	}
+	else if (m00 > m11 && m00 > m22)
+	{
+		const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+		w = (m21 - m12) / s;
+		x = 0.25f * s;
+		y = (m01 + m10) / s;
+		z = (m02 + m20) / s;
+	}
+	else if (m11 > m22)
+	{
+		const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+		w = (m02 - m20) / s;
+		x = (m01 + m10) / s;
+		y = 0.25f * s;
+		z = (m12 + m21) / s;
+	}
+	else
+	{
+		const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+		w = (m10 - m01) / s;
+		x = (m02 + m20) / s;
+		y = (m12 + m21) / s;
+		z = 0.25f * s;
+	}
+
+	const float lenSq = (x * x) + (y * y) + (z * z) + (w * w);
+	if (!std::isfinite(lenSq) || lenSq <= 0.000001f)
+		return false;
+	const float invLen = 1.0f / std::sqrt(lenSq);
+	outOrientation[0] = x * invLen;
+	outOrientation[1] = y * invLen;
+	outOrientation[2] = z * invLen;
+	outOrientation[3] = w * invLen;
+	return true;
+}
+
+static bool PublishOpenXrRenderPoseFromSourceView(VR* vr, const Vector& sourceCenter, const QAngle& sourceAngles)
+{
+	if (!vr ||
+		vr->m_RuntimeBackend != VrRuntimeBackend::OpenXR ||
+		!vr->m_OpenXrHelperBridgeActive ||
+		!L4D2VR_OpenXrHelperBridgeIsStarted())
+		return false;
+
+	const float vrScale = (std::isfinite(vr->m_VRScale) && std::fabs(vr->m_VRScale) > 0.001f)
+		? vr->m_VRScale
+		: 43.2f;
+	if (!std::isfinite(sourceCenter.x) || !std::isfinite(sourceCenter.y) || !std::isfinite(sourceCenter.z))
+		return false;
+
+	L4D2VROpenXrPoseDesc pose = vr->m_OpenXrLastHmdPose;
+	pose.valid = 1;
+	pose.position[0] = -sourceCenter.y / vrScale;
+	pose.position[1] = sourceCenter.z / vrScale;
+	pose.position[2] = -sourceCenter.x / vrScale;
+	if (!BuildOpenXrOrientationFromSourceAngles(sourceAngles, pose.orientation))
+		return false;
+
+	L4D2VR_PublishOpenXrGameRenderPose(pose);
+	return true;
 }
 
 static inline bool StringContains(const char* text, const char* needle)

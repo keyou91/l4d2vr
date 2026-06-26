@@ -640,6 +640,7 @@ namespace
         float vMax = 1.0f;
         float renderFovXDeg = 90.0f;
         float renderAspect = 1.0f;
+        float renderIpdScale = 1.0f;
     };
 
     class BridgeWriter
@@ -1005,11 +1006,33 @@ namespace
         return (std::isfinite(ipd) && ipd > 0.01f && ipd < 0.20f) ? ipd : 0.063f;
     }
 
+    bool TryBuildSymmetricProjectionFov(float renderFovXDeg, float renderAspect, XrFovf& outFov)
+    {
+        if (!std::isfinite(renderFovXDeg) || renderFovXDeg <= 1.0f || renderFovXDeg >= 179.0f ||
+            !std::isfinite(renderAspect) || renderAspect <= 0.1f || renderAspect >= 10.0f)
+            return false;
+
+        const float halfFovX = 0.5f * renderFovXDeg * (kPi / 180.0f);
+        const float tanHalfFovX = std::tan(halfFovX);
+        const float tanHalfFovY = tanHalfFovX / renderAspect;
+        if (!std::isfinite(tanHalfFovX) || tanHalfFovX <= 0.0f ||
+            !std::isfinite(tanHalfFovY) || tanHalfFovY <= 0.0f)
+            return false;
+
+        const float halfFovY = std::atan(tanHalfFovY);
+        outFov.angleLeft = -halfFovX;
+        outFov.angleRight = halfFovX;
+        outFov.angleUp = halfFovY;
+        outFov.angleDown = -halfFovY;
+        return true;
+    }
+
     XrPosef BuildProjectionPoseFromGameRenderPose(
         const L4D2VROpenXrPoseDesc& renderPose,
         const std::vector<XrView>& locatedViews,
         uint32_t locatedCount,
         uint32_t eyeIndex,
+        float rightFromLeftIpdScale = 1.0f,
         float* outYaw = nullptr,
         float* outIpd = nullptr)
     {
@@ -1036,7 +1059,13 @@ namespace
             right = XrVector3f{ 1.0f, 0.0f, 0.0f };
         }
 
-        const float side = (eyeIndex == L4D2VR_OPENXR_EYE_LEFT) ? -0.5f : 0.5f;
+        const float safeRightFromLeftIpdScale =
+            (std::isfinite(rightFromLeftIpdScale) && rightFromLeftIpdScale >= -20.0f && rightFromLeftIpdScale <= 20.0f)
+                ? rightFromLeftIpdScale
+                : 1.0f;
+        const float side = (eyeIndex == L4D2VR_OPENXR_EYE_LEFT)
+            ? -0.5f
+            : (-0.5f + safeRightFromLeftIpdScale);
         pose.position.x += right.x * ipd * side;
         pose.position.y += right.y * ipd * side;
         pose.position.z += right.z * ipd * side;
@@ -2015,6 +2044,9 @@ namespace
             eye.renderAspect = (std::isfinite(desc.renderAspect) && desc.renderAspect > 0.1f && desc.renderAspect < 10.0f)
                 ? desc.renderAspect
                 : ((desc.height > 0) ? (static_cast<float>(desc.width) / static_cast<float>(desc.height)) : 1.0f);
+            eye.renderIpdScale = (std::isfinite(desc.renderIpdScale) && desc.renderIpdScale >= -20.0f && desc.renderIpdScale <= 20.0f)
+                ? desc.renderIpdScale
+                : 1.0f;
             if (eye.uMax <= eye.uMin)
             {
                 eye.uMin = 0.0f;
@@ -2026,11 +2058,11 @@ namespace
                 eye.vMax = 1.0f;
             }
 
-            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
+            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f ipdScale=%.3f) memorySize=%llu",
                 eyeIndex, generation, static_cast<unsigned long long>(desc.kmtHandle),
                 static_cast<unsigned long long>(desc.image), desc.width, desc.height, desc.format,
                 eye.uMin, eye.vMin, eye.uMax, eye.vMax,
-                eye.renderFovXDeg, eye.renderAspect,
+                eye.renderFovXDeg, eye.renderAspect, eye.renderIpdScale,
                 static_cast<unsigned long long>(memoryRequirements.size));
             return true;
         }
@@ -3089,7 +3121,12 @@ namespace
 
                                 projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
                                 projectionViews[eye].pose = haveGameRenderPose
-                                    ? BuildProjectionPoseFromGameRenderPose(gameRenderPose, locatedViews, locatedCount, eye)
+                                    ? BuildProjectionPoseFromGameRenderPose(
+                                        gameRenderPose,
+                                        locatedViews,
+                                        locatedCount,
+                                        eye,
+                                        m_GameEyes[eye].renderIpdScale)
                                     : BuildProjectionPose(locatedViews, locatedCount, eye);
                                 projectionViews[eye].fov = locatedViews[eye].fov;
                                 projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
@@ -5808,6 +5845,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             eye.renderAspect = (std::isfinite(desc.renderAspect) && desc.renderAspect > 0.1f && desc.renderAspect < 10.0f)
                 ? desc.renderAspect
                 : ((desc.height > 0) ? (static_cast<float>(desc.width) / static_cast<float>(desc.height)) : 1.0f);
+            eye.renderIpdScale = (std::isfinite(desc.renderIpdScale) && desc.renderIpdScale >= -20.0f && desc.renderIpdScale <= 20.0f)
+                ? desc.renderIpdScale
+                : 1.0f;
             if (eye.uMax <= eye.uMin)
             {
                 eye.uMin = 0.0f;
@@ -5822,12 +5862,12 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             if (!UpdateBlitDescriptorSet(eyeIndex))
                 return false;
 
-            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u layout=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
+            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u layout=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f ipdScale=%.3f) memorySize=%llu",
                 eyeIndex, generation, static_cast<unsigned long long>(desc.kmtHandle),
                 static_cast<unsigned long long>(desc.image), desc.width, desc.height, desc.format,
                 static_cast<unsigned int>(eye.layout),
                 eye.uMin, eye.vMin, eye.uMax, eye.vMax,
-                eye.renderFovXDeg, eye.renderAspect,
+                eye.renderFovXDeg, eye.renderAspect, eye.renderIpdScale,
                 static_cast<unsigned long long>(memoryRequirements.size));
             return true;
         }
@@ -6404,7 +6444,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             return CmdRenderShaderBlitWithDescriptor(swapchain, imageIndex, source, m_BlitDescriptorSets[descriptorIndex]);
         }
 
-        bool RenderEye(uint32_t eyeIndex, uint32_t frameIndex)
+        bool RenderEye(uint32_t eyeIndex, uint32_t frameIndex, bool waitForQueueIdle = true)
         {
             VulkanEyeSwapchain& eye = m_Eyes[eyeIndex];
             XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -6513,9 +6553,12 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             vkResult = m_Vk.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
             if (vkResult != VK_SUCCESS)
                 return false;
-            vkResult = m_Vk.vkQueueWaitIdle(m_GraphicsQueue);
-            if (vkResult != VK_SUCCESS)
-                return false;
+            if (waitForQueueIdle)
+            {
+                vkResult = m_Vk.vkQueueWaitIdle(m_GraphicsQueue);
+                if (vkResult != VK_SUCCESS)
+                    return false;
+            }
 
             XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrResult = m_Xr.xrReleaseSwapchainImage(eye.handle, &releaseInfo);
@@ -6543,7 +6586,11 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
         XrFovf BuildGameProjectionFov(const VulkanGameEyeTexture& source, const XrFovf& runtimeFov, uint32_t eyeIndex)
         {
-            if (!m_Bridge.HasState())
+            XrFovf gameFov{};
+            const bool haveGameFov =
+                m_Bridge.HasState() &&
+                TryBuildSymmetricProjectionFov(source.renderFovXDeg, source.renderAspect, gameFov);
+            if (!haveGameFov)
                 return runtimeFov;
 
             static bool s_loggedProjection = false;
@@ -6551,16 +6598,20 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             {
                 s_loggedProjection = true;
                 m_Log.Print(
-                    "Using runtime OpenXR projection for submit; game render projection fovX=%.2f aspect=%.4f runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
+                    "Using game render projection for OpenXR submit; gameProjection=(fovX=%.2f aspect=%.4f L=%.4f R=%.4f U=%.4f D=%.4f) runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
                     source.renderFovXDeg,
                     source.renderAspect,
+                    gameFov.angleLeft,
+                    gameFov.angleRight,
+                    gameFov.angleUp,
+                    gameFov.angleDown,
                     runtimeFov.angleLeft,
                     runtimeFov.angleRight,
                     runtimeFov.angleUp,
                     runtimeFov.angleDown);
             }
 
-            return runtimeFov;
+            return gameFov;
         }
 
         int FrameLoop(const Options& options)
@@ -6572,6 +6623,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             uint32_t lastLoggedSharedTextureGeneration = 0;
             uint32_t lastSubmittedSharedTextureFrameGeneration = 0;
             uint32_t lastSubmittedOverlayFrameGeneration = 0;
+            L4D2VROpenXrPoseDesc lastGameRenderPose{};
+            uint32_t lastGameRenderPoseGeneration = 0;
+            bool eyeSwapchainsHaveContent = false;
             ULONGLONG lastWaitingTextureLog = 0;
             ULONGLONG lastWaitingFrameLog = 0;
             m_Log.Print("Entering Vulkan frame loop targetFrames=%u waitReadySeconds=%u parentPid=%lu requireSharedTextures=%u",
@@ -6691,8 +6745,21 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     }
                     L4D2VROpenXrPoseDesc gameRenderPose{};
                     uint32_t gameRenderPoseGeneration = 0;
-                    const bool haveGameRenderPose =
+                    const bool readGameRenderPose =
                         m_Bridge.ReadGameRenderPose(gameRenderPose, &gameRenderPoseGeneration);
+                    if (readGameRenderPose)
+                    {
+                        lastGameRenderPose = gameRenderPose;
+                        lastGameRenderPoseGeneration = gameRenderPoseGeneration;
+                    }
+                    const bool haveGameRenderPose = lastGameRenderPose.valid != 0;
+                    const L4D2VROpenXrPoseDesc& projectionRenderPose =
+                        haveGameRenderPose ? lastGameRenderPose : gameRenderPose;
+                    const uint32_t projectionRenderPoseGeneration =
+                        haveGameRenderPose ? lastGameRenderPoseGeneration : 0;
+                    const char* projectionPoseSource = haveGameRenderPose
+                        ? (readGameRenderPose ? "game render" : "cached game render")
+                        : "runtime located";
                     if ((viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 && locatedCount >= 2)
                     {
                         const bool haveNewResolvedSharedFrame =
@@ -6706,15 +6773,27 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                             {
                                 if (!RenderEye(eye, submittedFrames))
                                     return 25;
+                            }
+
+                            eyeSwapchainsHaveContent = true;
+                            if (requireSharedTextures)
+                                lastSubmittedSharedTextureFrameGeneration = sharedTextureFrameGeneration;
+                        }
+
+                        if (sharedTexturesReady && eyeSwapchainsHaveContent)
+                        {
+                            for (uint32_t eye = 0; eye < 2; ++eye)
+                            {
                                 projectionViews[eye] = XrCompositionLayerProjectionView{ XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
                                 float renderYaw = 0.0f;
                                 float renderIpd = 0.0f;
                                 projectionViews[eye].pose = haveGameRenderPose
                                     ? BuildProjectionPoseFromGameRenderPose(
-                                        gameRenderPose,
+                                        projectionRenderPose,
                                         locatedViews,
                                         locatedCount,
                                         eye,
+                                        m_GameEyes[eye].renderIpdScale,
                                         &renderYaw,
                                         &renderIpd)
                                     : BuildProjectionPose(
@@ -6737,8 +6816,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                     const XrPosef& pose = projectionViews[eye].pose;
                                     m_Log.Print(
                                         "Using %s OpenXR projection pose for submit gameRenderGen=%u yawDeg=%.2f ipd=%.4f eye0Pos=(%.4f %.4f %.4f) eye0Quat=(%.4f %.4f %.4f %.4f)",
-                                        haveGameRenderPose ? "game render" : "runtime located",
-                                        gameRenderPoseGeneration,
+                                        projectionPoseSource,
+                                        projectionRenderPoseGeneration,
                                         renderYaw * (180.0f / 3.141592654f),
                                         renderIpd,
                                         pose.position.x,
@@ -6770,8 +6849,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                 }
                             }
                             layerReady = true;
-                            if (requireSharedTextures)
-                                lastSubmittedSharedTextureFrameGeneration = sharedTextureFrameGeneration;
                         }
 
                         bool blittedAnyOverlayFrame = false;

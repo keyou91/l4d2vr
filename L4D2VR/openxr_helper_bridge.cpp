@@ -181,7 +181,8 @@ namespace
             lhs.uMax == rhs.uMax &&
             lhs.vMax == rhs.vMax &&
             lhs.renderFovXDeg == rhs.renderFovXDeg &&
-            lhs.renderAspect == rhs.renderAspect;
+            lhs.renderAspect == rhs.renderAspect &&
+            lhs.renderIpdScale == rhs.renderIpdScale;
     }
 
     bool SameOpenXrOverlayDesc(

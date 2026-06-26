@@ -97,10 +97,15 @@ namespace dxvk {
         0, image->info().numLayers
       };
 
+      const VkImageLayout readableLayout =
+        (g_Game && g_Game->m_VR && g_Game->m_VR->m_OpenXrHelperBridgeActive)
+          ? VK_IMAGE_LAYOUT_GENERAL
+          : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
       m_device->TransformImage(
         tex, &subresources,
         image->info().layout,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        readableLayout);
 
       // This wait may need to be on all Faces and Mip Levels (2 loops).
       if (waitResourceIdle)

@@ -300,7 +300,14 @@ bool VR::UpdatePosesAndActions()
 void VR::GetViewParameters()
 {
     if (m_RuntimeBackend == VrRuntimeBackend::OpenXR || !m_System)
+    {
+        if (!std::isfinite(m_Ipd) || m_Ipd <= 0.01f || m_Ipd >= 0.20f)
+            m_Ipd = 0.063f;
+        m_EyeZ = 0.0f;
+        m_EyeToHeadTransformPosLeft = Vector(-(m_Ipd * 0.5f), 0.0f, 0.0f);
+        m_EyeToHeadTransformPosRight = Vector(m_Ipd * 0.5f, 0.0f, 0.0f);
         return;
+    }
 
     vr::HmdMatrix34_t eyeToHeadLeft = m_System->GetEyeToHeadTransform(vr::Eye_Left);
     vr::HmdMatrix34_t eyeToHeadRight = m_System->GetEyeToHeadTransform(vr::Eye_Right);

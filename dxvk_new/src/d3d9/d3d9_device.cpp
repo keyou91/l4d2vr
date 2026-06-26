@@ -150,8 +150,13 @@ namespace dxvk {
                 requestedViewport.Y != 0 ||
                 requestedViewport.Width < effectiveWidth ||
                 requestedViewport.Height < effectiveHeight;
-            if (!smallerThanTarget)
+            if (!smallerThanTarget) {
+                state->x.store(0, std::memory_order_release);
+                state->y.store(0, std::memory_order_release);
+                state->width.store(0, std::memory_order_release);
+                state->height.store(0, std::memory_order_release);
                 return;
+            }
 
             state->x.store(requestedViewport.X, std::memory_order_release);
             state->y.store(requestedViewport.Y, std::memory_order_release);
@@ -655,6 +660,37 @@ namespace dxvk {
             return vr && (vr->m_D9LeftEyeSubmitSurface || vr->m_D9RightEyeSubmitSurface);
         }
 
+        static bool VrPrepareOpenXrSurfaceForRead(IDirect3DSurface9* surface, const char* label) {
+            if (!surface || !g_D3DVR9)
+                return false;
+
+            const HRESULT hr = g_D3DVR9->TransferSurface(surface, TRUE);
+            if (FAILED(hr)) {
+                static DWORD s_lastPrepareFailLogMs = 0;
+                const DWORD nowMs = ::GetTickCount();
+                if (nowMs - s_lastPrepareFailLogMs >= 1000) {
+                    s_lastPrepareFailLogMs = nowMs;
+                    Game::logMsg(
+                        "[VR][OpenXRHelper] failed to prepare %s shared surface hr=0x%08lX",
+                        label ? label : "?",
+                        static_cast<unsigned long>(hr));
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        static bool VrPrepareOpenXrEyeSubmitSurfacesForRead(VR* vr) {
+            if (!vr || !vr->m_OpenXrHelperBridgeActive)
+                return false;
+
+            IDirect3DSurface9* left = vr->m_D9LeftEyeSubmitSurface ? vr->m_D9LeftEyeSubmitSurface : vr->m_D9LeftEyeSurface;
+            IDirect3DSurface9* right = vr->m_D9RightEyeSubmitSurface ? vr->m_D9RightEyeSubmitSurface : vr->m_D9RightEyeSurface;
+            return VrPrepareOpenXrSurfaceForRead(left, "left-eye") &&
+                VrPrepareOpenXrSurfaceForRead(right, "right-eye");
+        }
+
         static HWND VrGetPresentWindow(D3D9DeviceEx* device, HWND hDestWindowOverride) {
             if (hDestWindowOverride && ::IsWindow(hDestWindowOverride))
                 return hDestWindowOverride;
@@ -1089,6 +1125,9 @@ namespace dxvk {
                 vr->HideOpenXrHudOverlay();
                 return false;
             }
+
+            if (!VrPrepareOpenXrSurfaceForRead(vr->m_D9HUDSurface, "hud"))
+                return false;
 
             const bool published = vr->PublishOpenXrHudOverlay(frameId);
             if (!published)
@@ -1765,16 +1804,15 @@ namespace dxvk {
 
         if (SUCCEEDED(copyHr))
         {
-            Flush();
-            SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
-            GetDXVKDevice()->waitForIdle();
-
-            D3D9_TEXTURE_VR_DESC desc{};
-            const HRESULT descHr = g_D3DVR9->GetVRDesc(copyTarget, &desc);
-            if (SUCCEEDED(descHr))
+            if (VrPrepareOpenXrSurfaceForRead(copyTarget, "backbuffer-overlay"))
             {
-                const uint32_t overlayFrameId = VrNextOpenXrSyntheticSharedTextureFrameId(vr);
-                vr->PublishOpenXrBackbufferOverlay(desc, overlayFrameId);
+                D3D9_TEXTURE_VR_DESC desc{};
+                const HRESULT descHr = g_D3DVR9->GetVRDesc(copyTarget, &desc);
+                if (SUCCEEDED(descHr))
+                {
+                    const uint32_t overlayFrameId = VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                    vr->PublishOpenXrBackbufferOverlay(desc, overlayFrameId);
+                }
             }
         }
         else
@@ -5664,29 +5702,36 @@ namespace dxvk {
                     postPresentVR->HideOpenXrBackbufferOverlay();
                     if (postPresentVR->m_ReShadeVRCompat)
                         postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
-                    if (g_D3DVR9)
-                        g_D3DVR9->WaitDeviceIdle();
                     if (postPresentVR->m_OpenXrHelperBridgeActive) {
-                        postPresentVR->PublishOpenXrResolvedEyeTextures(completedFrameId);
-                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(postPresentVR);
-                        VrPublishOpenXrHudOverlay(postPresentVR, hudFrameId);
+                        if (VrPrepareOpenXrEyeSubmitSurfacesForRead(postPresentVR)) {
+                            postPresentVR->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                            const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(postPresentVR);
+                            VrPublishOpenXrHudOverlay(postPresentVR, hudFrameId);
+                        }
+                    }
+                    else if (g_D3DVR9) {
+                        g_D3DVR9->WaitDeviceIdle();
                     }
                 }
             }
             else if (!skipPostPresentVRWork && !deferredEyeSubmitResolve && g_D3DVR9) {
-                g_D3DVR9->WaitDeviceIdle();
                 if (g_Game && g_Game->m_VR && g_Game->m_VR->m_OpenXrHelperBridgeActive) {
                     VR* vr = g_Game->m_VR;
-                    const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                    const bool inGameNow = (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame());
-                    vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
-                    if (inGameNow) {
-                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
-                        VrPublishOpenXrHudOverlay(vr, hudFrameId);
+                    if (VrPrepareOpenXrEyeSubmitSurfacesForRead(vr)) {
+                        const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                        const bool inGameNow = (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame());
+                        vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                        if (inGameNow) {
+                            const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                            VrPublishOpenXrHudOverlay(vr, hudFrameId);
+                        }
+                        else {
+                            vr->HideOpenXrHudOverlay();
+                        }
                     }
-                    else {
-                        vr->HideOpenXrHudOverlay();
-                    }
+                }
+                else {
+                    g_D3DVR9->WaitDeviceIdle();
                 }
             }
 
@@ -5698,13 +5743,16 @@ namespace dxvk {
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr);
                     VrAimLineDrawOverlaysToSubmitTargets(this, vr);
                     vr->HideOpenXrBackbufferOverlay();
-                    if (g_D3DVR9)
-                        g_D3DVR9->WaitDeviceIdle();
                     if (vr->m_OpenXrHelperBridgeActive) {
-                        const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                        vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
-                        const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
-                        VrPublishOpenXrHudOverlay(vr, hudFrameId);
+                        if (VrPrepareOpenXrEyeSubmitSurfacesForRead(vr)) {
+                            const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                            vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
+                            const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                            VrPublishOpenXrHudOverlay(vr, hudFrameId);
+                        }
+                    }
+                    else if (g_D3DVR9) {
+                        g_D3DVR9->WaitDeviceIdle();
                     }
                 }
             }

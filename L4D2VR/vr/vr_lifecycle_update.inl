@@ -1505,7 +1505,7 @@ void VR::Update()
         UpdateTracking();
         if (m_OpenXrHelperBridgeActive && L4D2VR_OpenXrHelperBridgeIsStarted())
         {
-            if (m_OpenXrLastHmdPose.valid)
+            if (!inGameAtUpdateStart && m_OpenXrLastHmdPose.valid)
                 L4D2VR_PublishOpenXrGameRenderPose(m_OpenXrLastHmdPose);
 
             auto nextSyntheticOpenXrFrameId = [&]() -> uint32_t

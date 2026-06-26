@@ -2096,6 +2096,19 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		m_VR->m_ThirdPersonRenderCenter = m_VR->m_SetupOrigin;
 	}
 
+	if (m_VR->m_RuntimeBackend == VrRuntimeBackend::OpenXR && queueMode == 0)
+	{
+		QAngle leftAnchorAngles(renderViewAngles.x, renderViewAngles.y, renderViewAngles.z);
+		Vector leftAnchorRight;
+		QAngle::AngleVectors(leftAnchorAngles, nullptr, &leftAnchorRight, nullptr);
+		if (!leftAnchorRight.IsZero())
+		{
+			const float rightFromLeftScale = std::clamp(m_VR->m_OpenXrRightEyeFromLeftIPDScale, -20.0f, 20.0f);
+			const float ipd = (m_VR->m_Ipd * m_VR->m_IpdScale * m_VR->m_VRScale * rightFromLeftScale);
+			rightOrigin = leftOrigin + (leftAnchorRight * ipd);
+		}
+	}
+
 	leftEyeView.origin = leftOrigin;
 	leftEyeView.angles = renderViewAngles;
 
@@ -2163,6 +2176,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		(leftEyeView.origin.x + rightEyeView.origin.x) * 0.5f,
 		(leftEyeView.origin.y + rightEyeView.origin.y) * 0.5f,
 		(leftEyeView.origin.z + rightEyeView.origin.z) * 0.5f);
+	if (queueMode == 0 && m_VR->m_IsVREnabled)
+		PublishOpenXrRenderPoseFromSourceView(
+			m_VR,
+			sharedCenterOrigin,
+			QAngle(renderViewAngles.x, renderViewAngles.y, renderViewAngles.z));
 
 	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture, LPDIRECT3DSURFACE9 reshadeSurface,
 		CViewSetup& eyeView, CViewSetup& eyeHud, bool drawPreViewLaser)
@@ -2268,6 +2286,18 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				sharedCenterOrigin,
 				eyeView.origin);
 			ScopedReShadeVRCompatD3D9StateGuard reshadeGuard(m_VR, reshadeSurface);
+
+			QAngle eyePrevEngineAngles;
+			bool eyeTouchedEngineAngles = false;
+			if (queueMode == 0 && m_Game && m_Game->m_EngineClient)
+			{
+				m_Game->m_EngineClient->GetViewAngles(eyePrevEngineAngles);
+				QAngle eyeEngineAngles(eyeView.angles.x, eyeView.angles.y, eyeView.angles.z);
+				NormalizeAndClampViewAngles(eyeEngineAngles);
+				m_Game->m_EngineClient->SetViewAngles(eyeEngineAngles);
+				eyeTouchedEngineAngles = true;
+			}
+
 			if (drawPreViewLaser && m_VR->m_IsVREnabled)
 				m_VR->RenderDrawGameLaserSight(localPlayer);
 			if (m_VR->m_IsVREnabled)
@@ -2275,6 +2305,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
 			if (m_VR->m_IsVREnabled)
 				m_VR->FinishVrHandsEyeRender();
+
+			if (eyeTouchedEngineAngles && m_Game && m_Game->m_EngineClient)
+				m_Game->m_EngineClient->SetViewAngles(eyePrevEngineAngles);
 		};
 
 	const bool copyRightEyeFromLeft =
@@ -2287,8 +2320,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		renderEyeScene(1, m_VR->m_LeftEyeTexture, m_VR->m_D9LeftEyeSurface, leftEyeView, hudLeft, true);
 		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye == 0)
 			m_VR->CopyEyeToDesktopMirrorTexture(0);
-		if (copyRightEyeFromLeft)
-			rightEyeCopiedFromLeft = m_VR->CopyLeftEyeToRightEyeTexture();
 		if (m_VR->m_IsVREnabled)
 		{
 			rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
@@ -2298,6 +2329,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		}
 		if (m_VR->m_IsVREnabled)
 			m_VR->UpdateD3DAimLineOverlayForView(localPlayer, leftEyeView, 0);
+		if (copyRightEyeFromLeft)
+			rightEyeCopiedFromLeft = m_VR->CopyLeftEyeToRightEyeTexture();
 	}
 	m_PushedHud = false;
 
@@ -2305,18 +2338,22 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		if (!rightEyeCopiedFromLeft)
 		{
 			renderEyeScene(2, m_VR->m_RightEyeTexture, m_VR->m_D9RightEyeSurface, rightEyeView, hudRight, false);
+			if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye != 0)
+				m_VR->CopyEyeToDesktopMirrorTexture(1);
+			if (m_VR->m_IsVREnabled)
+			{
+				rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
+				if (hkViewport.fOriginal)
+					hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
+				m_VR->DrawPostMirrorPluginOverlays(rndrContext, localPlayer, rightEyeView, 1);
+			}
+			if (m_VR->m_IsVREnabled)
+				m_VR->UpdateD3DAimLineOverlayForView(localPlayer, rightEyeView, 1);
 		}
-		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye != 0)
-			m_VR->CopyEyeToDesktopMirrorTexture(1);
-		if (m_VR->m_IsVREnabled)
+		else if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye != 0)
 		{
-			rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
-			if (hkViewport.fOriginal)
-				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
-			m_VR->DrawPostMirrorPluginOverlays(rndrContext, localPlayer, rightEyeView, 1);
+			m_VR->CopyEyeToDesktopMirrorTexture(1);
 		}
-		if (m_VR->m_IsVREnabled)
-			m_VR->UpdateD3DAimLineOverlayForView(localPlayer, rightEyeView, 1);
 	}
 
 	auto renderToTexture_SetRT = [&](ITexture* target, int texW, int texH, QAngle passAngles,

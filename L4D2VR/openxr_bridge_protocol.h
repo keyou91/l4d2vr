@@ -121,6 +121,7 @@ struct L4D2VROpenXrSharedTextureDesc
     float vMax = 1.0f;
     float renderFovXDeg = 90.0f;
     float renderAspect = 1.0f;
+    float renderIpdScale = 1.0f;
 };
 
 struct L4D2VROpenXrOverlayDesc
