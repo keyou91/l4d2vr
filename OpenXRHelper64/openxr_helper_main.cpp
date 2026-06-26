@@ -6299,21 +6299,36 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             XrVector3f up{ 0.0f, 1.0f, 0.0f };
         };
 
-        OverlayAnchor BuildOverlayAnchor(const L4D2VROpenXrOverlayDesc& overlay, const std::vector<XrView>& locatedViews, uint32_t locatedCount)
+        OverlayAnchor BuildOverlayAnchor(
+            const L4D2VROpenXrOverlayDesc& overlay,
+            const std::vector<XrView>& locatedViews,
+            uint32_t locatedCount,
+            const XrPosef* gameRenderCenterPose = nullptr)
         {
             OverlayAnchor anchor{};
-            if (locatedViews.empty())
+            if (!gameRenderCenterPose && locatedViews.empty())
                 return anchor;
 
-            XrVector3f hmdPosition = locatedViews[0].pose.position;
-            if (locatedCount >= 2 && locatedViews.size() >= 2)
+            XrVector3f hmdPosition{};
+            XrQuaternionf hmdOrientation{};
+            if (gameRenderCenterPose)
             {
-                hmdPosition.x = (locatedViews[0].pose.position.x + locatedViews[1].pose.position.x) * 0.5f;
-                hmdPosition.y = (locatedViews[0].pose.position.y + locatedViews[1].pose.position.y) * 0.5f;
-                hmdPosition.z = (locatedViews[0].pose.position.z + locatedViews[1].pose.position.z) * 0.5f;
+                hmdPosition = gameRenderCenterPose->position;
+                hmdOrientation = gameRenderCenterPose->orientation;
+            }
+            else
+            {
+                hmdPosition = locatedViews[0].pose.position;
+                hmdOrientation = locatedViews[0].pose.orientation;
+                if (locatedCount >= 2 && locatedViews.size() >= 2)
+                {
+                    hmdPosition.x = (locatedViews[0].pose.position.x + locatedViews[1].pose.position.x) * 0.5f;
+                    hmdPosition.y = (locatedViews[0].pose.position.y + locatedViews[1].pose.position.y) * 0.5f;
+                    hmdPosition.z = (locatedViews[0].pose.position.z + locatedViews[1].pose.position.z) * 0.5f;
+                }
             }
 
-            anchor.yaw = ExtractOpenXrYaw(locatedViews[0].pose.orientation);
+            anchor.yaw = ExtractOpenXrYaw(hmdOrientation);
             anchor.yawOrientation = MakeOpenXrYawQuaternion(anchor.yaw);
             anchor.forward = RotateOpenXrVector(anchor.yawOrientation, XrVector3f{ 0.0f, 0.0f, -1.0f });
             anchor.right = RotateOpenXrVector(anchor.yawOrientation, XrVector3f{ 1.0f, 0.0f, 0.0f });
@@ -6328,9 +6343,13 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             return anchor;
         }
 
-        XrPosef BuildOverlayPose(const L4D2VROpenXrOverlayDesc& overlay, const std::vector<XrView>& locatedViews, uint32_t locatedCount)
+        XrPosef BuildOverlayPose(
+            const L4D2VROpenXrOverlayDesc& overlay,
+            const std::vector<XrView>& locatedViews,
+            uint32_t locatedCount,
+            const XrPosef* gameRenderCenterPose = nullptr)
         {
-            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount);
+            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount, gameRenderCenterPose);
             XrPosef pose{ anchor.yawOrientation, anchor.center };
             return pose;
         }
@@ -6340,9 +6359,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             const std::vector<XrView>& locatedViews,
             uint32_t locatedCount,
             float sliceAngle,
-            float radiusMeters)
+            float radiusMeters,
+            const XrPosef* gameRenderCenterPose = nullptr)
         {
-            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount);
+            const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount, gameRenderCenterPose);
             const float sideOffset = radiusMeters * std::sin(sliceAngle);
             const float viewerOffset = radiusMeters * (1.0f - std::cos(sliceAngle));
 
@@ -6896,6 +6916,18 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                     ? std::clamp(curvature * (0.75f * kPi), 0.01f, 0.85f * kPi)
                                     : 0.0f;
                                 const float radiusMeters = curvedHud ? (widthMeters / totalArc) : 0.0f;
+                                XrPosef hudGameRenderCenterPose{};
+                                const XrPosef* overlayGameRenderCenterPose = nullptr;
+                                if (overlayIndex == L4D2VR_OPENXR_OVERLAY_HUD && haveGameRenderPose)
+                                {
+                                    hudGameRenderCenterPose.orientation = NormalizeOpenXrQuaternion(projectionRenderPose.orientation);
+                                    hudGameRenderCenterPose.position = XrVector3f{
+                                        projectionRenderPose.position[0],
+                                        projectionRenderPose.position[1],
+                                        projectionRenderPose.position[2]
+                                    };
+                                    overlayGameRenderCenterPose = &hudGameRenderCenterPose;
+                                }
 
                                 const auto appendOverlayLayer = [&](uint32_t segmentIndex)
                                 {
@@ -6940,7 +6972,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                             locatedViews,
                                             locatedCount,
                                             thetaCenter,
-                                            radiusMeters);
+                                            radiusMeters,
+                                            overlayGameRenderCenterPose);
                                         overlayLayer.size = XrExtent2Df{
                                             2.0f * radiusMeters * std::sin((theta1 - theta0) * 0.5f),
                                             heightMeters
@@ -6948,7 +6981,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                     }
                                     else
                                     {
-                                        overlayLayer.pose = BuildOverlayPose(overlay, locatedViews, locatedCount);
+                                        overlayLayer.pose = BuildOverlayPose(overlay, locatedViews, locatedCount, overlayGameRenderCenterPose);
                                         overlayLayer.size = XrExtent2Df{ widthMeters, heightMeters };
                                     }
                                     return true;
