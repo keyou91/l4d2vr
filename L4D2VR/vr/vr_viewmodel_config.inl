@@ -1146,10 +1146,6 @@ void VR::ParseConfigFile()
     m_LeftHandedSwapInputActions = getBool("LeftHandedSwapInputActions", m_LeftHandedSwapInputActions);
     m_VRScale = getFloat("VRScale", m_VRScale);
     m_IpdScale = getFloat("IPDScale", m_IpdScale);
-    m_OpenXrRightEyeFromLeftIPDScale = std::clamp(
-        getFloat("OpenXRRightEyeFromLeftIPDScale", m_OpenXrRightEyeFromLeftIPDScale),
-        -20.0f,
-        20.0f);
     {
         auto clampVector = [](Vector value, float minValue, float maxValue)
         {

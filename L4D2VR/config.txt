@@ -1,6 +1,5 @@
 VRScale=43.2
 IPDScale=1.0
-OpenXRRightEyeFromLeftIPDScale=1.0
 VRRuntimeBackend=openxr
 VRRuntimeFallbackToOpenVR=false
 OpenXRHelper=true

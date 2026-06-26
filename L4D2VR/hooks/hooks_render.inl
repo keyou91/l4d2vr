@@ -2096,19 +2096,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		m_VR->m_ThirdPersonRenderCenter = m_VR->m_SetupOrigin;
 	}
 
-	if (m_VR->m_RuntimeBackend == VrRuntimeBackend::OpenXR && queueMode == 0)
-	{
-		QAngle leftAnchorAngles(renderViewAngles.x, renderViewAngles.y, renderViewAngles.z);
-		Vector leftAnchorRight;
-		QAngle::AngleVectors(leftAnchorAngles, nullptr, &leftAnchorRight, nullptr);
-		if (!leftAnchorRight.IsZero())
-		{
-			const float rightFromLeftScale = std::clamp(m_VR->m_OpenXrRightEyeFromLeftIPDScale, -20.0f, 20.0f);
-			const float ipd = (m_VR->m_Ipd * m_VR->m_IpdScale * m_VR->m_VRScale * rightFromLeftScale);
-			rightOrigin = leftOrigin + (leftAnchorRight * ipd);
-		}
-	}
-
 	leftEyeView.origin = leftOrigin;
 	leftEyeView.angles = renderViewAngles;
 

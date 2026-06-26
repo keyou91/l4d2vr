@@ -581,7 +581,6 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
     shared.renderAspect = (std::isfinite(m_Aspect) && m_Aspect > 0.1f && m_Aspect < 10.0f)
         ? m_Aspect
         : ((desc.Height > 0) ? (static_cast<float>(desc.Width) / static_cast<float>(desc.Height)) : 1.0f);
-    shared.renderIpdScale = std::clamp(m_OpenXrRightEyeFromLeftIPDScale, -20.0f, 20.0f);
     if (shared.uMax <= shared.uMin)
     {
         shared.uMin = 0.0f;

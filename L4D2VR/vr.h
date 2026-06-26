@@ -1157,7 +1157,6 @@ public:
 
 	float m_VRScale = 43.2f;
 	float m_IpdScale = 1.0f;
-	float m_OpenXrRightEyeFromLeftIPDScale = 1.0f;
 	// Independent-GLB-hand render calibration only. These values never alter tracked controller poses,
 	// gameplay input, viewmodels, aim lines, gestures or inventory anchors.
 	// Hand-local axes: X=right, Y=up, Z=back. Position is meters; rotation is X/Y/Z degrees.

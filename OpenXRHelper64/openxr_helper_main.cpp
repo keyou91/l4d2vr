@@ -640,7 +640,6 @@ namespace
         float vMax = 1.0f;
         float renderFovXDeg = 90.0f;
         float renderAspect = 1.0f;
-        float renderIpdScale = 1.0f;
     };
 
     class BridgeWriter
@@ -1032,7 +1031,6 @@ namespace
         const std::vector<XrView>& locatedViews,
         uint32_t locatedCount,
         uint32_t eyeIndex,
-        float rightFromLeftIpdScale = 1.0f,
         float* outYaw = nullptr,
         float* outIpd = nullptr)
     {
@@ -1059,13 +1057,7 @@ namespace
             right = XrVector3f{ 1.0f, 0.0f, 0.0f };
         }
 
-        const float safeRightFromLeftIpdScale =
-            (std::isfinite(rightFromLeftIpdScale) && rightFromLeftIpdScale >= -20.0f && rightFromLeftIpdScale <= 20.0f)
-                ? rightFromLeftIpdScale
-                : 1.0f;
-        const float side = (eyeIndex == L4D2VR_OPENXR_EYE_LEFT)
-            ? -0.5f
-            : (-0.5f + safeRightFromLeftIpdScale);
+        const float side = (eyeIndex == L4D2VR_OPENXR_EYE_LEFT) ? -0.5f : 0.5f;
         pose.position.x += right.x * ipd * side;
         pose.position.y += right.y * ipd * side;
         pose.position.z += right.z * ipd * side;
@@ -2044,9 +2036,6 @@ namespace
             eye.renderAspect = (std::isfinite(desc.renderAspect) && desc.renderAspect > 0.1f && desc.renderAspect < 10.0f)
                 ? desc.renderAspect
                 : ((desc.height > 0) ? (static_cast<float>(desc.width) / static_cast<float>(desc.height)) : 1.0f);
-            eye.renderIpdScale = (std::isfinite(desc.renderIpdScale) && desc.renderIpdScale >= -20.0f && desc.renderIpdScale <= 20.0f)
-                ? desc.renderIpdScale
-                : 1.0f;
             if (eye.uMax <= eye.uMin)
             {
                 eye.uMin = 0.0f;
@@ -2058,11 +2047,11 @@ namespace
                 eye.vMax = 1.0f;
             }
 
-            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f ipdScale=%.3f) memorySize=%llu",
+            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
                 eyeIndex, generation, static_cast<unsigned long long>(desc.kmtHandle),
                 static_cast<unsigned long long>(desc.image), desc.width, desc.height, desc.format,
                 eye.uMin, eye.vMin, eye.uMax, eye.vMax,
-                eye.renderFovXDeg, eye.renderAspect, eye.renderIpdScale,
+                eye.renderFovXDeg, eye.renderAspect,
                 static_cast<unsigned long long>(memoryRequirements.size));
             return true;
         }
@@ -3125,8 +3114,7 @@ namespace
                                         gameRenderPose,
                                         locatedViews,
                                         locatedCount,
-                                        eye,
-                                        m_GameEyes[eye].renderIpdScale)
+                                        eye)
                                     : BuildProjectionPose(locatedViews, locatedCount, eye);
                                 projectionViews[eye].fov = locatedViews[eye].fov;
                                 projectionViews[eye].subImage.swapchain = m_Eyes[eye].handle;
@@ -5845,9 +5833,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             eye.renderAspect = (std::isfinite(desc.renderAspect) && desc.renderAspect > 0.1f && desc.renderAspect < 10.0f)
                 ? desc.renderAspect
                 : ((desc.height > 0) ? (static_cast<float>(desc.width) / static_cast<float>(desc.height)) : 1.0f);
-            eye.renderIpdScale = (std::isfinite(desc.renderIpdScale) && desc.renderIpdScale >= -20.0f && desc.renderIpdScale <= 20.0f)
-                ? desc.renderIpdScale
-                : 1.0f;
             if (eye.uMax <= eye.uMin)
             {
                 eye.uMin = 0.0f;
@@ -5862,12 +5847,12 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             if (!UpdateBlitDescriptorSet(eyeIndex))
                 return false;
 
-            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u layout=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f ipdScale=%.3f) memorySize=%llu",
+            m_Log.Print("Imported Vulkan shared eye texture eye=%u gen=%u handle=0x%llX image=0x%llX size=%ux%u format=%u layout=%u bounds=(%.3f %.3f %.3f %.3f) projection=(fovX=%.2f aspect=%.4f) memorySize=%llu",
                 eyeIndex, generation, static_cast<unsigned long long>(desc.kmtHandle),
                 static_cast<unsigned long long>(desc.image), desc.width, desc.height, desc.format,
                 static_cast<unsigned int>(eye.layout),
                 eye.uMin, eye.vMin, eye.uMax, eye.vMax,
-                eye.renderFovXDeg, eye.renderAspect, eye.renderIpdScale,
+                eye.renderFovXDeg, eye.renderAspect,
                 static_cast<unsigned long long>(memoryRequirements.size));
             return true;
         }
@@ -6813,7 +6798,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                         locatedViews,
                                         locatedCount,
                                         eye,
-                                        m_GameEyes[eye].renderIpdScale,
                                         &renderYaw,
                                         &renderIpd)
                                     : BuildProjectionPose(

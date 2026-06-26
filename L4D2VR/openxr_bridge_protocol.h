@@ -3,7 +3,7 @@
 #include <cstdint>
 
 constexpr uint32_t L4D2VR_OPENXR_BRIDGE_MAGIC = 0x5258344Cu; // L4XR
-constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 10;
+constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 11;
 
 enum class L4D2VROpenXrBridgeStatus : uint32_t
 {
@@ -121,7 +121,6 @@ struct L4D2VROpenXrSharedTextureDesc
     float vMax = 1.0f;
     float renderFovXDeg = 90.0f;
     float renderAspect = 1.0f;
-    float renderIpdScale = 1.0f;
 };
 
 struct L4D2VROpenXrOverlayDesc
