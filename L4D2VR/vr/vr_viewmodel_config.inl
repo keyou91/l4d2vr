@@ -2737,6 +2737,8 @@ void VR::ParseConfigFile()
         getFloat("OpenXRMatBloomScaleFactorScalar", m_OpenXrMatBloomScaleFactorScalar),
         -16.0f,
         16.0f);
+    m_OpenXrSwapGameEyeOrigins = getBool("OpenXRHelperSwapGameEyeOrigins", m_OpenXrSwapGameEyeOrigins);
+    m_OpenXrSwapGameEyeOrigins = getBool("OpenXRSwapGameEyeOrigins", m_OpenXrSwapGameEyeOrigins);
 
     // Multicore rendering: explicit minimum render-thread wait budget (ms) for a fresher
     // WaitGetPoses() snapshot in queued mode. 0 disables fixed waiting, but the render hook can

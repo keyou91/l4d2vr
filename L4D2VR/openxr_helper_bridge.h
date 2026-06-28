@@ -7,6 +7,13 @@
 struct OpenXrHelperLaunchConfig
 {
     bool enabled = false;
+    bool swapProjectionEyes = false;
+    bool swapProjectionViewOrder = false;
+    bool mirrorProjectionHorizontal = false;
+    bool swapGameEyeOrigins = false;
+    bool disableQuadOverlays = false;
+    int forceMonoProjectionEye = -1;
+    int forceMonoProjectionView = -1;
     uint32_t submitTestFrames = 180;
     uint32_t waitReadySeconds = 45;
 };

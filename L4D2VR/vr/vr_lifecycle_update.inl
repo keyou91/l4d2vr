@@ -2080,12 +2080,8 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_RightEye;
     m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
 
-    // ReShade/OpenVR compatibility: real HMD runtimes such as ALVR can lose the
-    // first eye when submitting Vulkan eye textures with non-full texture bounds.
-    // Create dedicated submit textures even without MSAA so the D3D9 Present path
-    // can pre-bake the per-eye projection crop into a full-frame texture and submit
-    // it with full bounds. This keeps the original stereo crop while avoiding the
-    // ReShade/OpenVR non-full-bounds path.
+    // OpenXR helper submits full swapchain rects to the runtime. Bake the runtime
+    // asymmetric per-eye crop into dedicated submit textures before sharing them.
     const bool useDedicatedEyeSubmitTextures =
         m_OpenXrHelperBridgeActive ||
         m_ReShadeVRCompat ||
@@ -2103,6 +2099,73 @@ void VR::CreateVRTextures()
         m_RightEyeSubmitTexture = nullptr;
         m_D9LeftEyeSubmitSurface = nullptr;
         m_D9RightEyeSubmitSurface = nullptr;
+    }
+
+    if (m_OpenXrHelperBridgeActive)
+    {
+        auto logEyeTexture = [](ITexture* texture, int& mapW, int& mapH, int& actualW, int& actualH, const char*& name)
+            {
+                mapW = 0;
+                mapH = 0;
+                actualW = 0;
+                actualH = 0;
+                name = "<null>";
+                if (!texture)
+                    return;
+                name = texture->GetName();
+                if (!name)
+                    name = "<unnamed>";
+                mapW = texture->GetMappingWidth();
+                mapH = texture->GetMappingHeight();
+                actualW = texture->GetActualWidth();
+                actualH = texture->GetActualHeight();
+            };
+
+        int leftMapW = 0, leftMapH = 0, leftActualW = 0, leftActualH = 0;
+        int rightMapW = 0, rightMapH = 0, rightActualW = 0, rightActualH = 0;
+        int leftSubmitMapW = 0, leftSubmitMapH = 0, leftSubmitActualW = 0, leftSubmitActualH = 0;
+        int rightSubmitMapW = 0, rightSubmitMapH = 0, rightSubmitActualW = 0, rightSubmitActualH = 0;
+        const char* leftName = nullptr;
+        const char* rightName = nullptr;
+        const char* leftSubmitName = nullptr;
+        const char* rightSubmitName = nullptr;
+        logEyeTexture(m_LeftEyeTexture, leftMapW, leftMapH, leftActualW, leftActualH, leftName);
+        logEyeTexture(m_RightEyeTexture, rightMapW, rightMapH, rightActualW, rightActualH, rightName);
+        logEyeTexture(m_LeftEyeSubmitTexture, leftSubmitMapW, leftSubmitMapH, leftSubmitActualW, leftSubmitActualH, leftSubmitName);
+        logEyeTexture(m_RightEyeSubmitTexture, rightSubmitMapW, rightSubmitMapH, rightSubmitActualW, rightSubmitActualH, rightSubmitName);
+
+        Game::logMsg(
+            "[VR][OpenXRHelper][CreateRT] rawL=%s tex=%p surf=%p map=%dx%d actual=%dx%d rawR=%s tex=%p surf=%p map=%dx%d actual=%dx%d submitL=%s tex=%p surf=%p map=%dx%d actual=%dx%d submitR=%s tex=%p surf=%p map=%dx%d actual=%dx%d dedicatedSubmit=%d aa=%d",
+            leftName,
+            static_cast<void*>(m_LeftEyeTexture),
+            static_cast<void*>(m_D9LeftEyeSurface),
+            leftMapW,
+            leftMapH,
+            leftActualW,
+            leftActualH,
+            rightName,
+            static_cast<void*>(m_RightEyeTexture),
+            static_cast<void*>(m_D9RightEyeSurface),
+            rightMapW,
+            rightMapH,
+            rightActualW,
+            rightActualH,
+            leftSubmitName,
+            static_cast<void*>(m_LeftEyeSubmitTexture),
+            static_cast<void*>(m_D9LeftEyeSubmitSurface),
+            leftSubmitMapW,
+            leftSubmitMapH,
+            leftSubmitActualW,
+            leftSubmitActualH,
+            rightSubmitName,
+            static_cast<void*>(m_RightEyeSubmitTexture),
+            static_cast<void*>(m_D9RightEyeSubmitSurface),
+            rightSubmitMapW,
+            rightSubmitMapH,
+            rightSubmitActualW,
+            rightSubmitActualH,
+            useDedicatedEyeSubmitTextures ? 1 : 0,
+            m_AntiAliasing);
     }
 
     const bool createDesktopMirrorCleanTarget =

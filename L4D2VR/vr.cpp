@@ -509,6 +509,20 @@ static inline bool GetPlayerNameUtf8Safe(IEngineClient* engine, int entIndex, ch
 }
 
 
+static const char* OpenXrTextureIdName(VR::TextureID texID)
+{
+    switch (texID)
+    {
+    case VR::Texture_LeftEye: return "leftEye0";
+    case VR::Texture_RightEye: return "rightEye0";
+    case VR::Texture_LeftEyeSubmit: return "leftEyeSubmit0";
+    case VR::Texture_RightEyeSubmit: return "rightEyeSubmit0";
+    case VR::Texture_HUD: return "vrHUD";
+    case VR::Texture_BackBufferOverlay: return "vrBackBufferOverlay";
+    default: return "other";
+    }
+}
+
 bool VR::ShouldExportOpenXrEyeTexture(TextureID texID, uint32_t sampleCount) const
 {
     if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
@@ -594,6 +608,29 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
 
     m_OpenXrSharedEyeTextures[eyeIndex] = shared;
     m_OpenXrSharedEyeTextureReadyMask.fetch_or(1u << eyeIndex, std::memory_order_acq_rel);
+
+    Game::logMsg(
+        "[VR][OpenXRHelper][GamePublishTexture] tex=%s texID=%d eye=%s eyeIndex=%u submitTex=%d handle=0x%llX image=0x%llX size=%ux%u format=%u samples=%u type=0x%X q=%u bounds=(%.4f %.4f %.4f %.4f) projection=(fovX=%.2f aspect=%.4f) readyMask=0x%X",
+        OpenXrTextureIdName(texID),
+        static_cast<int>(texID),
+        eyeIndex == L4D2VR_OPENXR_EYE_LEFT ? "left" : "right",
+        eyeIndex,
+        submitTexture ? 1 : 0,
+        static_cast<unsigned long long>(shared.kmtHandle),
+        static_cast<unsigned long long>(shared.image),
+        shared.width,
+        shared.height,
+        shared.format,
+        shared.sampleCount,
+        shared.handleType,
+        shared.queueFamilyIndex,
+        shared.uMin,
+        shared.vMin,
+        shared.uMax,
+        shared.vMax,
+        shared.renderFovXDeg,
+        shared.renderAspect,
+        m_OpenXrSharedEyeTextureReadyMask.load(std::memory_order_acquire));
 }
 
 void VR::PublishOpenXrResolvedEyeTextures(uint32_t frameId)
@@ -615,6 +652,50 @@ void VR::PublishOpenXrResolvedEyeTextures(uint32_t frameId)
     const L4D2VROpenXrSharedTextureDesc right = m_OpenXrSharedEyeTextures[L4D2VR_OPENXR_EYE_RIGHT];
     if (!left.valid || !right.valid)
         return;
+
+    {
+        static std::atomic<int> s_openXrFramePublishLogBudget{ 24 };
+        static DWORD s_lastOpenXrFramePublishLogMs = 0;
+        const DWORD nowMs = ::GetTickCount();
+        int remaining = s_openXrFramePublishLogBudget.load(std::memory_order_relaxed);
+        const bool budgetLog =
+            remaining > 0 &&
+            s_openXrFramePublishLogBudget.compare_exchange_strong(
+                remaining,
+                remaining - 1,
+                std::memory_order_relaxed);
+        const bool throttledDebugLog =
+            m_RenderPipelineDebugLog &&
+            (s_lastOpenXrFramePublishLogMs == 0 ||
+                nowMs - s_lastOpenXrFramePublishLogMs >=
+                static_cast<DWORD>(1000.0f / std::max(1.0f, m_RenderPipelineDebugLogHz)));
+        if (budgetLog || throttledDebugLog)
+        {
+            s_lastOpenXrFramePublishLogMs = nowMs;
+            Game::logMsg(
+                "[VR][OpenXRHelper][GamePublishFrame] frame=%u readyMask=0x%X L(handle=0x%llX image=0x%llX %ux%u fmt=%u bounds=%.4f,%.4f,%.4f,%.4f) R(handle=0x%llX image=0x%llX %ux%u fmt=%u bounds=%.4f,%.4f,%.4f,%.4f)",
+                frameId,
+                readyMask,
+                static_cast<unsigned long long>(left.kmtHandle),
+                static_cast<unsigned long long>(left.image),
+                left.width,
+                left.height,
+                left.format,
+                left.uMin,
+                left.vMin,
+                left.uMax,
+                left.vMax,
+                static_cast<unsigned long long>(right.kmtHandle),
+                static_cast<unsigned long long>(right.image),
+                right.width,
+                right.height,
+                right.format,
+                right.uMin,
+                right.vMin,
+                right.uMax,
+                right.vMax);
+        }
+    }
 
     L4D2VR_PublishOpenXrSharedTexture(L4D2VR_OPENXR_EYE_LEFT, left);
     L4D2VR_PublishOpenXrSharedTexture(L4D2VR_OPENXR_EYE_RIGHT, right);

@@ -947,10 +947,14 @@ VR::VR(Game* game)
     if (runtimeSelection.active == VrRuntimeBackend::OpenXR)
     {
         const OpenXrHelperLaunchConfig helperConfig = L4D2VR_ReadOpenXrHelperLaunchConfig();
-        Game::logMsg("[VR][OpenXRHelper] enabled=%d submitTestFrames=%u waitReadySeconds=%u",
+        m_OpenXrSwapGameEyeOrigins = helperConfig.swapGameEyeOrigins;
+        Game::logMsg("[VR][OpenXRHelper] enabled=%d submitTestFrames=%u waitReadySeconds=%u forceMonoProjectionEye=%d forceMonoProjectionView=%d swapGameEyeOrigins=%d",
             helperConfig.enabled ? 1 : 0,
             helperConfig.submitTestFrames,
-            helperConfig.waitReadySeconds);
+            helperConfig.waitReadySeconds,
+            helperConfig.forceMonoProjectionEye,
+            helperConfig.forceMonoProjectionView,
+            m_OpenXrSwapGameEyeOrigins ? 1 : 0);
         if (!helperConfig.enabled)
         {
             Game::errorMsg("OpenXR helper backend selected, but OpenXRHelper is disabled.");
@@ -985,7 +989,7 @@ VR::VR(Game* game)
 
                 left = std::tan(view.angleLeft);
                 right = std::tan(view.angleRight);
-                // Match OpenVR GetProjectionRaw's texture-bound convention:
+                // Match the engine's texture-bound projection convention:
                 // top is the negative down tangent and bottom is the positive up tangent.
                 top = std::tan(view.angleDown);
                 bottom = std::tan(view.angleUp);
@@ -1031,6 +1035,20 @@ VR::VR(Game* game)
         m_TextureBounds[1].uMax = 0.5f + 0.5f * r_right / tanHalfFov[0];
         m_TextureBounds[1].vMin = 0.5f - 0.5f * r_bottom / tanHalfFov[1];
         m_TextureBounds[1].vMax = 0.5f - 0.5f * r_top / tanHalfFov[1];
+
+        const bool mirrorProjectionHorizontal =
+            ReadEarlyConfigBool("OpenXRHelperMirrorProjectionHorizontal", false);
+        auto mirrorTextureBoundsHorizontal = [](vr::VRTextureBounds_t& bounds)
+            {
+                const float uMin = bounds.uMin;
+                bounds.uMin = 1.0f - bounds.uMax;
+                bounds.uMax = 1.0f - uMin;
+            };
+        if (mirrorProjectionHorizontal)
+        {
+            mirrorTextureBoundsHorizontal(m_TextureBounds[0]);
+            mirrorTextureBoundsHorizontal(m_TextureBounds[1]);
+        }
 
         auto sanitizeTextureBounds = [](vr::VRTextureBounds_t& bounds)
             {
@@ -1138,7 +1156,7 @@ VR::VR(Game* game)
         m_CustomAction5 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction5);
 
         Game::logMsg(
-            "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) fallbackToOpenVR=0",
+            "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) mirrorProjectionHorizontal=%u swapGameEyeOrigins=%u submitMode=bounded_prebake runtimeProjection=1 fallbackToOpenVR=0",
             runtimeViewConfigGeneration,
             recommendedRenderWidth,
             recommendedRenderHeight,
@@ -1149,7 +1167,9 @@ VR::VR(Game* game)
             l_left, l_right, l_top, l_bottom,
             r_left, r_right, r_top, r_bottom,
             m_TextureBounds[0].uMin, m_TextureBounds[0].vMin, m_TextureBounds[0].uMax, m_TextureBounds[0].vMax,
-            m_TextureBounds[1].uMin, m_TextureBounds[1].vMin, m_TextureBounds[1].uMax, m_TextureBounds[1].vMax);
+            m_TextureBounds[1].uMin, m_TextureBounds[1].vMin, m_TextureBounds[1].uMax, m_TextureBounds[1].vMax,
+            mirrorProjectionHorizontal ? 1u : 0u,
+            m_OpenXrSwapGameEyeOrigins ? 1u : 0u);
 
         std::thread configParser(&VR::WaitForConfigUpdate, this);
         configParser.detach();

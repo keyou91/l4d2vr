@@ -2096,6 +2096,17 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		m_VR->m_ThirdPersonRenderCenter = m_VR->m_SetupOrigin;
 	}
 
+	const bool openXrSwapGameEyeOrigins =
+		m_VR->m_RuntimeBackend == VrRuntimeBackend::OpenXR &&
+		m_VR->m_OpenXrHelperBridgeActive &&
+		m_VR->m_OpenXrSwapGameEyeOrigins;
+	if (openXrSwapGameEyeOrigins)
+	{
+		const Vector oldLeftOrigin = leftOrigin;
+		leftOrigin = rightOrigin;
+		rightOrigin = oldLeftOrigin;
+	}
+
 	leftEyeView.origin = leftOrigin;
 	leftEyeView.angles = renderViewAngles;
 
@@ -2262,6 +2273,46 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				eyeTexture,
 				static_cast<int>(m_VR->m_RenderWidth),
 				static_cast<int>(m_VR->m_RenderHeight));
+			const int openXrLogicalEyeIndex = (eyeIndex == 1) ? 0 : 1;
+			const char* openXrLogicalEyeName = openXrLogicalEyeIndex == 0 ? "left" : "right";
+			if (m_VR->m_OpenXrHelperBridgeActive)
+			{
+				static thread_local int s_openXrRawEyeLogBudget = 48;
+				if (s_openXrRawEyeLogBudget > 0)
+				{
+					--s_openXrRawEyeLogBudget;
+					int eyeMapW = 0;
+					int eyeMapH = 0;
+					int eyeActualW = 0;
+					int eyeActualH = 0;
+					DebugTextureFullSize(eyeTexture, eyeMapW, eyeMapH, eyeActualW, eyeActualH);
+					Game::logMsg(
+						"[VR][OpenXRHelper][RawEyeRenderBegin] renderPassEye=%d logicalEye=%s(%d) swapGameEyeOrigins=%d target=%s tex=%p d3dSurface=%p map=%dx%d actual=%dx%d viewOrigin=(%.3f %.3f %.3f) viewAngles=(%.3f %.3f %.3f) setup=%dx%d hud=%dx%d clear=0x%X draw=0x%X",
+						eyeIndex,
+						openXrLogicalEyeName,
+						openXrLogicalEyeIndex,
+						openXrSwapGameEyeOrigins ? 1 : 0,
+						DebugTextureName(eyeTexture),
+						static_cast<void*>(eyeTexture),
+						static_cast<void*>(reshadeSurface),
+						eyeMapW,
+						eyeMapH,
+						eyeActualW,
+						eyeActualH,
+						eyeView.origin.x,
+						eyeView.origin.y,
+						eyeView.origin.z,
+						eyeView.angles.x,
+						eyeView.angles.y,
+						eyeView.angles.z,
+						eyeView.width,
+						eyeView.height,
+						eyeHud.width,
+						eyeHud.height,
+						nClearFlags,
+						whatToDraw);
+				}
+			}
 			if (hkViewport.fOriginal)
 				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
 			EyeSharedCenterScope sharedCenterScope(
@@ -2292,6 +2343,22 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
 			if (m_VR->m_IsVREnabled)
 				m_VR->FinishVrHandsEyeRender();
+			if (m_VR->m_OpenXrHelperBridgeActive)
+			{
+				static thread_local int s_openXrRawEyeEndLogBudget = 48;
+				if (s_openXrRawEyeEndLogBudget > 0)
+				{
+					--s_openXrRawEyeEndLogBudget;
+					Game::logMsg(
+						"[VR][OpenXRHelper][RawEyeRenderEnd] renderPassEye=%d logicalEye=%s(%d) target=%s tex=%p d3dSurface=%p",
+						eyeIndex,
+						openXrLogicalEyeName,
+						openXrLogicalEyeIndex,
+						DebugTextureName(eyeTexture),
+						static_cast<void*>(eyeTexture),
+						static_cast<void*>(reshadeSurface));
+				}
+			}
 
 			if (eyeTouchedEngineAngles && m_Game && m_Game->m_EngineClient)
 				m_Game->m_EngineClient->SetViewAngles(eyePrevEngineAngles);

@@ -212,6 +212,7 @@ public:
 	bool m_RuntimeBackendFallbackToOpenVR = false;
 	bool m_OpenXrLoaderAvailable = false;
 	bool m_OpenXrHelperBridgeActive = false;
+	bool m_OpenXrSwapGameEyeOrigins = false;
 	L4D2VROpenXrPoseDesc m_OpenXrLastHmdPose = {};
 	uint32_t m_OpenXrLastHmdPoseGeneration = 0;
 	L4D2VROpenXrInputStateDesc m_OpenXrLastInputState = {};

@@ -62,6 +62,30 @@ namespace
         return std::clamp(static_cast<uint32_t>(parsed), minValue, maxValue);
     }
 
+    int ParseProjectionEye(std::string value, int fallback)
+    {
+        Trim(value);
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+        if (value == "none" || value == "off" || value == "disabled" || value == "-1")
+            return -1;
+        if (value == "left" || value == "l" || value == "0")
+            return L4D2VR_OPENXR_EYE_LEFT;
+        if (value == "right" || value == "r" || value == "1")
+            return L4D2VR_OPENXR_EYE_RIGHT;
+        return fallback;
+    }
+
+    const char* ProjectionEyeName(int eye)
+    {
+        if (eye == L4D2VR_OPENXR_EYE_LEFT)
+            return "left";
+        if (eye == L4D2VR_OPENXR_EYE_RIGHT)
+            return "right";
+        return "none";
+    }
+
     std::unordered_map<std::string, std::string> ReadConfigValues()
     {
         std::unordered_map<std::string, std::string> values;
@@ -218,6 +242,22 @@ OpenXrHelperLaunchConfig L4D2VR_ReadOpenXrHelperLaunchConfig()
 
     if (const std::string value = get("OpenXRHelper"); !value.empty())
         config.enabled = ParseBool(value, config.enabled);
+    if (const std::string value = get("OpenXRHelperSwapProjectionEyes"); !value.empty())
+        config.swapProjectionEyes = ParseBool(value, config.swapProjectionEyes);
+    if (const std::string value = get("OpenXRHelperSwapProjectionViewOrder"); !value.empty())
+        config.swapProjectionViewOrder = ParseBool(value, config.swapProjectionViewOrder);
+    if (const std::string value = get("OpenXRHelperMirrorProjectionHorizontal"); !value.empty())
+        config.mirrorProjectionHorizontal = ParseBool(value, config.mirrorProjectionHorizontal);
+    if (const std::string value = get("OpenXRHelperForceMonoProjectionEye"); !value.empty())
+        config.forceMonoProjectionEye = ParseProjectionEye(value, config.forceMonoProjectionEye);
+    if (const std::string value = get("OpenXRHelperForceMonoProjectionView"); !value.empty())
+        config.forceMonoProjectionView = ParseProjectionEye(value, config.forceMonoProjectionView);
+    if (const std::string value = get("OpenXRHelperSwapGameEyeOrigins"); !value.empty())
+        config.swapGameEyeOrigins = ParseBool(value, config.swapGameEyeOrigins);
+    if (const std::string value = get("OpenXRSwapGameEyeOrigins"); !value.empty())
+        config.swapGameEyeOrigins = ParseBool(value, config.swapGameEyeOrigins);
+    if (const std::string value = get("OpenXRHelperDisableQuadOverlays"); !value.empty())
+        config.disableQuadOverlays = ParseBool(value, config.disableQuadOverlays);
     if (const std::string value = get("OpenXRHelperSubmitTestFrames"); !value.empty())
         config.submitTestFrames = ParseUint(value, config.submitTestFrames, 0, 1000000);
     if (const std::string value = get("OpenXRHelperWaitReadySeconds"); !value.empty())
@@ -296,6 +336,12 @@ bool L4D2VR_StartOpenXrHelper(const OpenXrHelperLaunchConfig& config)
         << L" --parent " << GetCurrentProcessId()
         << L" --frames " << config.submitTestFrames
         << L" --wait-ready-sec " << config.waitReadySeconds
+        << L" --swap-projection-eyes " << (config.swapProjectionEyes ? 1 : 0)
+        << L" --swap-projection-view-order " << (config.swapProjectionViewOrder ? 1 : 0)
+        << L" --mirror-projection-horizontal " << (config.mirrorProjectionHorizontal ? 1 : 0)
+        << L" --force-mono-projection-eye " << config.forceMonoProjectionEye
+        << L" --force-mono-projection-view " << config.forceMonoProjectionView
+        << L" --disable-quad-overlays " << (config.disableQuadOverlays ? 1 : 0)
         << L" --log " << QuoteArg(helperLog);
 
     std::wstring commandLineText = commandLine.str();
@@ -332,10 +378,18 @@ bool L4D2VR_StartOpenXrHelper(const OpenXrHelperLaunchConfig& config)
 
     state->helperPid = pi.dwProcessId;
     Game::logMsg(
-        "[VR][OpenXRHelper] launched pid=%lu frames=%u waitReadySeconds=%u exe=%ls",
+        "[VR][OpenXRHelper] launched pid=%lu frames=%u waitReadySeconds=%u swapProjectionEyes=%d swapProjectionViewOrder=%d mirrorProjectionHorizontal=%d forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) disableQuadOverlays=%d exe=%ls",
         static_cast<unsigned long>(pi.dwProcessId),
         config.submitTestFrames,
         config.waitReadySeconds,
+        config.swapProjectionEyes ? 1 : 0,
+        config.swapProjectionViewOrder ? 1 : 0,
+        config.mirrorProjectionHorizontal ? 1 : 0,
+        ProjectionEyeName(config.forceMonoProjectionEye),
+        config.forceMonoProjectionEye,
+        ProjectionEyeName(config.forceMonoProjectionView),
+        config.forceMonoProjectionView,
+        config.disableQuadOverlays ? 1 : 0,
         helperExe.c_str());
 
     CloseHandle(pi.hThread);
@@ -544,6 +598,27 @@ void L4D2VR_PublishOpenXrSharedTexture(uint32_t eyeIndex, const L4D2VROpenXrShar
     ++state->sharedTextureGeneration;
     state->heartbeatTickMs = GetTickCount64();
 
+    Game::logMsg(
+        "[VR][OpenXRHelper][BridgeTexture] eye=%s eyeIndex=%u gen=%u readyMask=0x%X handle=0x%llX image=0x%llX size=%ux%u format=%u samples=%u type=0x%X q=%u bounds=(%.4f %.4f %.4f %.4f) projection=(fovX=%.2f aspect=%.4f)",
+        eyeIndex == L4D2VR_OPENXR_EYE_LEFT ? "left" : "right",
+        eyeIndex,
+        state->sharedTextureGeneration,
+        state->sharedTexturesReadyMask,
+        static_cast<unsigned long long>(texture.kmtHandle),
+        static_cast<unsigned long long>(texture.image),
+        texture.width,
+        texture.height,
+        texture.format,
+        texture.sampleCount,
+        texture.handleType,
+        texture.queueFamilyIndex,
+        texture.uMin,
+        texture.vMin,
+        texture.uMax,
+        texture.vMax,
+        texture.renderFovXDeg,
+        texture.renderAspect);
+
     if ((state->sharedTexturesReadyMask & L4D2VR_OPENXR_EYES_READY_MASK) == L4D2VR_OPENXR_EYES_READY_MASK)
     {
         state->status = static_cast<uint32_t>(L4D2VROpenXrBridgeStatus::SharedTexturesReady);
@@ -585,6 +660,29 @@ void L4D2VR_PublishOpenXrSharedTextureFrame(uint32_t frameId)
     state->sharedTextureFrameId = frameId;
     ++state->sharedTextureFrameGeneration;
     state->heartbeatTickMs = GetTickCount64();
+
+    {
+        static std::atomic<int> s_openXrBridgeFrameLogBudget{ 24 };
+        int remaining = s_openXrBridgeFrameLogBudget.load(std::memory_order_relaxed);
+        if (remaining > 0 &&
+            s_openXrBridgeFrameLogBudget.compare_exchange_strong(
+                remaining,
+                remaining - 1,
+                std::memory_order_relaxed))
+        {
+            const L4D2VROpenXrSharedTextureDesc& left = state->eyeTextures[L4D2VR_OPENXR_EYE_LEFT];
+            const L4D2VROpenXrSharedTextureDesc& right = state->eyeTextures[L4D2VR_OPENXR_EYE_RIGHT];
+            Game::logMsg(
+                "[VR][OpenXRHelper][BridgeFrame] frame=%u frameGen=%u textureGen=%u L(handle=0x%llX image=0x%llX) R(handle=0x%llX image=0x%llX)",
+                frameId,
+                state->sharedTextureFrameGeneration,
+                state->sharedTextureGeneration,
+                static_cast<unsigned long long>(left.kmtHandle),
+                static_cast<unsigned long long>(left.image),
+                static_cast<unsigned long long>(right.kmtHandle),
+                static_cast<unsigned long long>(right.image));
+        }
+    }
 }
 
 void L4D2VR_PublishOpenXrOverlay(uint32_t overlayIndex, const L4D2VROpenXrOverlayDesc& overlay)

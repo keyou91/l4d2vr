@@ -2443,6 +2443,10 @@ namespace
     constexpr const char* kPreservedConfigKeysMissingFromOlderSamples[] =
     {
         "OpenXRHelper",
+        "OpenXRHelperSwapProjectionEyes",
+        "OpenXRHelperSwapProjectionViewOrder",
+        "OpenXRHelperMirrorProjectionHorizontal",
+        "OpenXRHelperDisableQuadOverlays",
         "OpenXRHelperSubmitTestFrames",
         "OpenXRHelperWaitReadySeconds",
         "OpenXRExposureTonemapLock",
