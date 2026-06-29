@@ -443,42 +443,433 @@ void VR::ProcessMenuInput()
 
     if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
     {
-        if (PressedDigitalAction(m_MenuSelect, true))
+        const auto tapKey = [&](ButtonCode_t key)
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_SPACE);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_SPACE);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_SPACE);
-        }
-        if (PressedDigitalAction(m_MenuBack, true) || PressedDigitalAction(m_Pause, true))
+            m_Game->m_VguiInput->InternalKeyCodeTyped(key);
+            m_Game->m_VguiInput->InternalKeyCodePressed(key);
+            m_Game->m_VguiInput->InternalKeyCodeReleased(key);
+        };
+
+        const auto sendKeyboardFallback = [&]()
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_ESCAPE);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_ESCAPE);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_ESCAPE);
-        }
-        if (PressedDigitalAction(m_MenuUp, true))
+            if (PressedDigitalAction(m_MenuSelect, true))
+                tapKey(ButtonCode_t::KEY_SPACE);
+            if (PressedDigitalAction(m_MenuBack, true) || PressedDigitalAction(m_Pause, true))
+                tapKey(ButtonCode_t::KEY_ESCAPE);
+            if (PressedDigitalAction(m_MenuUp, true))
+                tapKey(ButtonCode_t::KEY_UP);
+            if (PressedDigitalAction(m_MenuDown, true))
+                tapKey(ButtonCode_t::KEY_DOWN);
+            if (PressedDigitalAction(m_MenuLeft, true))
+                tapKey(ButtonCode_t::KEY_LEFT);
+            if (PressedDigitalAction(m_MenuRight, true))
+                tapKey(ButtonCode_t::KEY_RIGHT);
+        };
+
+        const auto releaseOpenXrMenuMouse = [&]()
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_UP);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_UP);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_UP);
-        }
-        if (PressedDigitalAction(m_MenuDown, true))
+            if (m_OpenXrMainMenuMouseDown)
+            {
+                m_Game->m_VguiInput->InternalMouseReleased(ButtonCode_t::MOUSE_LEFT);
+                m_OpenXrMainMenuMouseDown = false;
+            }
+            m_OpenXrMenuPointerPressed.store(0, std::memory_order_release);
+            m_OpenXrMenuPointerHit.store(0, std::memory_order_release);
+        };
+
+        const bool focusedInGameVgui =
+            inGame &&
+            (((m_Game->m_EngineClient && m_Game->m_EngineClient->IsPaused()) ||
+                (m_Game->m_VguiSurface && m_Game->m_VguiSurface->IsCursorVisible())));
+        if (!m_OpenXrMainMenuOverlayVisible || (inGame && !focusedInGameVgui))
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_DOWN);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_DOWN);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_DOWN);
+            m_OpenXrMainMenuInputLockValid = false;
+            m_OpenXrMenuPointerVisible.store(0, std::memory_order_release);
+            m_OpenXrMenuPointerHit.store(0, std::memory_order_release);
+            releaseOpenXrMenuMouse();
+            sendKeyboardFallback();
+            return;
         }
-        if (PressedDigitalAction(m_MenuLeft, true))
+
+        int windowWidth = 0;
+        int windowHeight = 0;
+        if (m_Game && m_Game->m_MaterialSystem && m_Game->m_MaterialSystem->GetRenderContext())
+            m_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+        if (windowWidth <= 0)
+            windowWidth = static_cast<int>(m_RenderWidth);
+        if (windowHeight <= 0)
+            windowHeight = static_cast<int>(m_RenderHeight);
+        windowWidth = (std::max)(1, windowWidth);
+        windowHeight = (std::max)(1, windowHeight);
+
+        const auto normalizeQuaternion = [](const float q[4], float& x, float& y, float& z, float& w)
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_LEFT);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_LEFT);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_LEFT);
-        }
-        if (PressedDigitalAction(m_MenuRight, true))
+            x = q[0];
+            y = q[1];
+            z = q[2];
+            w = q[3];
+            const float lenSq = x * x + y * y + z * z + w * w;
+            if (lenSq > 0.000001f)
+            {
+                const float invLen = 1.0f / std::sqrt(lenSq);
+                x *= invLen;
+                y *= invLen;
+                z *= invLen;
+                w *= invLen;
+            }
+            else
+            {
+                x = 0.0f;
+                y = 0.0f;
+                z = 0.0f;
+                w = 1.0f;
+            }
+        };
+
+        const auto rotateOpenXrVector = [](float x, float y, float z, float w, const Vector& v)
         {
-            m_Game->m_VguiInput->InternalKeyCodeTyped(ButtonCode_t::KEY_RIGHT);
-            m_Game->m_VguiInput->InternalKeyCodePressed(ButtonCode_t::KEY_RIGHT);
-            m_Game->m_VguiInput->InternalKeyCodeReleased(ButtonCode_t::KEY_RIGHT);
+            const float tx = 2.0f * (y * v.z - z * v.y);
+            const float ty = 2.0f * (z * v.x - x * v.z);
+            const float tz = 2.0f * (x * v.y - y * v.x);
+            return Vector(
+                v.x + w * tx + (y * tz - z * ty),
+                v.y + w * ty + (z * tx - x * tz),
+                v.z + w * tz + (x * ty - y * tx));
+        };
+
+        const auto captureOpenXrMenuInputLock = [&]() -> bool
+        {
+            if (m_OpenXrMainMenuInputLockValid)
+                return true;
+            if (!m_OpenXrLastHmdPose.valid)
+                return false;
+
+            float hx = 0.0f;
+            float hy = 0.0f;
+            float hz = 0.0f;
+            float hw = 1.0f;
+            normalizeQuaternion(m_OpenXrLastHmdPose.orientation, hx, hy, hz, hw);
+            const float yaw = atan2f(
+                2.0f * (hw * hy + hx * hz),
+                1.0f - 2.0f * (hy * hy + hz * hz));
+            const float halfYaw = yaw * 0.5f;
+            const float yq = sinf(halfYaw);
+            const float wq = cosf(halfYaw);
+
+            m_OpenXrMainMenuInputForward = rotateOpenXrVector(0.0f, yq, 0.0f, wq, Vector(0.0f, 0.0f, -1.0f));
+            m_OpenXrMainMenuInputRight = rotateOpenXrVector(0.0f, yq, 0.0f, wq, Vector(1.0f, 0.0f, 0.0f));
+            m_OpenXrMainMenuInputUp = Vector(0.0f, 1.0f, 0.0f);
+
+            Vector hmdPosition(
+                m_OpenXrLastHmdPose.position[0],
+                m_OpenXrLastHmdPose.position[1],
+                m_OpenXrLastHmdPose.position[2]);
+            const float distance = (std::isfinite(m_OpenXrMainMenuOverlayDistanceMeters) &&
+                m_OpenXrMainMenuOverlayDistanceMeters > 0.1f &&
+                m_OpenXrMainMenuOverlayDistanceMeters < 10.0f)
+                ? m_OpenXrMainMenuOverlayDistanceMeters
+                : 3.0f;
+
+            m_OpenXrMainMenuInputCenter =
+                hmdPosition +
+                m_OpenXrMainMenuInputForward * distance +
+                m_OpenXrMainMenuInputRight * m_OpenXrMainMenuOverlayOffsetMeters.x +
+                m_OpenXrMainMenuInputUp * m_OpenXrMainMenuOverlayOffsetMeters.y +
+                m_OpenXrMainMenuInputForward * m_OpenXrMainMenuOverlayOffsetMeters.z;
+            m_OpenXrMainMenuInputLockValid = true;
+
+            static int s_openXrMenuInputLockLogBudget = 8;
+            if (s_openXrMenuInputLockLogBudget > 0)
+            {
+                --s_openXrMenuInputLockLogBudget;
+                Game::logMsg(
+                    "[VR][OpenXRHelper][MenuInput] captured menu input lock center=(%.3f %.3f %.3f) size=(%.3f %.3f)",
+                    m_OpenXrMainMenuInputCenter.x,
+                    m_OpenXrMainMenuInputCenter.y,
+                    m_OpenXrMainMenuInputCenter.z,
+                    m_OpenXrMainMenuOverlayWidthMeters,
+                    m_OpenXrMainMenuOverlayHeightMeters);
+            }
+            return true;
+        };
+
+        struct OpenXrMenuRayResult
+        {
+            bool poseValid = false;
+            bool hit = false;
+            bool usingAimPose = false;
+            uint32_t handIndex = L4D2VR_OPENXR_HAND_COUNT;
+            float cursorX = 0.0f;
+            float cursorY = 0.0f;
+            float lineX0 = 0.0f;
+            float lineY0 = 0.0f;
+            float lineX1 = 0.0f;
+            float lineY1 = 0.0f;
+            float distance = 0.0f;
+        };
+
+        const auto intersectController = [&](uint32_t handIndex) -> OpenXrMenuRayResult
+        {
+            OpenXrMenuRayResult result{};
+            result.handIndex = handIndex;
+            if (!captureOpenXrMenuInputLock() || handIndex >= L4D2VR_OPENXR_HAND_COUNT)
+                return result;
+
+            const L4D2VROpenXrControllerPoseDesc& aimController = m_OpenXrLastInputState.controllerAimPoses[handIndex];
+            const L4D2VROpenXrControllerPoseDesc& gripController = m_OpenXrLastInputState.controllerPoses[handIndex];
+            const bool usingGripPose = gripController.valid && gripController.active;
+            const bool usingAimPose = !usingGripPose && aimController.valid && aimController.active;
+            const L4D2VROpenXrControllerPoseDesc& controller =
+                usingGripPose ? gripController : aimController;
+            if (!controller.valid || !controller.active)
+                return result;
+
+            result.poseValid = true;
+            result.usingAimPose = usingAimPose;
+
+            float qx = 0.0f;
+            float qy = 0.0f;
+            float qz = 0.0f;
+            float qw = 1.0f;
+            normalizeQuaternion(controller.orientation, qx, qy, qz, qw);
+
+            Vector planeNormal = CrossProduct(m_OpenXrMainMenuInputRight, m_OpenXrMainMenuInputUp);
+            if (VectorNormalize(planeNormal) == 0.0f)
+                return result;
+
+            const float widthMeters = (std::isfinite(m_OpenXrMainMenuOverlayWidthMeters) && m_OpenXrMainMenuOverlayWidthMeters > 0.05f)
+                ? m_OpenXrMainMenuOverlayWidthMeters
+                : 2.886f;
+            const float heightMeters = (std::isfinite(m_OpenXrMainMenuOverlayHeightMeters) && m_OpenXrMainMenuOverlayHeightMeters > 0.05f)
+                ? m_OpenXrMainMenuOverlayHeightMeters
+                : 1.625f;
+            const Vector source(controller.position[0], controller.position[1], controller.position[2]);
+            const auto projectPointToScreen = [&](const Vector& point, bool clampToPanel, float& outX, float& outY) -> bool
+            {
+                const Vector local = point - m_OpenXrMainMenuInputCenter;
+                float u = (DotProduct(local, m_OpenXrMainMenuInputRight) / widthMeters) + 0.5f;
+                float v = 0.5f - (DotProduct(local, m_OpenXrMainMenuInputUp) / heightMeters);
+                if (!std::isfinite(u) || !std::isfinite(v))
+                    return false;
+                if (clampToPanel)
+                {
+                    u = std::clamp(u, 0.0f, 1.0f);
+                    v = std::clamp(v, 0.0f, 1.0f);
+                }
+                outX = u * static_cast<float>(windowWidth);
+                outY = v * static_cast<float>(windowHeight);
+                return true;
+            };
+
+            const Vector sourceOnPlane =
+                source - planeNormal * DotProduct(source - m_OpenXrMainMenuInputCenter, planeNormal);
+            float projectedSourceX = 0.0f;
+            float projectedSourceY = 0.0f;
+            projectPointToScreen(sourceOnPlane, true, projectedSourceX, projectedSourceY);
+
+            Vector controllerDirection = rotateOpenXrVector(qx, qy, qz, qw, Vector(0.0f, 0.0f, -1.0f));
+            if (usingGripPose)
+            {
+                Vector controllerRight = rotateOpenXrVector(qx, qy, qz, qw, Vector(1.0f, 0.0f, 0.0f));
+                if (VectorNormalize(controllerRight) != 0.0f)
+                    controllerDirection = VectorRotate(controllerDirection, controllerRight, -45.0f);
+            }
+            if (VectorNormalize(controllerDirection) == 0.0f)
+                return result;
+
+            float bestT = (std::numeric_limits<float>::max)();
+            float bestU = 0.0f;
+            float bestV = 0.0f;
+            bool hitAny = false;
+
+            {
+                const float denom = DotProduct(controllerDirection, planeNormal);
+                const bool canIntersectPlane = fabsf(denom) >= 0.0001f;
+                float t = canIntersectPlane
+                    ? DotProduct(m_OpenXrMainMenuInputCenter - source, planeNormal) / denom
+                    : 0.0f;
+                const bool forwardPlaneHit = canIntersectPlane && std::isfinite(t) && t > 0.0f;
+                const Vector rawEnd = forwardPlaneHit
+                    ? source + controllerDirection * t
+                    : source + controllerDirection * (std::max)(1.0f, m_OpenXrMainMenuOverlayDistanceMeters);
+
+                float previewX = 0.0f;
+                float previewY = 0.0f;
+                if (projectPointToScreen(rawEnd, true, previewX, previewY))
+                {
+                    result.lineX0 = projectedSourceX;
+                    result.lineY0 = projectedSourceY;
+                    result.lineX1 = previewX;
+                    result.lineY1 = previewY;
+                    result.cursorX = previewX;
+                    result.cursorY = previewY;
+                }
+
+                if (!forwardPlaneHit || t >= bestT)
+                    return result;
+
+                const Vector hit = rawEnd;
+                const Vector local = hit - m_OpenXrMainMenuInputCenter;
+                const float localX = DotProduct(local, m_OpenXrMainMenuInputRight);
+                const float localY = DotProduct(local, m_OpenXrMainMenuInputUp);
+                const float u = (localX / widthMeters) + 0.5f;
+                const float v = 0.5f - (localY / heightMeters);
+                if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+                    return result;
+
+                bestT = t;
+                bestU = u;
+                bestV = v;
+                hitAny = true;
+            }
+
+            if (!hitAny)
+                return result;
+
+            result.hit = true;
+            result.distance = bestT;
+            result.cursorX = std::clamp(bestU, 0.0f, 1.0f) * static_cast<float>(windowWidth);
+            result.cursorY = std::clamp(bestV, 0.0f, 1.0f) * static_cast<float>(windowHeight);
+            result.lineX0 = projectedSourceX;
+            result.lineY0 = projectedSourceY;
+            result.lineX1 = result.cursorX;
+            result.lineY1 = result.cursorY;
+            return result;
+        };
+
+        const uint32_t primaryHand = m_LeftHanded ? L4D2VR_OPENXR_HAND_LEFT : L4D2VR_OPENXR_HAND_RIGHT;
+        const uint32_t secondaryHand = m_LeftHanded ? L4D2VR_OPENXR_HAND_RIGHT : L4D2VR_OPENXR_HAND_LEFT;
+        const OpenXrMenuRayResult primaryRay = intersectController(primaryHand);
+        const OpenXrMenuRayResult secondaryRay = intersectController(secondaryHand);
+        OpenXrMenuRayResult selectedRay{};
+        if (primaryRay.hit)
+            selectedRay = primaryRay;
+        else if (secondaryRay.hit)
+            selectedRay = secondaryRay;
+        else if (primaryRay.poseValid)
+            selectedRay = primaryRay;
+        else if (secondaryRay.poseValid)
+            selectedRay = secondaryRay;
+
+        const bool haveMenuRay = selectedRay.poseValid;
+        const bool hoveringMenu = selectedRay.hit;
+
+        const auto getOpenXrMenuSelectDown = [&](uint32_t handIndex) -> bool
+        {
+            vr::InputDigitalActionData_t selectData{};
+            const bool haveSelectData = GetDigitalActionData(m_MenuSelect, selectData);
+            vr::InputDigitalActionData_t triggerData{};
+            vr::VRActionHandle_t& triggerAction =
+                (handIndex == primaryHand) ? m_ActionPrimaryAttack : m_ActionSecondaryAttack;
+            const bool haveTriggerData = GetDigitalActionData(triggerAction, triggerData);
+            return
+                (haveSelectData && selectData.bState) ||
+                (haveTriggerData && triggerData.bState);
+        };
+
+        const bool selectDown = haveMenuRay ? getOpenXrMenuSelectDown(selectedRay.handIndex) : false;
+        if (haveMenuRay)
+        {
+            m_OpenXrMenuPointerX.store(selectedRay.cursorX, std::memory_order_release);
+            m_OpenXrMenuPointerY.store(selectedRay.cursorY, std::memory_order_release);
+            m_OpenXrMenuPointerLineX0.store(selectedRay.lineX0, std::memory_order_release);
+            m_OpenXrMenuPointerLineY0.store(selectedRay.lineY0, std::memory_order_release);
+            m_OpenXrMenuPointerLineX1.store(selectedRay.lineX1, std::memory_order_release);
+            m_OpenXrMenuPointerLineY1.store(selectedRay.lineY1, std::memory_order_release);
+            m_OpenXrMenuPointerWidth.store(static_cast<uint32_t>(windowWidth), std::memory_order_release);
+            m_OpenXrMenuPointerHeight.store(static_cast<uint32_t>(windowHeight), std::memory_order_release);
+            m_OpenXrMenuPointerHit.store(hoveringMenu ? 1u : 0u, std::memory_order_release);
+            m_OpenXrMenuPointerPressed.store(selectDown ? 1u : 0u, std::memory_order_release);
+            m_OpenXrMenuPointerVisible.store(1, std::memory_order_release);
         }
+        else
+        {
+            static int s_openXrMenuNoPoseLogBudget = 8;
+            if (s_openXrMenuNoPoseLogBudget > 0)
+            {
+                --s_openXrMenuNoPoseLogBudget;
+                const L4D2VROpenXrControllerPoseDesc& leftGrip = m_OpenXrLastInputState.controllerPoses[L4D2VR_OPENXR_HAND_LEFT];
+                const L4D2VROpenXrControllerPoseDesc& rightGrip = m_OpenXrLastInputState.controllerPoses[L4D2VR_OPENXR_HAND_RIGHT];
+                const L4D2VROpenXrControllerPoseDesc& leftAim = m_OpenXrLastInputState.controllerAimPoses[L4D2VR_OPENXR_HAND_LEFT];
+                const L4D2VROpenXrControllerPoseDesc& rightAim = m_OpenXrLastInputState.controllerAimPoses[L4D2VR_OPENXR_HAND_RIGHT];
+                Game::logMsg(
+                    "[VR][OpenXRHelper][MenuInput] no controller ray overlayVisible=%u hmdValid=%u inputGen=%u gripL=%u/%u gripR=%u/%u aimL=%u/%u aimR=%u/%u",
+                    m_OpenXrMainMenuOverlayVisible ? 1u : 0u,
+                    m_OpenXrLastHmdPose.valid,
+                    m_OpenXrLastInputStateGeneration,
+                    leftGrip.valid,
+                    leftGrip.active,
+                    rightGrip.valid,
+                    rightGrip.active,
+                    leftAim.valid,
+                    leftAim.active,
+                    rightAim.valid,
+                    rightAim.active);
+            }
+        }
+
+        if (haveMenuRay && !hoveringMenu)
+        {
+            static int s_openXrMenuMissLogBudget = 12;
+            if (s_openXrMenuMissLogBudget > 0)
+            {
+                --s_openXrMenuMissLogBudget;
+                Game::logMsg(
+                    "[VR][OpenXRHelper][MenuInput] ray miss hand=%s pose=%s line=(%.1f %.1f)->(%.1f %.1f) cursor=(%.1f %.1f) win=%dx%d",
+                    selectedRay.handIndex == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                    selectedRay.usingAimPose ? "aim" : "grip",
+                    selectedRay.lineX0,
+                    selectedRay.lineY0,
+                    selectedRay.lineX1,
+                    selectedRay.lineY1,
+                    selectedRay.cursorX,
+                    selectedRay.cursorY,
+                    windowWidth,
+                    windowHeight);
+            }
+        }
+
+        if (hoveringMenu)
+        {
+            m_Game->m_VguiInput->SetCursorPos(static_cast<int>(selectedRay.cursorX), static_cast<int>(selectedRay.cursorY));
+
+            static int s_openXrMenuHoverLogBudget = 12;
+            if (s_openXrMenuHoverLogBudget > 0)
+            {
+                --s_openXrMenuHoverLogBudget;
+                Game::logMsg(
+                    "[VR][OpenXRHelper][MenuInput] hover hand=%s pose=%s cursor=(%.1f %.1f) line=(%.1f %.1f)->(%.1f %.1f) dist=%.3f win=%dx%d",
+                    selectedRay.handIndex == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                    selectedRay.usingAimPose ? "aim" : "grip",
+                    selectedRay.cursorX,
+                    selectedRay.cursorY,
+                    selectedRay.lineX0,
+                    selectedRay.lineY0,
+                    selectedRay.lineX1,
+                    selectedRay.lineY1,
+                    selectedRay.distance,
+                    windowWidth,
+                    windowHeight);
+            }
+
+            if (selectDown && !m_OpenXrMainMenuMouseDown)
+            {
+                m_Game->m_VguiInput->InternalMousePressed(ButtonCode_t::MOUSE_LEFT);
+                m_OpenXrMainMenuMouseDown = true;
+            }
+            if (m_OpenXrMainMenuMouseDown && !selectDown)
+                releaseOpenXrMenuMouse();
+
+            if (PressedDigitalAction(m_MenuBack, true) || PressedDigitalAction(m_Pause, true))
+                tapKey(ButtonCode_t::KEY_ESCAPE);
+            return;
+        }
+
+        if (!haveMenuRay)
+            m_OpenXrMenuPointerVisible.store(0, std::memory_order_release);
+        m_OpenXrMenuPointerHit.store(0, std::memory_order_release);
+        releaseOpenXrMenuMouse();
+        sendKeyboardFallback();
         return;
     }
 

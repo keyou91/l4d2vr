@@ -1524,15 +1524,16 @@ void VR::Update()
             }
             else
             {
-                HideOpenXrBackbufferOverlay();
                 const bool focusedInGameVgui =
                     (m_Game->m_EngineClient && m_Game->m_EngineClient->IsPaused()) ||
                     (m_Game->m_VguiSurface && m_Game->m_VguiSurface->IsCursorVisible());
+                if (!focusedInGameVgui)
+                    HideOpenXrBackbufferOverlay();
                 const bool wantsHudOverlay =
-                    focusedInGameVgui ||
-                    IsGameplayHudRequested() ||
-                    m_RenderedHud.load(std::memory_order_acquire) ||
-                    IsQueuedHudFresh();
+                    !focusedInGameVgui &&
+                    (IsGameplayHudRequested() ||
+                        m_RenderedHud.load(std::memory_order_acquire) ||
+                        IsQueuedHudFresh());
                 if (wantsHudOverlay)
                 {
                     uint32_t hudFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
@@ -1544,6 +1545,36 @@ void VR::Update()
                 else
                 {
                     HideOpenXrHudOverlay();
+                }
+            }
+
+            if (m_Game->m_VguiSurface)
+            {
+                const bool openXrMenuInputActive =
+                    !inGameAtUpdateStart ||
+                    m_OpenXrMainMenuOverlayVisible ||
+                    (m_Game->m_EngineClient && m_Game->m_EngineClient->IsPaused()) ||
+                    m_Game->m_VguiSurface->IsCursorVisible();
+
+                if (openXrMenuInputActive)
+                {
+                    static int s_openXrMenuInputUpdateLogBudget = 12;
+                    if (s_openXrMenuInputUpdateLogBudget > 0)
+                    {
+                        --s_openXrMenuInputUpdateLogBudget;
+                        Game::logMsg(
+                            "[VR][OpenXRHelper][MenuInput] update dispatch inGame=%u overlayVisible=%u paused=%u cursor=%u",
+                            inGameAtUpdateStart ? 1u : 0u,
+                            m_OpenXrMainMenuOverlayVisible ? 1u : 0u,
+                            (m_Game->m_EngineClient && m_Game->m_EngineClient->IsPaused()) ? 1u : 0u,
+                            m_Game->m_VguiSurface->IsCursorVisible() ? 1u : 0u);
+                    }
+                    CancelTeleportTargeting();
+                    ProcessMenuInput();
+                }
+                else
+                {
+                    ProcessInput();
                 }
             }
         }

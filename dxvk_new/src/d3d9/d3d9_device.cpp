@@ -1497,15 +1497,23 @@ namespace dxvk {
             }
         }
 
+        static bool VrHasFocusedInGameVgui(const VR* vr) {
+            if (!vr || !vr->m_Game || !vr->m_Game->m_EngineClient || !vr->m_Game->m_EngineClient->IsInGame())
+                return false;
+
+            return
+                (vr->m_Game->m_EngineClient && vr->m_Game->m_EngineClient->IsPaused()) ||
+                (vr->m_Game->m_VguiSurface && vr->m_Game->m_VguiSurface->IsCursorVisible());
+        }
+
         static bool VrShouldPublishOpenXrHudOverlay(const VR* vr) {
             if (!vr || !vr->m_Game || !vr->m_Game->m_EngineClient || !vr->m_Game->m_EngineClient->IsInGame())
                 return false;
 
-            const bool focusedInGameVgui =
-                (vr->m_Game->m_EngineClient && vr->m_Game->m_EngineClient->IsPaused()) ||
-                (vr->m_Game->m_VguiSurface && vr->m_Game->m_VguiSurface->IsCursorVisible());
-            return focusedInGameVgui ||
-                vr->IsGameplayHudRequested() ||
+            if (VrHasFocusedInGameVgui(vr))
+                return false;
+
+            return vr->IsGameplayHudRequested() ||
                 vr->m_RenderedHud.load(std::memory_order_acquire) ||
                 vr->IsQueuedHudFresh();
         }
@@ -1525,6 +1533,218 @@ namespace dxvk {
             const bool published = vr->PublishOpenXrHudOverlay(frameId);
             if (!published)
                 vr->HideOpenXrHudOverlay();
+            return published;
+        }
+
+        static void VrDrawOpenXrMenuPointerToSurface(
+            D3D9DeviceEx* device,
+            VR* vr,
+            IDirect3DSurface9* target) {
+            if (!device || !vr || !target)
+                return;
+
+            if (vr->m_OpenXrMenuPointerVisible.load(std::memory_order_acquire) == 0)
+                return;
+
+            D3DSURFACE_DESC desc{};
+            if (FAILED(target->GetDesc(&desc)) || desc.Width == 0 || desc.Height == 0)
+                return;
+
+            const uint32_t pointerWidth = (std::max)(1u, vr->m_OpenXrMenuPointerWidth.load(std::memory_order_acquire));
+            const uint32_t pointerHeight = (std::max)(1u, vr->m_OpenXrMenuPointerHeight.load(std::memory_order_acquire));
+            const float sourceX = vr->m_OpenXrMenuPointerX.load(std::memory_order_acquire);
+            const float sourceY = vr->m_OpenXrMenuPointerY.load(std::memory_order_acquire);
+            const float lineSourceX = vr->m_OpenXrMenuPointerLineX0.load(std::memory_order_acquire);
+            const float lineSourceY = vr->m_OpenXrMenuPointerLineY0.load(std::memory_order_acquire);
+            const float lineEndX = vr->m_OpenXrMenuPointerLineX1.load(std::memory_order_acquire);
+            const float lineEndY = vr->m_OpenXrMenuPointerLineY1.load(std::memory_order_acquire);
+            if (!std::isfinite(sourceX) || !std::isfinite(sourceY))
+                return;
+            if (!std::isfinite(lineSourceX) || !std::isfinite(lineSourceY) ||
+                !std::isfinite(lineEndX) || !std::isfinite(lineEndY))
+                return;
+
+            const float cx = std::clamp(
+                sourceX * (static_cast<float>(desc.Width) / static_cast<float>(pointerWidth)),
+                0.0f,
+                static_cast<float>(desc.Width));
+            const float cy = std::clamp(
+                sourceY * (static_cast<float>(desc.Height) / static_cast<float>(pointerHeight)),
+                0.0f,
+                static_cast<float>(desc.Height));
+            const float x0 = std::clamp(
+                lineSourceX * (static_cast<float>(desc.Width) / static_cast<float>(pointerWidth)),
+                0.0f,
+                static_cast<float>(desc.Width));
+            const float y0 = std::clamp(
+                lineSourceY * (static_cast<float>(desc.Height) / static_cast<float>(pointerHeight)),
+                0.0f,
+                static_cast<float>(desc.Height));
+            const float x1 = std::clamp(
+                lineEndX * (static_cast<float>(desc.Width) / static_cast<float>(pointerWidth)),
+                0.0f,
+                static_cast<float>(desc.Width));
+            const float y1 = std::clamp(
+                lineEndY * (static_cast<float>(desc.Height) / static_cast<float>(pointerHeight)),
+                0.0f,
+                static_cast<float>(desc.Height));
+            const bool pressed = vr->m_OpenXrMenuPointerPressed.load(std::memory_order_acquire) != 0;
+            const bool hit = vr->m_OpenXrMenuPointerHit.load(std::memory_order_acquire) != 0;
+
+            if (FAILED(device->BeginScene()))
+                return;
+
+            IDirect3DStateBlock9* stateBlock = nullptr;
+            if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &stateBlock))) {
+                device->EndScene();
+                return;
+            }
+
+            IDirect3DSurface9* oldRenderTarget = nullptr;
+            device->GetRenderTarget(0, &oldRenderTarget);
+
+            D3DVIEWPORT9 oldViewport{};
+            const bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
+
+            D3DVIEWPORT9 viewport{};
+            viewport.X = 0;
+            viewport.Y = 0;
+            viewport.Width = desc.Width;
+            viewport.Height = desc.Height;
+            viewport.MinZ = 0.0f;
+            viewport.MaxZ = 1.0f;
+
+            device->SetRenderTarget(0, target);
+            device->SetViewport(&viewport);
+            device->SetVertexShader(nullptr);
+            device->SetPixelShader(nullptr);
+            device->SetTexture(0, nullptr);
+            device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+            device->SetRenderState(D3DRS_LIGHTING, FALSE);
+            device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+            device->SetRenderState(D3DRS_ZENABLE, FALSE);
+            device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+            device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+            device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                D3DCOLORWRITEENABLE_RED |
+                D3DCOLORWRITEENABLE_GREEN |
+                D3DCOLORWRITEENABLE_BLUE |
+                D3DCOLORWRITEENABLE_ALPHA);
+            device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+            device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+            device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+            const float minDim = static_cast<float>((std::min)(desc.Width, desc.Height));
+            const float radius = std::clamp(minDim * 0.010f, 7.0f, 14.0f);
+            const float gap = std::max(3.0f, radius * 0.35f);
+            const float lineLength = radius * 1.8f;
+            const float lineWidth = std::clamp(radius * 0.20f, 1.5f, 3.0f);
+            const uint32_t outlineColor = 0xCC000000u;
+            const uint32_t rayColor = hit ? 0xE6FFFFFFu : 0xD0FF5A5Au;
+            const uint32_t pointerColor = pressed ? 0xFFFFD24Au : (hit ? 0xFFFFFFFFu : 0xFFFF5A5Au);
+
+            VrAimLineDrawLine(device, x0, y0, x1, y1, lineWidth + 3.0f, outlineColor);
+            VrAimLineDrawLine(device, x0, y0, x1, y1, lineWidth + 1.0f, rayColor);
+            VrAimLineDrawDisc(device, cx, cy, radius * 0.35f + 2.0f, outlineColor);
+            VrAimLineDrawDisc(device, cx, cy, radius * 0.35f, pointerColor);
+            if (hit)
+            {
+                VrAimLineDrawLine(device, cx - lineLength, cy, cx - gap, cy, lineWidth + 2.0f, outlineColor);
+                VrAimLineDrawLine(device, cx + gap, cy, cx + lineLength, cy, lineWidth + 2.0f, outlineColor);
+                VrAimLineDrawLine(device, cx, cy - lineLength, cx, cy - gap, lineWidth + 2.0f, outlineColor);
+                VrAimLineDrawLine(device, cx, cy + gap, cx, cy + lineLength, lineWidth + 2.0f, outlineColor);
+                VrAimLineDrawLine(device, cx - lineLength, cy, cx - gap, cy, lineWidth, pointerColor);
+                VrAimLineDrawLine(device, cx + gap, cy, cx + lineLength, cy, lineWidth, pointerColor);
+                VrAimLineDrawLine(device, cx, cy - lineLength, cx, cy - gap, lineWidth, pointerColor);
+                VrAimLineDrawLine(device, cx, cy + gap, cx, cy + lineLength, lineWidth, pointerColor);
+            }
+
+            if (stateBlock) {
+                stateBlock->Apply();
+                stateBlock->Release();
+            }
+
+            if (oldRenderTarget) {
+                device->SetRenderTarget(0, oldRenderTarget);
+                oldRenderTarget->Release();
+            }
+
+            if (hasOldViewport)
+                device->SetViewport(&oldViewport);
+
+            device->EndScene();
+        }
+
+        static bool VrShouldPublishOpenXrFocusedVguiOverlay(const VR* vr) {
+            if (!vr || !vr->m_Game || !vr->m_Game->m_EngineClient || !vr->m_Game->m_EngineClient->IsInGame())
+                return false;
+
+            if (!VrHasFocusedInGameVgui(vr))
+                return false;
+
+            return true;
+        }
+
+        static bool VrHasFreshOpenXrFocusedVguiSurface(const VR* vr) {
+            if (!vr || !vr->m_Game)
+                return false;
+
+            const bool queued = vr->m_Game->GetMatQueueMode() != 0;
+            return vr->m_RenderedHud.load(std::memory_order_acquire) ||
+                (queued && vr->IsQueuedHudFresh());
+        }
+
+        static bool VrPublishOpenXrFocusedVguiOverlay(D3D9DeviceEx* device, VR* vr, uint32_t frameId) {
+            if (!vr || !vr->m_OpenXrHelperBridgeActive)
+                return false;
+
+            if (!VrShouldPublishOpenXrFocusedVguiOverlay(vr)) {
+                vr->HideOpenXrBackbufferOverlay();
+                return false;
+            }
+
+            const bool haveFreshVguiSurface = VrHasFreshOpenXrFocusedVguiSurface(vr);
+            if (!haveFreshVguiSurface && !vr->m_OpenXrMainMenuOverlayVisible)
+                return false;
+
+            if (!device || !g_D3DVR9 || !vr->m_D9HUDSurface || !vr->m_D9BackBufferOverlaySurface)
+                return false;
+
+            IDirect3DSurface9* source = vr->m_D9HUDSurface;
+            IDirect3DSurface9* copyTarget = vr->m_D9BackBufferOverlaySurface;
+            source->AddRef();
+            copyTarget->AddRef();
+
+            HRESULT copyHr = device->StretchRect(source, nullptr, copyTarget, nullptr, D3DTEXF_NONE);
+            if (FAILED(copyHr))
+                copyHr = device->StretchRect(source, nullptr, copyTarget, nullptr, D3DTEXF_LINEAR);
+
+            source->Release();
+
+            if (FAILED(copyHr)) {
+                copyTarget->Release();
+                return false;
+            }
+
+            VrDrawOpenXrMenuPointerToSurface(device, vr, copyTarget);
+
+            bool published = false;
+            if (VrPrepareOpenXrSurfaceForRead(copyTarget, "focused-vgui"))
+            {
+                D3D9_TEXTURE_VR_DESC desc{};
+                const HRESULT descHr = g_D3DVR9->GetVRDesc(copyTarget, &desc);
+                if (SUCCEEDED(descHr))
+                    published = vr->PublishOpenXrFocusedVguiOverlay(desc, frameId);
+            }
+
+            copyTarget->Release();
             return published;
         }
 
@@ -2324,6 +2544,8 @@ namespace dxvk {
                         static_cast<unsigned long>(copyHr));
                 }
             }
+
+            VrDrawOpenXrMenuPointerToSurface(this, vr, copyTarget);
 
             if (VrPrepareOpenXrSurfaceForRead(copyTarget, "backbuffer-overlay"))
             {
@@ -6122,7 +6344,8 @@ namespace dxvk {
                     VrResolveEyeSurfacesToSubmit(this, vr);
                     if (inGame)
                     {
-                        vr->HideOpenXrBackbufferOverlay();
+                        if (!VrHasFocusedInGameVgui(vr))
+                            vr->HideOpenXrBackbufferOverlay();
                     }
                     else
                     {
@@ -6220,7 +6443,8 @@ namespace dxvk {
                     VrResolveEyeSurfacesToSubmit(this, postPresentVR);
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, postPresentVR);
                     VrAimLineDrawOverlaysToSubmitTargets(this, postPresentVR);
-                    postPresentVR->HideOpenXrBackbufferOverlay();
+                    if (!VrHasFocusedInGameVgui(postPresentVR))
+                        postPresentVR->HideOpenXrBackbufferOverlay();
                     if (postPresentVR->m_ReShadeVRCompat)
                         postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
                     if (postPresentVR->m_OpenXrHelperBridgeActive) {
@@ -6228,6 +6452,7 @@ namespace dxvk {
                             VrMaybeDumpOpenXrDebugImagesAfterInGameDelay(this, postPresentVR, completedFrameId, "post_present_deferred");
                             postPresentVR->PublishOpenXrResolvedEyeTextures(completedFrameId);
                             const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(postPresentVR);
+                            VrPublishOpenXrFocusedVguiOverlay(this, postPresentVR, hudFrameId);
                             VrPublishOpenXrHudOverlay(postPresentVR, hudFrameId);
                         }
                     }
@@ -6246,6 +6471,7 @@ namespace dxvk {
                         vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
                         if (inGameNow) {
                             const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                            VrPublishOpenXrFocusedVguiOverlay(this, vr, hudFrameId);
                             VrPublishOpenXrHudOverlay(vr, hudFrameId);
                         }
                         else {
@@ -6265,13 +6491,15 @@ namespace dxvk {
                 if (inGame && queued) {
                     VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr);
                     VrAimLineDrawOverlaysToSubmitTargets(this, vr);
-                    vr->HideOpenXrBackbufferOverlay();
+                    if (!VrHasFocusedInGameVgui(vr))
+                        vr->HideOpenXrBackbufferOverlay();
                     if (vr->m_OpenXrHelperBridgeActive) {
                         if (VrPrepareOpenXrEyeSubmitSurfacesForRead(vr)) {
                             const uint32_t completedFrameId = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
                             VrMaybeDumpOpenXrDebugImagesAfterInGameDelay(this, vr, completedFrameId, "post_present_queued");
                             vr->PublishOpenXrResolvedEyeTextures(completedFrameId);
                             const uint32_t hudFrameId = completedFrameId ? completedFrameId : VrNextOpenXrSyntheticSharedTextureFrameId(vr);
+                            VrPublishOpenXrFocusedVguiOverlay(this, vr, hudFrameId);
                             VrPublishOpenXrHudOverlay(vr, hudFrameId);
                         }
                     }

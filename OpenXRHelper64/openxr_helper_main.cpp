@@ -1434,9 +1434,11 @@ namespace
         XrActionSet m_MainActionSet = XR_NULL_HANDLE;
         XrActionSet m_BaseActionSet = XR_NULL_HANDLE;
         XrAction m_HandPoseAction = XR_NULL_HANDLE;
+        XrAction m_AimPoseAction = XR_NULL_HANDLE;
         XrAction m_HapticAction = XR_NULL_HANDLE;
         std::array<XrPath, L4D2VR_OPENXR_HAND_COUNT> m_HandPaths{};
         std::array<XrSpace, L4D2VR_OPENXR_HAND_COUNT> m_HandSpaces{};
+        std::array<XrSpace, L4D2VR_OPENXR_HAND_COUNT> m_AimSpaces{};
         std::array<XrHandTrackerEXT, L4D2VR_OPENXR_HAND_COUNT> m_HandTrackers{};
         std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_BooleanActions{};
         std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalActions{};
@@ -1447,6 +1449,7 @@ namespace
         std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_DerivedDigitalInitialized{};
         std::array<XrPath, L4D2VR_OPENXR_HAND_COUNT> m_LastInteractionProfiles{};
         std::array<bool, L4D2VR_OPENXR_HAND_COUNT> m_PoseInactiveLogged{};
+        std::array<bool, L4D2VR_OPENXR_HAND_COUNT> m_AimPoseInactiveLogged{};
         std::array<uint32_t, L4D2VR_OPENXR_HAND_COUNT> m_LastHapticSequences{};
         uint32_t m_FeatureFlags = 0;
         bool m_SessionInitialized = false;
@@ -3864,7 +3867,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
     bool OpenXrInputBridge::CreatePoseAction(Logger& log)
     {
-        return CreateSubactionAction(m_BaseActionSet, XR_ACTION_TYPE_POSE_INPUT, "hand_pose", "Hand Pose", m_HandPoseAction, log);
+        return
+            CreateSubactionAction(m_BaseActionSet, XR_ACTION_TYPE_POSE_INPUT, "hand_pose", "Hand Pose", m_HandPoseAction, log) &&
+            CreateSubactionAction(m_BaseActionSet, XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Aim Pose", m_AimPoseAction, log);
     }
 
     bool OpenXrInputBridge::CreateHapticAction(Logger& log)
@@ -3977,12 +3982,21 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 XrResultName(result),
                 static_cast<int>(result));
         }
+        else
+        {
+            log.Print(
+                "xrSuggestInteractionProfileBindings(%s) ok count=%u",
+                profilePath,
+                suggested.countSuggestedBindings);
+        }
     }
 
     void OpenXrInputBridge::AddPoseAndHapticBindings(std::vector<XrActionSuggestedBinding>& b)
     {
         AddBinding(b, m_HandPoseAction, "/user/hand/left/input/grip/pose");
         AddBinding(b, m_HandPoseAction, "/user/hand/right/input/grip/pose");
+        AddBinding(b, m_AimPoseAction, "/user/hand/left/input/aim/pose");
+        AddBinding(b, m_AimPoseAction, "/user/hand/right/input/aim/pose");
         AddBinding(b, m_HapticAction, "/user/hand/left/output/haptic");
         AddBinding(b, m_HapticAction, "/user/hand/right/output/haptic");
     }
@@ -3994,8 +4008,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         const std::string leftStick = std::string("/user/hand/left/input/") + stickName;
         const std::string rightStick = std::string("/user/hand/right/input/") + stickName;
 
-        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Walk)], (leftStick + "/value").c_str());
-        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Turn)], (rightStick + "/value").c_str());
+        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Walk)], leftStick.c_str());
+        AddBinding(b, m_AnalogActions[Index(L4D2VROpenXrActionId::Turn)], rightStick.c_str());
         AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::ResetPosition)], (leftStick + "/click").c_str());
         AddBinding(b, m_BooleanActions[Index(L4D2VROpenXrActionId::Flashlight)], (rightStick + "/click").c_str());
 
@@ -4154,6 +4168,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         m_AppSpace = appSpace;
         m_LastInteractionProfiles.fill(static_cast<XrPath>(~0ull));
         m_PoseInactiveLogged.fill(false);
+        m_AimPoseInactiveLogged.fill(false);
 
         for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
         {
@@ -4162,6 +4177,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             spaceInfo.subactionPath = m_HandPaths[hand];
             spaceInfo.poseInActionSpace.orientation.w = 1.0f;
             if (!Succeeded(log, "xrCreateActionSpace(hand_pose)", m_Xr->xrCreateActionSpace(session, &spaceInfo, &m_HandSpaces[hand])))
+                return false;
+
+            spaceInfo.action = m_AimPoseAction;
+            if (!Succeeded(log, "xrCreateActionSpace(aim_pose)", m_Xr->xrCreateActionSpace(session, &spaceInfo, &m_AimSpaces[hand])))
                 return false;
         }
 
@@ -4223,7 +4242,16 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     space = XR_NULL_HANDLE;
                 }
             }
+            for (XrSpace& space : m_AimSpaces)
+            {
+                if (space != XR_NULL_HANDLE && m_Xr->xrDestroySpace)
+                {
+                    m_Xr->xrDestroySpace(space);
+                    space = XR_NULL_HANDLE;
+                }
+            }
             DestroyAction(m_HandPoseAction);
+            DestroyAction(m_AimPoseAction);
             DestroyAction(m_HapticAction);
             for (XrAction& action : m_BooleanActions)
                 DestroyAction(action);
@@ -4411,52 +4439,58 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     {
         for (uint32_t hand = 0; hand < L4D2VR_OPENXR_HAND_COUNT; ++hand)
         {
-            if (m_HandSpaces[hand] == XR_NULL_HANDLE)
-                continue;
-
-            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
-            getInfo.action = m_HandPoseAction;
-            getInfo.subactionPath = m_HandPaths[hand];
-            XrActionStatePose poseState{ XR_TYPE_ACTION_STATE_POSE };
-            const XrResult poseResult = m_Xr->xrGetActionStatePose(m_Session, &getInfo, &poseState);
-            if (XR_FAILED(poseResult) || !poseState.isActive)
+            const auto locatePose = [&](XrAction action, XrSpace space, const char* name, bool& inactiveLogged, L4D2VROpenXrControllerPoseDesc& out)
             {
-                if (!m_PoseInactiveLogged[hand])
+                if (action == XR_NULL_HANDLE || space == XR_NULL_HANDLE)
+                    return;
+
+                XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+                getInfo.action = action;
+                getInfo.subactionPath = m_HandPaths[hand];
+                XrActionStatePose poseState{ XR_TYPE_ACTION_STATE_POSE };
+                const XrResult poseResult = m_Xr->xrGetActionStatePose(m_Session, &getInfo, &poseState);
+                if (XR_FAILED(poseResult) || !poseState.isActive)
                 {
-                    m_PoseInactiveLogged[hand] = true;
-                    log.Print(
-                        "OpenXR hand_pose inactive %s: result=%s (%d) active=%u profile=%s",
-                        hand == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
-                        XrResultName(poseResult),
-                        static_cast<int>(poseResult),
-                        poseState.isActive ? 1u : 0u,
-                        PathToString(m_LastInteractionProfiles[hand]).c_str());
+                    if (!inactiveLogged)
+                    {
+                        inactiveLogged = true;
+                        log.Print(
+                            "OpenXR %s inactive %s: result=%s (%d) active=%u profile=%s",
+                            name,
+                            hand == L4D2VR_OPENXR_HAND_LEFT ? "left" : "right",
+                            XrResultName(poseResult),
+                            static_cast<int>(poseResult),
+                            poseState.isActive ? 1u : 0u,
+                            PathToString(m_LastInteractionProfiles[hand]).c_str());
+                    }
+                    return;
                 }
-                continue;
-            }
-            m_PoseInactiveLogged[hand] = false;
+                inactiveLogged = false;
 
-            XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
-            if (XR_FAILED(m_Xr->xrLocateSpace(m_HandSpaces[hand], m_AppSpace, displayTime, &location)))
-                continue;
+                XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
+                if (XR_FAILED(m_Xr->xrLocateSpace(space, m_AppSpace, displayTime, &location)))
+                    return;
 
-            const bool orientationValid = (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
-            const bool positionValid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
-            if (!orientationValid && !positionValid)
-                continue;
+                const bool orientationValid = (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+                const bool positionValid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+                if (!orientationValid && !positionValid)
+                    return;
 
-            L4D2VROpenXrControllerPoseDesc& out = outState.controllerPoses[hand];
-            out.valid = 1;
-            out.active = 1;
-            out.locationFlags = static_cast<uint64_t>(location.locationFlags);
-            out.displayTime = static_cast<int64_t>(displayTime);
-            out.position[0] = location.pose.position.x;
-            out.position[1] = location.pose.position.y;
-            out.position[2] = location.pose.position.z;
-            out.orientation[0] = location.pose.orientation.x;
-            out.orientation[1] = location.pose.orientation.y;
-            out.orientation[2] = location.pose.orientation.z;
-            out.orientation[3] = location.pose.orientation.w;
+                out.valid = 1;
+                out.active = 1;
+                out.locationFlags = static_cast<uint64_t>(location.locationFlags);
+                out.displayTime = static_cast<int64_t>(displayTime);
+                out.position[0] = location.pose.position.x;
+                out.position[1] = location.pose.position.y;
+                out.position[2] = location.pose.position.z;
+                out.orientation[0] = location.pose.orientation.x;
+                out.orientation[1] = location.pose.orientation.y;
+                out.orientation[2] = location.pose.orientation.z;
+                out.orientation[3] = location.pose.orientation.w;
+            };
+
+            locatePose(m_HandPoseAction, m_HandSpaces[hand], "hand_pose", m_PoseInactiveLogged[hand], outState.controllerPoses[hand]);
+            locatePose(m_AimPoseAction, m_AimSpaces[hand], "aim_pose", m_AimPoseInactiveLogged[hand], outState.controllerAimPoses[hand]);
         }
     }
 
@@ -6874,6 +6908,33 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             XrVector3f up{ 0.0f, 1.0f, 0.0f };
         };
 
+        struct OverlaySpatialLock
+        {
+            bool valid = false;
+            XrPosef pose{ XrQuaternionf{ 0.0f, 0.0f, 0.0f, 1.0f }, XrVector3f{ 0.0f, 0.0f, -3.0f } };
+        };
+
+        bool OverlayUsesSpatialLock(uint32_t overlayIndex) const
+        {
+            return overlayIndex == L4D2VR_OPENXR_OVERLAY_MAIN_MENU;
+        }
+
+        void ResetOverlaySpatialLock(uint32_t overlayIndex, const char* reason)
+        {
+            if (overlayIndex >= m_OverlaySpatialLocks.size() || !OverlayUsesSpatialLock(overlayIndex))
+                return;
+
+            OverlaySpatialLock& lock = m_OverlaySpatialLocks[overlayIndex];
+            if (lock.valid)
+            {
+                m_Log.Print(
+                    "[OpenXR][OverlayLayer] cleared spatial lock overlay=%s reason=%s",
+                    OverlayName(overlayIndex),
+                    reason ? reason : "unknown");
+            }
+            lock = OverlaySpatialLock{};
+        }
+
         OverlayAnchor BuildOverlayAnchor(
             const L4D2VROpenXrOverlayDesc& overlay,
             const std::vector<XrView>& locatedViews,
@@ -6927,6 +6988,37 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             const OverlayAnchor anchor = BuildOverlayAnchor(overlay, locatedViews, locatedCount, gameRenderCenterPose);
             XrPosef pose{ anchor.yawOrientation, anchor.center };
             return pose;
+        }
+
+        XrPosef BuildOverlaySubmitPose(
+            uint32_t overlayIndex,
+            const L4D2VROpenXrOverlayDesc& overlay,
+            const std::vector<XrView>& locatedViews,
+            uint32_t locatedCount,
+            const XrPosef* gameRenderCenterPose = nullptr)
+        {
+            const XrPosef pose = BuildOverlayPose(overlay, locatedViews, locatedCount, gameRenderCenterPose);
+            if (overlayIndex >= m_OverlaySpatialLocks.size() || !OverlayUsesSpatialLock(overlayIndex))
+                return pose;
+
+            OverlaySpatialLock& lock = m_OverlaySpatialLocks[overlayIndex];
+            if (!lock.valid)
+            {
+                lock.valid = true;
+                lock.pose = pose;
+                m_Log.Print(
+                    "[OpenXR][OverlayLayer] captured spatial lock overlay=%s posePos=(%.4f %.4f %.4f) poseQuat=(%.4f %.4f %.4f %.4f)",
+                    OverlayName(overlayIndex),
+                    pose.position.x,
+                    pose.position.y,
+                    pose.position.z,
+                    pose.orientation.x,
+                    pose.orientation.y,
+                    pose.orientation.z,
+                    pose.orientation.w);
+            }
+
+            return lock.pose;
         }
 
         XrPosef BuildCurvedOverlaySlicePose(
@@ -7736,7 +7828,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                             {
                                 const L4D2VROpenXrOverlayDesc overlay = m_Bridge.Overlay(overlayIndex);
                                 if (!overlay.valid || !overlay.visible || !overlay.texture.valid)
+                                {
+                                    ResetOverlaySpatialLock(overlayIndex, "hidden");
                                     continue;
+                                }
 
                                 VulkanEyeSwapchain& overlaySwapchain = m_OverlaySwapchains[overlayIndex];
                                 const uint32_t overlayGeneration = m_Bridge.OverlayGeneration();
@@ -7845,7 +7940,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                         }
                                         else
                                         {
-                                            overlayLayer.pose = BuildOverlayPose(overlay, locatedViews, locatedCount, overlayGameRenderCenterPose);
+                                            overlayLayer.pose = BuildOverlaySubmitPose(overlayIndex, overlay, locatedViews, locatedCount, overlayGameRenderCenterPose);
                                             overlayLayer.size = XrExtent2Df{ widthMeters, heightMeters };
                                         }
 
@@ -8107,6 +8202,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         std::array<VulkanGameEyeTexture, L4D2VR_OPENXR_EYE_COUNT> m_GameEyes;
         std::array<VulkanGameEyeTexture, L4D2VR_OPENXR_OVERLAY_COUNT> m_OverlayTextures;
         std::array<VulkanEyeSwapchain, L4D2VR_OPENXR_OVERLAY_COUNT> m_OverlaySwapchains;
+        std::array<OverlaySpatialLock, L4D2VR_OPENXR_OVERLAY_COUNT> m_OverlaySpatialLocks;
         ULONGLONG m_DebugImageDumpStartMs = 0;
         ULONGLONG m_DebugImageDumpWaitingGameFrameLogMs = 0;
         uint32_t m_DebugImageDumpStartSharedFrameId = 0;

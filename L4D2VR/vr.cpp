@@ -75,8 +75,68 @@ namespace
         return 1.0f / std::max(1.0f, maxHz);
     }
 
-    constexpr float kOpenXrMenuOverlayWidthMeters = 2.22f;
-    constexpr float kOpenXrMenuOverlayHeightMeters = 1.25f;
+    constexpr float kOpenXrMenuOverlayScale = 1.30f;
+    constexpr float kOpenXrMenuOverlayWidthMeters = 2.22f * kOpenXrMenuOverlayScale;
+    constexpr float kOpenXrMenuOverlayHeightMeters = 1.25f * kOpenXrMenuOverlayScale;
+
+    inline bool FillOpenXrOverlayTextureFromShared(
+        L4D2VROpenXrOverlayDesc& overlay,
+        const SharedTextureHolder& texture)
+    {
+        const uint32_t width = texture.m_VulkanData.m_nWidth;
+        const uint32_t height = texture.m_VulkanData.m_nHeight;
+        const uint32_t sampleCount = texture.m_VulkanData.m_nSampleCount;
+        if (!texture.m_SharedHandleValid || texture.m_SharedHandle == 0 ||
+            width == 0 || height == 0 || sampleCount != 1)
+        {
+            return false;
+        }
+
+        overlay.texture.valid = 1;
+        overlay.texture.width = width;
+        overlay.texture.height = height;
+        overlay.texture.format = texture.m_VulkanData.m_nFormat;
+        overlay.texture.sampleCount = sampleCount;
+        overlay.texture.handleType = texture.m_SharedHandleType;
+        overlay.texture.queueFamilyIndex = texture.m_VulkanData.m_nQueueFamilyIndex;
+        overlay.texture.kmtHandle = texture.m_SharedHandle;
+        overlay.texture.image = static_cast<uint64_t>(texture.m_VulkanData.m_nImage);
+        overlay.texture.uMin = 0.0f;
+        overlay.texture.vMin = 0.0f;
+        overlay.texture.uMax = 1.0f;
+        overlay.texture.vMax = 1.0f;
+        overlay.texture.renderFovXDeg = 90.0f;
+        overlay.texture.renderAspect = static_cast<float>(width) / static_cast<float>(height);
+        return true;
+    }
+
+    inline bool FillOpenXrOverlayTextureFromDesc(
+        L4D2VROpenXrOverlayDesc& overlay,
+        const D3D9_TEXTURE_VR_DESC& desc)
+    {
+        if (desc.SampleCount != 1 || !desc.SharedHandleValid || desc.SharedHandle == 0 ||
+            desc.Width == 0 || desc.Height == 0)
+        {
+            return false;
+        }
+
+        overlay.texture.valid = 1;
+        overlay.texture.width = desc.Width;
+        overlay.texture.height = desc.Height;
+        overlay.texture.format = static_cast<uint32_t>(desc.Format);
+        overlay.texture.sampleCount = desc.SampleCount;
+        overlay.texture.handleType = desc.SharedHandleType;
+        overlay.texture.queueFamilyIndex = desc.QueueFamilyIndex;
+        overlay.texture.kmtHandle = desc.SharedHandle;
+        overlay.texture.image = desc.Image;
+        overlay.texture.uMin = 0.0f;
+        overlay.texture.vMin = 0.0f;
+        overlay.texture.uMax = 1.0f;
+        overlay.texture.vMax = 1.0f;
+        overlay.texture.renderFovXDeg = 90.0f;
+        overlay.texture.renderAspect = static_cast<float>(desc.Width) / static_cast<float>(desc.Height);
+        return true;
+    }
 
     inline int FindClientEntityIndexByPointer(IClientEntityList* entityList, const void* ptr)
     {
@@ -752,8 +812,103 @@ void VR::PublishOpenXrBackbufferOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32
     overlay.offsetMeters[1] = -0.25f;
     overlay.offsetMeters[2] = 0.0f;
 
+    m_OpenXrMainMenuOverlayVisible = true;
+    m_OpenXrMainMenuOverlayWidthMeters = overlay.widthMeters;
+    m_OpenXrMainMenuOverlayHeightMeters = overlay.heightMeters;
+    m_OpenXrMainMenuOverlayDistanceMeters = overlay.distanceMeters;
+    m_OpenXrMainMenuOverlayOffsetMeters = Vector(
+        overlay.offsetMeters[0],
+        overlay.offsetMeters[1],
+        overlay.offsetMeters[2]);
+
     L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
     L4D2VR_PublishOpenXrOverlayFrame(frameId);
+}
+
+bool VR::PublishOpenXrFocusedVguiOverlay(uint32_t frameId)
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return false;
+    if (frameId == 0)
+        return false;
+
+    SharedTextureHolder hud{};
+    {
+        std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+        hud = m_VKHUD;
+    }
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 1;
+    if (!FillOpenXrOverlayTextureFromShared(overlay, hud))
+        return false;
+
+    const float width = (std::max)(0.10f, m_HudSize);
+    const float height = width *
+        (static_cast<float>((std::max)(1u, overlay.texture.height)) /
+            static_cast<float>((std::max)(1u, overlay.texture.width)));
+
+    overlay.widthMeters = width;
+    overlay.heightMeters = (std::max)(0.05f, height);
+    overlay.distanceMeters = (std::max)(0.10f, m_HudDistance + m_FixedHudDistanceOffset);
+    overlay.curvature = 0.0f;
+    overlay.offsetMeters[0] = m_FixedHudXOffset;
+    overlay.offsetMeters[1] = -0.25f + m_FixedHudYOffset;
+    overlay.offsetMeters[2] = 0.0f;
+
+    m_OpenXrMainMenuOverlayVisible = true;
+    m_OpenXrMainMenuOverlayWidthMeters = overlay.widthMeters;
+    m_OpenXrMainMenuOverlayHeightMeters = overlay.heightMeters;
+    m_OpenXrMainMenuOverlayDistanceMeters = overlay.distanceMeters;
+    m_OpenXrMainMenuOverlayOffsetMeters = Vector(
+        overlay.offsetMeters[0],
+        overlay.offsetMeters[1],
+        overlay.offsetMeters[2]);
+
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
+    L4D2VR_PublishOpenXrOverlayFrame(frameId);
+    return true;
+}
+
+bool VR::PublishOpenXrFocusedVguiOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32_t frameId)
+{
+    if (!m_OpenXrHelperBridgeActive || !L4D2VR_OpenXrHelperBridgeIsStarted())
+        return false;
+    if (frameId == 0)
+        return false;
+
+    L4D2VROpenXrOverlayDesc overlay{};
+    overlay.valid = 1;
+    overlay.visible = 1;
+    if (!FillOpenXrOverlayTextureFromDesc(overlay, desc))
+        return false;
+
+    const float width = (std::max)(0.10f, m_HudSize);
+    const float height = width *
+        (static_cast<float>((std::max)(1u, overlay.texture.height)) /
+            static_cast<float>((std::max)(1u, overlay.texture.width)));
+
+    overlay.widthMeters = width;
+    overlay.heightMeters = (std::max)(0.05f, height);
+    overlay.distanceMeters = (std::max)(0.10f, m_HudDistance + m_FixedHudDistanceOffset);
+    overlay.curvature = 0.0f;
+    overlay.offsetMeters[0] = m_FixedHudXOffset;
+    overlay.offsetMeters[1] = -0.25f + m_FixedHudYOffset;
+    overlay.offsetMeters[2] = 0.0f;
+
+    m_OpenXrMainMenuOverlayVisible = true;
+    m_OpenXrMainMenuOverlayWidthMeters = overlay.widthMeters;
+    m_OpenXrMainMenuOverlayHeightMeters = overlay.heightMeters;
+    m_OpenXrMainMenuOverlayDistanceMeters = overlay.distanceMeters;
+    m_OpenXrMainMenuOverlayOffsetMeters = Vector(
+        overlay.offsetMeters[0],
+        overlay.offsetMeters[1],
+        overlay.offsetMeters[2]);
+
+    L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
+    L4D2VR_PublishOpenXrOverlayFrame(frameId);
+    return true;
 }
 
 void VR::HideOpenXrBackbufferOverlay()
@@ -764,6 +919,11 @@ void VR::HideOpenXrBackbufferOverlay()
     L4D2VROpenXrOverlayDesc overlay{};
     overlay.valid = 1;
     overlay.visible = 0;
+    m_OpenXrMainMenuOverlayVisible = false;
+    m_OpenXrMainMenuInputLockValid = false;
+    m_OpenXrMenuPointerVisible.store(0, std::memory_order_release);
+    m_OpenXrMenuPointerPressed.store(0, std::memory_order_release);
+    m_OpenXrMenuPointerHit.store(0, std::memory_order_release);
     L4D2VR_PublishOpenXrOverlay(L4D2VR_OPENXR_OVERLAY_MAIN_MENU, overlay);
 }
 
@@ -789,21 +949,8 @@ bool VR::PublishOpenXrHudOverlay(uint32_t frameId)
     L4D2VROpenXrOverlayDesc overlay{};
     overlay.valid = 1;
     overlay.visible = 1;
-    overlay.texture.valid = 1;
-    overlay.texture.width = width;
-    overlay.texture.height = height;
-    overlay.texture.format = hud.m_VulkanData.m_nFormat;
-    overlay.texture.sampleCount = sampleCount;
-    overlay.texture.handleType = hud.m_SharedHandleType;
-    overlay.texture.queueFamilyIndex = hud.m_VulkanData.m_nQueueFamilyIndex;
-    overlay.texture.kmtHandle = hud.m_SharedHandle;
-    overlay.texture.image = static_cast<uint64_t>(hud.m_VulkanData.m_nImage);
-    overlay.texture.uMin = 0.0f;
-    overlay.texture.vMin = 0.0f;
-    overlay.texture.uMax = 1.0f;
-    overlay.texture.vMax = 1.0f;
-    overlay.texture.renderFovXDeg = 90.0f;
-    overlay.texture.renderAspect = static_cast<float>(width) / static_cast<float>(height);
+    if (!FillOpenXrOverlayTextureFromShared(overlay, hud))
+        return false;
 
     overlay.widthMeters = (std::max)(0.10f, m_HudSize);
     overlay.heightMeters = overlay.widthMeters * (static_cast<float>(height) / static_cast<float>((std::max)(1u, width)));

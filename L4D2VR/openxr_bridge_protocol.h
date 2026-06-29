@@ -3,7 +3,7 @@
 #include <cstdint>
 
 constexpr uint32_t L4D2VR_OPENXR_BRIDGE_MAGIC = 0x5258344Cu; // L4XR
-constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 11;
+constexpr uint32_t L4D2VR_OPENXR_BRIDGE_VERSION = 12;
 
 enum class L4D2VROpenXrBridgeStatus : uint32_t
 {
@@ -204,6 +204,7 @@ struct L4D2VROpenXrInputStateDesc
     uint32_t actionCount = L4D2VR_OPENXR_ACTION_COUNT;
     uint32_t reserved0 = 0;
     L4D2VROpenXrControllerPoseDesc controllerPoses[L4D2VR_OPENXR_HAND_COUNT] = {};
+    L4D2VROpenXrControllerPoseDesc controllerAimPoses[L4D2VR_OPENXR_HAND_COUNT] = {};
     L4D2VROpenXrDigitalActionDesc digitalActions[L4D2VR_OPENXR_ACTION_COUNT] = {};
     L4D2VROpenXrAnalogActionDesc analogActions[L4D2VR_OPENXR_ACTION_COUNT] = {};
     L4D2VROpenXrHandTrackingDesc handTracking[L4D2VR_OPENXR_HAND_COUNT] = {};

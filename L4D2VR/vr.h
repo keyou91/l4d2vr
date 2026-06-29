@@ -217,6 +217,28 @@ public:
 	uint32_t m_OpenXrLastHmdPoseGeneration = 0;
 	L4D2VROpenXrInputStateDesc m_OpenXrLastInputState = {};
 	uint32_t m_OpenXrLastInputStateGeneration = 0;
+	bool m_OpenXrMainMenuOverlayVisible = false;
+	bool m_OpenXrMainMenuInputLockValid = false;
+	bool m_OpenXrMainMenuMouseDown = false;
+	std::atomic<uint32_t> m_OpenXrMenuPointerVisible{ 0 };
+	std::atomic<uint32_t> m_OpenXrMenuPointerPressed{ 0 };
+	std::atomic<float> m_OpenXrMenuPointerX{ 0.0f };
+	std::atomic<float> m_OpenXrMenuPointerY{ 0.0f };
+	std::atomic<float> m_OpenXrMenuPointerLineX0{ 0.0f };
+	std::atomic<float> m_OpenXrMenuPointerLineY0{ 0.0f };
+	std::atomic<float> m_OpenXrMenuPointerLineX1{ 0.0f };
+	std::atomic<float> m_OpenXrMenuPointerLineY1{ 0.0f };
+	std::atomic<uint32_t> m_OpenXrMenuPointerWidth{ 1 };
+	std::atomic<uint32_t> m_OpenXrMenuPointerHeight{ 1 };
+	std::atomic<uint32_t> m_OpenXrMenuPointerHit{ 0 };
+	float m_OpenXrMainMenuOverlayWidthMeters = 2.886f;
+	float m_OpenXrMainMenuOverlayHeightMeters = 1.625f;
+	float m_OpenXrMainMenuOverlayDistanceMeters = 3.0f;
+	Vector m_OpenXrMainMenuOverlayOffsetMeters{ 0.0f, -0.25f, 0.0f };
+	Vector m_OpenXrMainMenuInputCenter{ 0.0f, -0.25f, -3.0f };
+	Vector m_OpenXrMainMenuInputRight{ 1.0f, 0.0f, 0.0f };
+	Vector m_OpenXrMainMenuInputUp{ 0.0f, 1.0f, 0.0f };
+	Vector m_OpenXrMainMenuInputForward{ 0.0f, 0.0f, -1.0f };
 	bool m_RuntimeBackendRestartWarningLogged = false;
 
 	vr::IVRSystem* m_System = nullptr;
@@ -797,6 +819,8 @@ public:
 	void PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& desc);
 	void PublishOpenXrResolvedEyeTextures(uint32_t frameId);
 	void PublishOpenXrBackbufferOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32_t frameId);
+	bool PublishOpenXrFocusedVguiOverlay(const D3D9_TEXTURE_VR_DESC& desc, uint32_t frameId);
+	bool PublishOpenXrFocusedVguiOverlay(uint32_t frameId);
 	void HideOpenXrBackbufferOverlay();
 	bool PublishOpenXrHudOverlay(uint32_t frameId);
 	void HideOpenXrHudOverlay();
