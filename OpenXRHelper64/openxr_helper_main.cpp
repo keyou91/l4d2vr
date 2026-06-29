@@ -1409,6 +1409,7 @@ namespace
         void ReadAnalogActions(L4D2VROpenXrInputStateDesc& outState);
         void SetDerivedDigital(L4D2VROpenXrInputStateDesc& outState, L4D2VROpenXrActionId id, bool down);
         void PublishDerivedDpadActions(L4D2VROpenXrInputStateDesc& outState);
+        void SynthesizeControllerFingerCurls(L4D2VROpenXrInputStateDesc& outState);
         void LocateControllerPoses(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState, Logger& log);
         static Vec3 JointPos(const XrHandJointLocationEXT& joint);
         static Vec3 Sub(Vec3 a, Vec3 b);
@@ -1445,6 +1446,8 @@ namespace
         std::array<XrAction, L4D2VR_OPENXR_ACTION_COUNT> m_AnalogActions{};
         std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalDown{};
         std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalInitialized{};
+        std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalActive{};
+        std::array<float, L4D2VR_OPENXR_ACTION_COUNT> m_FloatDigitalValues{};
         std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_DerivedDigitalDown{};
         std::array<bool, L4D2VR_OPENXR_ACTION_COUNT> m_DerivedDigitalInitialized{};
         std::array<XrPath, L4D2VR_OPENXR_HAND_COUNT> m_LastInteractionProfiles{};
@@ -4324,6 +4327,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         ReadFloatDigitalActions(state);
         ReadAnalogActions(state);
         PublishDerivedDpadActions(state);
+        SynthesizeControllerFingerCurls(state);
         LocateControllerPoses(displayTime, state, log);
         LocateHandTracking(displayTime, state);
         bridge.PublishInputState(state);
@@ -4353,6 +4357,9 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
     void OpenXrInputBridge::ReadFloatDigitalActions(L4D2VROpenXrInputStateDesc& outState)
     {
+        m_FloatDigitalActive.fill(false);
+        m_FloatDigitalValues.fill(0.0f);
+
         for (const FloatDigitalActionDef& def : FloatDigitalDefs())
         {
             const size_t i = Index(def.id);
@@ -4365,13 +4372,16 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             XrActionStateFloat state{ XR_TYPE_ACTION_STATE_FLOAT };
             if (XR_SUCCEEDED(m_Xr->xrGetActionStateFloat(m_Session, &getInfo, &state)) && state.isActive)
             {
-                const bool down = state.currentState >= def.threshold;
+                const float value = std::clamp(state.currentState, 0.0f, 1.0f);
+                const bool down = value >= def.threshold;
                 outState.digitalActions[i].active = 1;
                 outState.digitalActions[i].state = down ? 1u : 0u;
                 outState.digitalActions[i].changed =
                     ((m_FloatDigitalInitialized[i] && m_FloatDigitalDown[i] != down) ||
                         state.changedSinceLastSync) ? 1u : 0u;
                 outState.digitalActions[i].lastChangeTime = static_cast<int64_t>(state.lastChangeTime);
+                m_FloatDigitalActive[i] = true;
+                m_FloatDigitalValues[i] = value;
                 m_FloatDigitalDown[i] = down;
                 m_FloatDigitalInitialized[i] = true;
             }
@@ -4433,6 +4443,50 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuRight, walk.x > kPress);
             SetDerivedDigital(outState, L4D2VROpenXrActionId::MenuLeft, walk.x < -kPress);
         }
+    }
+
+    void OpenXrInputBridge::SynthesizeControllerFingerCurls(L4D2VROpenXrInputStateDesc& outState)
+    {
+        const auto floatValue = [&](L4D2VROpenXrActionId id) -> float
+        {
+            const size_t i = Index(id);
+            if (i >= m_FloatDigitalValues.size() || !m_FloatDigitalActive[i])
+                return 0.0f;
+            return std::clamp(m_FloatDigitalValues[i], 0.0f, 1.0f);
+        };
+
+        const auto synthesizeHand = [&](uint32_t hand, L4D2VROpenXrActionId triggerId, L4D2VROpenXrActionId gripId)
+        {
+            if (hand >= L4D2VR_OPENXR_HAND_COUNT)
+                return;
+
+            const float trigger = floatValue(triggerId);
+            const float grip = floatValue(gripId);
+            if (trigger <= 0.001f && grip <= 0.001f)
+                return;
+
+            L4D2VROpenXrHandTrackingDesc& out = outState.handTracking[hand];
+            if (out.valid && out.active && out.jointCount > 0)
+                return;
+
+            out.valid = 1;
+            out.active = 1;
+            out.jointCount = 0;
+            out.fingerCurls[0] = std::max(trigger * 0.15f, grip * 0.10f);
+            out.fingerCurls[1] = std::max(trigger, grip * 0.35f);
+            out.fingerCurls[2] = grip;
+            out.fingerCurls[3] = grip;
+            out.fingerCurls[4] = grip;
+        };
+
+        synthesizeHand(
+            L4D2VR_OPENXR_HAND_LEFT,
+            L4D2VROpenXrActionId::SecondaryAttack,
+            L4D2VROpenXrActionId::Reload);
+        synthesizeHand(
+            L4D2VR_OPENXR_HAND_RIGHT,
+            L4D2VROpenXrActionId::PrimaryAttack,
+            L4D2VROpenXrActionId::Crouch);
     }
 
     void OpenXrInputBridge::LocateControllerPoses(XrTime displayTime, L4D2VROpenXrInputStateDesc& outState, Logger& log)

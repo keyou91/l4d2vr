@@ -7595,6 +7595,45 @@ namespace
             vr->m_NativeViewmodelLeftHandFreezeReady.load(std::memory_order_acquire) == 0u;
     }
 
+    inline void HooksNativeViewmodelHandsOnlyUpdateFreezeTimerFromDraw(VR* vr)
+    {
+        if (!vr || !vr->m_NativeViewmodelHandsOnly)
+            return;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (vr->m_NativeViewmodelLeftHandFreezePending)
+        {
+            if (now >= vr->m_NativeViewmodelLeftHandFreezeDueTime)
+            {
+                vr->m_NativeViewmodelLeftHandFreezePending = false;
+                vr->m_NativeViewmodelLeftHandFreezeReady.store(1u, std::memory_order_release);
+                Game::logMsg("[VR][NativeHandsOnly] left-hand animation freeze ready source=draw");
+            }
+            return;
+        }
+
+        if (vr->m_NativeViewmodelLeftHandFreezeReady.load(std::memory_order_acquire) != 0u)
+            return;
+
+        const int freezeDelayMs =
+            (int)(std::max)(0.0f, vr->m_NativeViewmodelLeftHandFreezeAfterMapSeconds * 1000.0f);
+        vr->m_NativeViewmodelLeftHandFreezeHadLocalPlayerPrev = true;
+        if (freezeDelayMs <= 0)
+        {
+            vr->m_NativeViewmodelLeftHandFreezeDueTime = {};
+            vr->m_NativeViewmodelLeftHandFreezeReady.store(1u, std::memory_order_release);
+            Game::logMsg("[VR][NativeHandsOnly] left-hand animation freeze ready immediately source=draw");
+            return;
+        }
+
+        vr->m_NativeViewmodelLeftHandFreezeReady.store(0u, std::memory_order_release);
+        vr->m_NativeViewmodelLeftHandFreezePending = true;
+        vr->m_NativeViewmodelLeftHandFreezeDueTime = now + std::chrono::milliseconds(freezeDelayMs);
+        Game::logMsg(
+            "[VR][NativeHandsOnly] left-hand animation freeze armed delay=%.2fs source=draw",
+            vr->m_NativeViewmodelLeftHandFreezeAfterMapSeconds);
+    }
+
     inline bool HooksNativeViewmodelHandsOnlyBoneNameLooksHandOnly(
         const std::string& lowerName)
     {
@@ -10439,17 +10478,21 @@ namespace
         std::array<float, 5>& outCurls)
     {
         outCurls = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-        if (!vr || !vr->m_NativeViewmodelLeftHandOpenVRSkeleton ||
-            !vr->GetNativeViewmodelLeftHandOpenVRFingerCurls(outCurls))
+        if (!vr || !vr->m_NativeViewmodelLeftHandOpenVRSkeleton)
         {
             return false;
         }
+
+        const bool haveLiveCurls = vr->GetNativeViewmodelLeftHandOpenVRFingerCurls(outCurls);
+        if (!haveLiveCurls)
+            outCurls = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
         constexpr float kOpenVRThumbMinCurl = 0.0f;
         constexpr float kOpenVRThumbMaxCurl = 2.00f;
         constexpr float kOpenVRFingerMaxCurl = 2.00f;
         const float curlScale = std::clamp(vr->m_NativeViewmodelLeftHandOpenVRCurlScale, 0.0f, 2.0f);
 
+        bool anyCurl = false;
         for (int finger = 0; finger < 5; ++finger)
         {
             const float baseCurl = std::clamp(outCurls[static_cast<size_t>(finger)], 0.0f, 1.0f) * curlScale;
@@ -10460,6 +10503,7 @@ namespace
             const float minCurl = (finger == 0) ? kOpenVRThumbMinCurl : 0.0f;
             const float maxCurl = (finger == 0) ? kOpenVRThumbMaxCurl : kOpenVRFingerMaxCurl;
             outCurls[static_cast<size_t>(finger)] = std::clamp(baseCurl + initialCurl, minCurl, maxCurl);
+            anyCurl = anyCurl || std::fabs(outCurls[static_cast<size_t>(finger)]) > 0.0001f;
         }
 
         if (vr->m_MagazineInteractionLeftHandPoseActive.load(std::memory_order_relaxed) != 0)
@@ -10482,9 +10526,10 @@ namespace
                     outCurls[static_cast<size_t>(finger)],
                     kMagazineGripMinCurl[finger],
                     kMagazineGripMaxCurl[finger]);
+                anyCurl = anyCurl || std::fabs(outCurls[static_cast<size_t>(finger)]) > 0.0001f;
             }
         }
-        return true;
+        return haveLiveCurls || anyCurl;
     }
 
     inline bool HooksNativeViewmodelHandsOnlyApplyOpenVRLeftFingerPose(
@@ -10635,8 +10680,13 @@ namespace
             if (now - s_lastOpenVRLeftLogTick >= 1000u)
             {
                 s_lastOpenVRLeftLogTick = now;
+                const char* curlSource =
+                    (vr->m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+                    ? "openxr"
+                    : "openvr";
                 Game::logMsg(
-                    "[VR][NativeHandsOnly] OpenVR left fingers mapped=%d drivenBones=%d curl=(%.2f %.2f %.2f %.2f %.2f) axis=%d strength=%.2f dir=%.2f",
+                    "[VR][NativeHandsOnly] %s left fingers mapped=%d drivenBones=%d curl=(%.2f %.2f %.2f %.2f %.2f) axis=%d strength=%.2f dir=%.2f",
+                    curlSource,
                     mappedSegments,
                     applied,
                     curls[0],
@@ -11052,6 +11102,7 @@ namespace
         int wrist = -1;
         int forearm = -1;
         bool valid = false;
+        bool freezeReady = false;
         float armBendScale = 1.0f;
         Vector cutRotationDeg = Vector(0.0f, 0.0f, 0.0f);
         bool autoCanonicalCutNormal = false;
@@ -11072,6 +11123,7 @@ namespace
             wrist = -1;
             forearm = -1;
             valid = false;
+            freezeReady = false;
             armBendScale = 1.0f;
             cutRotationDeg = Vector(0.0f, 0.0f, 0.0f);
             autoCanonicalCutNormal = false;
@@ -11125,12 +11177,14 @@ namespace
         int side,
         const HooksNativeViewmodelHandsOnlySideInfo& keepSide,
         int numBones,
-        uint32_t generation)
+        uint32_t generation,
+        bool freezeReady)
     {
         if (!state.valid ||
             state.owner != vr ||
             state.generation != generation ||
             state.side != side ||
+            state.freezeReady != freezeReady ||
             !HooksNativeViewmodelHandsOnlyMatrixFinite(state.targetAnchor) ||
             !HooksNativeViewmodelHandsOnlyPlaneFinite(state.wristPlaneLocal))
         {
@@ -11165,9 +11219,6 @@ namespace
                 0.0001f);
         if (!configMatches)
             return false;
-
-        if (vr && vr->m_NativeViewmodelLeftHandFreezeReady.load(std::memory_order_acquire) != 0u)
-            return true;
 
         return state.numBones == numBones &&
             state.hand == keepSide.hand &&
@@ -11227,6 +11278,8 @@ namespace
 
         const uint32_t generation =
             vr->m_NativeViewmodelHandsOnlyFreezePlaneGeneration.load(std::memory_order_acquire);
+        const bool freezeReady =
+            vr->m_NativeViewmodelLeftHandFreezeReady.load(std::memory_order_acquire) != 0u;
         std::lock_guard<std::mutex> lock(HooksNativeViewmodelHandsOnlyFixedFreezePlaneMutex());
         HooksNativeViewmodelHandsOnlyFixedFreezePlaneLock& state =
             HooksNativeViewmodelHandsOnlyFixedFreezePlaneLockInstance(keepSide.side);
@@ -11239,7 +11292,8 @@ namespace
                 keepSide.side,
                 keepSide,
                 numBones,
-                generation))
+                generation,
+                freezeReady))
         {
             state.Reset();
 
@@ -11321,6 +11375,7 @@ namespace
             state.wrist = keepSide.wrist;
             state.forearm = keepSide.forearm;
             state.valid = true;
+            state.freezeReady = freezeReady;
             state.armBendScale = std::clamp(vr->m_NativeViewmodelHandsOnlyArmBendScale, 0.0f, 1.0f);
             state.cutRotationDeg = keepSide.cutRotationDeg;
             state.autoCanonicalCutNormal = keepSide.autoCanonicalCutNormal;
@@ -13952,11 +14007,18 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
 	MaybeCaptureViewmodelMuzzleSmokePose(m_VR, state, modelName, *pDrawInfo, pBonesToWorldFinal);
 	MaybeCaptureVrHandsVmPose(m_VR, state, modelName, *pDrawInfo, pBonesToWorldFinal);
 	const std::string lowerModelForCalibrationHide = vr_vm_stabilize::ToLowerAscii(modelName);
+	const bool nativeHandsOnlyArmsOrHandsModel =
+		HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
+	if (nativeHandsOnlyArmsOrHandsModel)
+		HooksNativeViewmodelHandsOnlyUpdateFreezeTimerFromDraw(m_VR);
+	const bool nativeHandsOnlyPendingFreezeHide =
+		nativeHandsOnlyArmsOrHandsModel &&
+		HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(m_VR);
 	const bool hideMagazineInteractionCalibrationOriginalViewmodel =
 		m_VR &&
 		m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
 		(drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
-		!HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
+		!nativeHandsOnlyArmsOrHandsModel;
 
 	if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
 	{
@@ -14089,6 +14151,9 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
 			}
 			else
 			{
+				if (nativeHandsOnlyPendingFreezeHide)
+					return;
+
 				ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(
 					m_VR,
 					state,
