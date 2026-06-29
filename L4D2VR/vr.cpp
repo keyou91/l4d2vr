@@ -577,6 +577,7 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
     shared.image = desc.Image;
     const uint32_t eyeIndex = isLeft ? L4D2VR_OPENXR_EYE_LEFT : L4D2VR_OPENXR_EYE_RIGHT;
     const bool submitTexture = texID == Texture_LeftEyeSubmit || texID == Texture_RightEyeSubmit;
+    const char* publishMode = submitTexture ? "submit-full" : "bounded-raw";
     if (submitTexture)
     {
         shared.uMin = 0.0f;
@@ -591,10 +592,20 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
         shared.uMax = std::clamp(m_TextureBounds[eyeIndex].uMax, 0.0f, 1.0f);
         shared.vMax = std::clamp(m_TextureBounds[eyeIndex].vMax, 0.0f, 1.0f);
     }
-    shared.renderFovXDeg = (std::isfinite(m_Fov) && m_Fov > 1.0f && m_Fov < 179.0f) ? m_Fov : 90.0f;
-    shared.renderAspect = (std::isfinite(m_Aspect) && m_Aspect > 0.1f && m_Aspect < 10.0f)
-        ? m_Aspect
-        : ((desc.Height > 0) ? (static_cast<float>(desc.Width) / static_cast<float>(desc.Height)) : 1.0f);
+    if (submitTexture && m_OpenXrHelperBridgeActive)
+    {
+        // Submit textures are already prebaked from the runtime's asymmetric eye bounds.
+        // Mark the game projection invalid so the helper submits them with the runtime FOV.
+        shared.renderFovXDeg = 0.0f;
+        shared.renderAspect = 0.0f;
+    }
+    else
+    {
+        shared.renderFovXDeg = (std::isfinite(m_Fov) && m_Fov > 1.0f && m_Fov < 179.0f) ? m_Fov : 90.0f;
+        shared.renderAspect = (std::isfinite(m_Aspect) && m_Aspect > 0.1f && m_Aspect < 10.0f)
+            ? m_Aspect
+            : ((desc.Height > 0) ? (static_cast<float>(desc.Width) / static_cast<float>(desc.Height)) : 1.0f);
+    }
     if (shared.uMax <= shared.uMin)
     {
         shared.uMin = 0.0f;
@@ -610,12 +621,13 @@ void VR::PublishOpenXrEyeTexture(TextureID texID, const D3D9_TEXTURE_VR_DESC& de
     m_OpenXrSharedEyeTextureReadyMask.fetch_or(1u << eyeIndex, std::memory_order_acq_rel);
 
     Game::logMsg(
-        "[VR][OpenXRHelper][GamePublishTexture] tex=%s texID=%d eye=%s eyeIndex=%u submitTex=%d handle=0x%llX image=0x%llX size=%ux%u format=%u samples=%u type=0x%X q=%u bounds=(%.4f %.4f %.4f %.4f) projection=(fovX=%.2f aspect=%.4f) readyMask=0x%X",
+        "[VR][OpenXRHelper][GamePublishTexture] tex=%s texID=%d eye=%s eyeIndex=%u submitTex=%d publishMode=%s handle=0x%llX image=0x%llX size=%ux%u format=%u samples=%u type=0x%X q=%u bounds=(%.4f %.4f %.4f %.4f) projection=(fovX=%.2f aspect=%.4f) readyMask=0x%X",
         OpenXrTextureIdName(texID),
         static_cast<int>(texID),
         eyeIndex == L4D2VR_OPENXR_EYE_LEFT ? "left" : "right",
         eyeIndex,
         submitTexture ? 1 : 0,
+        publishMode,
         static_cast<unsigned long long>(shared.kmtHandle),
         static_cast<unsigned long long>(shared.image),
         shared.width,

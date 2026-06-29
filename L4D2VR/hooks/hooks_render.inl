@@ -2315,6 +2315,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			}
 			if (hkViewport.fOriginal)
 				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
+			ScopedOpenXrEyeViewportOverride openXrEyeViewportOverride(m_VR);
 			EyeSharedCenterScope sharedCenterScope(
 				s_vrEyeRenderPass,
 				s_vrSharedCenterValid,

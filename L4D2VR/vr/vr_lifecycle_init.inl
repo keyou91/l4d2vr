@@ -948,10 +948,13 @@ VR::VR(Game* game)
     {
         const OpenXrHelperLaunchConfig helperConfig = L4D2VR_ReadOpenXrHelperLaunchConfig();
         m_OpenXrSwapGameEyeOrigins = helperConfig.swapGameEyeOrigins;
-        Game::logMsg("[VR][OpenXRHelper] enabled=%d submitTestFrames=%u waitReadySeconds=%u forceMonoProjectionEye=%d forceMonoProjectionView=%d swapGameEyeOrigins=%d",
+        Game::logMsg("[VR][OpenXRHelper] enabled=%d submitTestFrames=%u waitReadySeconds=%u disableProjectionLayer=%d useSymmetricProjectionFov=%d useGameRenderPoseForProjection=%d forceMonoProjectionEye=%d forceMonoProjectionView=%d swapGameEyeOrigins=%d",
             helperConfig.enabled ? 1 : 0,
             helperConfig.submitTestFrames,
             helperConfig.waitReadySeconds,
+            helperConfig.disableProjectionLayer ? 1 : 0,
+            helperConfig.useSymmetricProjectionFov ? 1 : 0,
+            helperConfig.useGameRenderPoseForProjection ? 1 : 0,
             helperConfig.forceMonoProjectionEye,
             helperConfig.forceMonoProjectionView,
             m_OpenXrSwapGameEyeOrigins ? 1 : 0);
@@ -1156,7 +1159,7 @@ VR::VR(Game* game)
         m_CustomAction5 = openXrActionHandle(L4D2VROpenXrActionId::CustomAction5);
 
         Game::logMsg(
-            "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) mirrorProjectionHorizontal=%u swapGameEyeOrigins=%u submitMode=bounded_prebake runtimeProjection=1 fallbackToOpenVR=0",
+            "[VR][OpenXR] helper scene backend initialized runtimeViewGen=%u recommendedRT=%ux%u finalRT=%ux%u fov=%.3f aspect=%.6f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f) boundsL=(%.4f %.4f %.4f %.4f) boundsR=(%.4f %.4f %.4f %.4f) mirrorProjectionHorizontal=%u swapGameEyeOrigins=%u submitMode=openxr_raw_shared_full_source runtimeProjection=1 fallbackToOpenVR=0",
             runtimeViewConfigGeneration,
             recommendedRenderWidth,
             recommendedRenderHeight,

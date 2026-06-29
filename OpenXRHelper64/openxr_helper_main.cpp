@@ -77,6 +77,9 @@ namespace
         bool swapProjectionViewOrder = false;
         bool mirrorProjectionHorizontal = false;
         bool disableQuadOverlays = false;
+        bool disableProjectionLayer = false;
+        bool useSymmetricProjectionFov = false;
+        bool useGameRenderPoseForProjection = false;
         int forceMonoProjectionEye = -1;
         int forceMonoProjectionView = -1;
         DWORD parentPid = 0;
@@ -297,6 +300,24 @@ namespace
                 uint32_t enabled = 0;
                 if (ParseUintArg(value, enabled))
                     options.disableQuadOverlays = enabled != 0;
+            }
+            else if (const wchar_t* value = needsValue(L"--disable-projection-layer"))
+            {
+                uint32_t enabled = 0;
+                if (ParseUintArg(value, enabled))
+                    options.disableProjectionLayer = enabled != 0;
+            }
+            else if (const wchar_t* value = needsValue(L"--use-symmetric-projection-fov"))
+            {
+                uint32_t enabled = 0;
+                if (ParseUintArg(value, enabled))
+                    options.useSymmetricProjectionFov = enabled != 0;
+            }
+            else if (const wchar_t* value = needsValue(L"--use-game-render-pose-for-projection"))
+            {
+                uint32_t enabled = 0;
+                if (ParseUintArg(value, enabled))
+                    options.useGameRenderPoseForProjection = enabled != 0;
             }
             else if (const wchar_t* value = needsValue(L"--force-mono-projection-eye"))
             {
@@ -3277,18 +3298,28 @@ namespace
                 const XrCompositionLayerBaseHeader* layers[] = {
                     reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)
                 };
+                const bool submitProjectionLayer = layerReady && !options.disableProjectionLayer;
+                if (layerReady && options.disableProjectionLayer)
+                {
+                    static bool s_loggedProjectionLayerDisabled = false;
+                    if (!s_loggedProjectionLayerDisabled)
+                    {
+                        s_loggedProjectionLayerDisabled = true;
+                        m_Log.Print("[OpenXR][ProjectionLayer] disabled by option; xrEndFrame will submit no projection layer in test path");
+                    }
+                }
 
                 XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
                 endInfo.displayTime = frameState.predictedDisplayTime;
                 endInfo.environmentBlendMode = m_BlendMode;
-                endInfo.layerCount = layerReady ? 1u : 0u;
-                endInfo.layers = layerReady ? layers : nullptr;
+                endInfo.layerCount = submitProjectionLayer ? 1u : 0u;
+                endInfo.layers = submitProjectionLayer ? layers : nullptr;
 
                 result = m_Xr.xrEndFrame(m_Session, &endInfo);
                 if (!Succeeded(m_Log, "xrEndFrame", result))
                     return 26;
 
-                if (layerReady)
+                if (submitProjectionLayer)
                 {
                     ++submittedFrames;
                     m_Bridge.Update(L4D2VROpenXrBridgeStatus::SubmittedFrame, 0, submittedFrames, "OpenXR projection frame submitted");
@@ -6155,7 +6186,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                         sharedFrameId);
                     m_DebugImageDumpStartMs = 0;
                     m_DebugImageDumpStartSharedFrameId = 0;
-                    m_DebugImageDumpLastHelperFrame = 0xFFFFFFFFu;
                     m_DebugImageDumpEyeMask = 0;
                 }
                 if (m_DebugImageDumpWaitingGameFrameLogMs == 0 ||
@@ -6172,7 +6202,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             {
                 m_DebugImageDumpStartMs = now;
                 m_DebugImageDumpStartSharedFrameId = sharedFrameId;
-                m_DebugImageDumpLastHelperFrame = 0xFFFFFFFFu;
                 m_Log.Print("[OpenXR][ImageDump] armed; dumping helper source/swapchain images once after 30s of real game shared frames startSharedFrame=%u helperFrame=%u",
                     sharedFrameId, frameIndex);
                 return false;
@@ -6184,20 +6213,18 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             const uint32_t bit = 1u << eyeIndex;
             if ((m_DebugImageDumpEyeMask & bit) != 0)
                 return false;
-            if (m_DebugImageDumpLastHelperFrame == frameIndex)
-                return false;
 
-            m_DebugImageDumpLastHelperFrame = frameIndex;
             m_DebugImageDumpEyeMask |= bit;
             if ((m_DebugImageDumpEyeMask & L4D2VR_OPENXR_EYES_READY_MASK) == L4D2VR_OPENXR_EYES_READY_MASK)
                 m_DebugImageDumpCompleted = true;
 
-            m_Log.Print("[OpenXR][ImageDump] dumping helper images eye=%s(%u) frame=%u sharedFrame=%u startSharedFrame=%u elapsedMs=%llu",
+            m_Log.Print("[OpenXR][ImageDump] dumping helper images eye=%s(%u) helperFrame=%u sharedFrame=%u startSharedFrame=%u eyeMask=0x%X elapsedMs=%llu",
                 EyeName(eyeIndex),
                 eyeIndex,
                 frameIndex,
                 sharedFrameId,
                 m_DebugImageDumpStartSharedFrameId,
+                m_DebugImageDumpEyeMask,
                 static_cast<unsigned long long>(now - m_DebugImageDumpStartMs));
             return true;
         }
@@ -7238,20 +7265,49 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             return mirrored;
         }
 
-        XrFovf BuildGameProjectionFov(const VulkanGameEyeTexture& source, const XrFovf& runtimeFov, uint32_t eyeIndex)
+        bool IsFullSourceBounds(const VulkanGameEyeTexture& source) const
+        {
+            constexpr float kEpsilon = 0.0005f;
+            return std::fabs(source.uMin) <= kEpsilon &&
+                std::fabs(source.vMin) <= kEpsilon &&
+                std::fabs(source.uMax - 1.0f) <= kEpsilon &&
+                std::fabs(source.vMax - 1.0f) <= kEpsilon;
+        }
+
+        XrFovf BuildGameProjectionFov(
+            const VulkanGameEyeTexture& source,
+            const XrFovf& runtimeFov,
+            uint32_t eyeIndex,
+            bool useSymmetricProjectionFov)
         {
             XrFovf gameFov{};
             const bool haveGameFov =
                 m_Bridge.HasState() &&
                 TryBuildSymmetricProjectionFov(source.renderFovXDeg, source.renderAspect, gameFov);
+            const bool fullSourceBounds = IsFullSourceBounds(source);
+            const bool useGameProjectionFov =
+                haveGameFov &&
+                (useSymmetricProjectionFov || fullSourceBounds);
 
             static bool s_loggedProjection = false;
             if (!s_loggedProjection && eyeIndex == 0)
             {
                 s_loggedProjection = true;
+                const char* submitFovMode =
+                    useGameProjectionFov
+                        ? (useSymmetricProjectionFov ? "symmetric-game" : "auto-full-source-game")
+                        : "runtime";
                 m_Log.Print(
-                    "Using runtime OpenXR projection FOV after bounded source blit; gameProjectionValid=%u submitFov=runtime gameProjection=(fovX=%.2f aspect=%.4f L=%.4f R=%.4f U=%.4f D=%.4f) runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
+                    "Using OpenXR projection FOV; sourceBounds=(%.4f %.4f %.4f %.4f) fullSourceBounds=%u useSymmetricProjectionFov=%u autoFullSourceGameFov=%u gameProjectionValid=%u submitFov=%s gameProjection=(fovX=%.2f aspect=%.4f L=%.4f R=%.4f U=%.4f D=%.4f) runtimeLeftEyeFov=(L=%.4f R=%.4f U=%.4f D=%.4f)",
+                    source.uMin,
+                    source.vMin,
+                    source.uMax,
+                    source.vMax,
+                    fullSourceBounds ? 1u : 0u,
+                    useSymmetricProjectionFov ? 1u : 0u,
+                    (fullSourceBounds && haveGameFov && !useSymmetricProjectionFov) ? 1u : 0u,
                     haveGameFov ? 1u : 0u,
+                    submitFovMode,
                     source.renderFovXDeg,
                     source.renderAspect,
                     gameFov.angleLeft,
@@ -7264,6 +7320,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                     runtimeFov.angleDown);
             }
 
+            if (useGameProjectionFov)
+                return gameFov;
             return runtimeFov;
         }
 
@@ -7410,9 +7468,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                         haveGameRenderPose ? lastGameRenderPose : gameRenderPose;
                     const uint32_t projectionRenderPoseGeneration =
                         haveGameRenderPose ? lastGameRenderPoseGeneration : 0;
-                    constexpr bool kUseGameRenderPoseForProjection = false;
                     const bool useGameRenderPoseForProjection =
-                        kUseGameRenderPoseForProjection && haveGameRenderPose;
+                        options.useGameRenderPoseForProjection && haveGameRenderPose;
                     const char* projectionPoseSource = useGameRenderPoseForProjection
                         ? (readGameRenderPose ? "game render" : "cached game render")
                         : "runtime located";
@@ -7459,7 +7516,11 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                         projectionViewEye,
                                         &renderYaw,
                                         &renderIpd);
-                                projectionViews[eye].fov = BuildGameProjectionFov(m_GameEyes[imageEye], locatedViews[projectionViewEye].fov, projectionViewEye);
+                                projectionViews[eye].fov = BuildGameProjectionFov(
+                                    m_GameEyes[imageEye],
+                                    locatedViews[projectionViewEye].fov,
+                                    projectionViewEye,
+                                    options.useSymmetricProjectionFov);
                                 if (options.mirrorProjectionHorizontal)
                                     projectionViews[eye].fov = MirrorProjectionFovHorizontal(projectionViews[eye].fov);
                                 projectionViews[eye].subImage.swapchain = m_Eyes[imageEye].handle;
@@ -7493,7 +7554,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                     s_loggedImageRect = true;
                                     const XrRect2Di& rect = projectionViews[eye].subImage.imageRect;
                                     m_Log.Print(
-                                        "Using OpenXR submit source bounds viewEye=%s(%u) projectionViewEye=%s(%u) imageEye=%s(%u) swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) bounds=(%.4f %.4f %.4f %.4f) imageRect=(%d,%d %dx%d) swapchain=%ux%u",
+                                        "Using OpenXR submit source bounds viewEye=%s(%u) projectionViewEye=%s(%u) imageEye=%s(%u) swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u useSymmetricProjectionFov=%u useGameRenderPoseForProjection=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) bounds=(%.4f %.4f %.4f %.4f) imageRect=(%d,%d %dx%d) swapchain=%ux%u",
                                         EyeName(eye),
                                         eye,
                                         EyeName(projectionViewEye),
@@ -7503,6 +7564,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                         options.swapProjectionEyes ? 1u : 0u,
                                         options.swapProjectionViewOrder ? 1u : 0u,
                                         options.mirrorProjectionHorizontal ? 1u : 0u,
+                                        options.useSymmetricProjectionFov ? 1u : 0u,
+                                        options.useGameRenderPoseForProjection ? 1u : 0u,
                                         ForceMonoProjectionEyeName(options.forceMonoProjectionEye),
                                         options.forceMonoProjectionEye,
                                         ForceMonoProjectionEyeName(options.forceMonoProjectionView),
@@ -7572,7 +7635,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                         const float gamePoseDeltaY = haveGameRenderPose ? (gamePoseCandidate.position.y - pose.position.y) : 0.0f;
                                         const float gamePoseDeltaZ = haveGameRenderPose ? (gamePoseCandidate.position.z - pose.position.z) : 0.0f;
                                         m_Log.Print(
-                                            "[OpenXR][ProjectionView] log=%s viewEye=%s(%u) projectionViewEye=%s(%u) imageEye=%s(%u) swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) submittedFrames=%u sharedFrame=%u sharedFrameGen=%u sourceGen=%u sourceHandle=0x%llX sourceImage=0x%llX swapchain=0x%llX imageRect=(%d,%d %dx%d) swapchainSize=%ux%u fov=(L=%.4f R=%.4f U=%.4f D=%.4f) posePos=(%.4f %.4f %.4f) poseQuat=(%.4f %.4f %.4f %.4f) poseSource=%s renderPoseGen=%u gamePoseValid=%u gamePosePos=(%.4f %.4f %.4f) gamePoseDelta=(%.4f %.4f %.4f) gamePoseYawDeg=%.2f gamePoseIpd=%.4f",
+                                            "[OpenXR][ProjectionView] log=%s viewEye=%s(%u) projectionViewEye=%s(%u) imageEye=%s(%u) swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u useSymmetricProjectionFov=%u useGameRenderPoseForProjection=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) submittedFrames=%u sharedFrame=%u sharedFrameGen=%u sourceGen=%u sourceHandle=0x%llX sourceImage=0x%llX swapchain=0x%llX imageRect=(%d,%d %dx%d) swapchainSize=%ux%u fov=(L=%.4f R=%.4f U=%.4f D=%.4f) posePos=(%.4f %.4f %.4f) poseQuat=(%.4f %.4f %.4f %.4f) poseSource=%s renderPoseGen=%u gamePoseValid=%u gamePosePos=(%.4f %.4f %.4f) gamePoseDelta=(%.4f %.4f %.4f) gamePoseYawDeg=%.2f gamePoseIpd=%.4f",
                                             periodicProjectionViewLog && !budgetProjectionViewLog ? "periodic" : "budget",
                                             EyeName(eye),
                                             eye,
@@ -7583,6 +7646,8 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                                             options.swapProjectionEyes ? 1u : 0u,
                                             options.swapProjectionViewOrder ? 1u : 0u,
                                             options.mirrorProjectionHorizontal ? 1u : 0u,
+                                            options.useSymmetricProjectionFov ? 1u : 0u,
+                                            options.useGameRenderPoseForProjection ? 1u : 0u,
                                             ForceMonoProjectionEyeName(options.forceMonoProjectionEye),
                                             options.forceMonoProjectionEye,
                                             ForceMonoProjectionEyeName(options.forceMonoProjectionView),
@@ -7860,7 +7925,18 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 layer.views = projectionViews.data();
                 std::array<const XrCompositionLayerBaseHeader*, 1 + kMaxOpenXrOverlayLayers> layers{};
                 uint32_t layerCount = 0;
-                if (layerReady)
+                const bool submitProjectionLayer = layerReady && !options.disableProjectionLayer;
+                if (layerReady && options.disableProjectionLayer)
+                {
+                    static ULONGLONG s_lastProjectionLayerDisabledLogMs = 0;
+                    const ULONGLONG nowMs = GetTickCount64();
+                    if (s_lastProjectionLayerDisabledLogMs == 0 || nowMs - s_lastProjectionLayerDisabledLogMs >= 30000ull)
+                    {
+                        s_lastProjectionLayerDisabledLogMs = nowMs;
+                        m_Log.Print("[OpenXR][ProjectionLayer] disabled by option; skipping projection layer, overlays=%u", overlayLayerCount);
+                    }
+                }
+                if (submitProjectionLayer)
                     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
                 for (uint32_t overlayLayerIndex = 0; overlayLayerIndex < overlayLayerCount; ++overlayLayerIndex)
                     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&overlayLayers[overlayLayerIndex]);
@@ -7879,15 +7955,19 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                         const XrRect2Di& leftRect = projectionViews[0].subImage.imageRect;
                         const XrRect2Di& rightRect = projectionViews[1].subImage.imageRect;
                         m_Log.Print(
-                            "[OpenXR][EndFrameSubmit] layerCount=%u projection=%u overlays=%u displayTime=%lld envBlend=%u swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) slot0Swapchain=0x%llX slot0Rect=(%d,%d %dx%d) slot1Swapchain=0x%llX slot1Rect=(%d,%d %dx%d) note=after_this_xrEndFrame_hands_projection_swapchains_to_runtime_compositor_no_app_readback_image_available",
+                            "[OpenXR][EndFrameSubmit] layerCount=%u projection=%u projectionReady=%u overlays=%u displayTime=%lld envBlend=%u disableProjectionLayer=%u swapProjectionEyes=%u swapProjectionViewOrder=%u mirrorProjectionHorizontal=%u useSymmetricProjectionFov=%u useGameRenderPoseForProjection=%u forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) slot0Swapchain=0x%llX slot0Rect=(%d,%d %dx%d) slot1Swapchain=0x%llX slot1Rect=(%d,%d %dx%d) note=after_this_xrEndFrame_hands_layers_to_runtime_compositor_no_app_readback_image_available",
                             layerCount,
+                            submitProjectionLayer ? 1u : 0u,
                             layerReady ? 1u : 0u,
                             overlayLayerCount,
                             static_cast<long long>(endInfo.displayTime),
                             static_cast<unsigned int>(endInfo.environmentBlendMode),
+                            options.disableProjectionLayer ? 1u : 0u,
                             options.swapProjectionEyes ? 1u : 0u,
                             options.swapProjectionViewOrder ? 1u : 0u,
                             options.mirrorProjectionHorizontal ? 1u : 0u,
+                            options.useSymmetricProjectionFov ? 1u : 0u,
+                            options.useGameRenderPoseForProjection ? 1u : 0u,
                             ForceMonoProjectionEyeName(options.forceMonoProjectionEye),
                             options.forceMonoProjectionEye,
                             ForceMonoProjectionEyeName(options.forceMonoProjectionView),
@@ -7911,10 +7991,12 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
                 {
                     ++submittedFrames;
                     m_Bridge.Update(L4D2VROpenXrBridgeStatus::SubmittedFrame, 0, submittedFrames,
-                        overlayLayerCount ? "OpenXR Vulkan projection/quad frame submitted" : "OpenXR Vulkan projection frame submitted");
+                        submitProjectionLayer
+                        ? (overlayLayerCount ? "OpenXR Vulkan projection/quad frame submitted" : "OpenXR Vulkan projection frame submitted")
+                        : "OpenXR Vulkan frame submitted without projection layer");
                     if (submittedFrames == 1 || (submittedFrames % 60) == 0)
                         m_Log.Print("Submitted OpenXR Vulkan frame %u layers=%u projection=%u overlays=%u",
-                            submittedFrames, layerCount, layerReady ? 1u : 0u, overlayLayerCount);
+                            submittedFrames, layerCount, submitProjectionLayer ? 1u : 0u, overlayLayerCount);
                 }
                 if (options.targetFrames > 0 && submittedFrames >= options.targetFrames)
                     break;
@@ -8028,7 +8110,6 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         ULONGLONG m_DebugImageDumpStartMs = 0;
         ULONGLONG m_DebugImageDumpWaitingGameFrameLogMs = 0;
         uint32_t m_DebugImageDumpStartSharedFrameId = 0;
-        uint32_t m_DebugImageDumpLastHelperFrame = 0xFFFFFFFFu;
         uint32_t m_DebugImageDumpEyeMask = 0;
         bool m_DebugImageDumpCompleted = false;
     };
@@ -8047,6 +8128,9 @@ int wmain(int argc, wchar_t** argv)
     log.Print("OpenXR projection eye swap: %s", options.swapProjectionEyes ? "enabled" : "disabled");
     log.Print("OpenXR projection view-order swap: %s", options.swapProjectionViewOrder ? "enabled" : "disabled");
     log.Print("OpenXR projection horizontal mirror: %s", options.mirrorProjectionHorizontal ? "enabled" : "disabled");
+    log.Print("OpenXR projection layer: %s", options.disableProjectionLayer ? "disabled" : "enabled");
+    log.Print("OpenXR symmetric projection FOV submit: %s", options.useSymmetricProjectionFov ? "enabled" : "disabled");
+    log.Print("OpenXR game render pose projection submit: %s", options.useGameRenderPoseForProjection ? "enabled" : "disabled");
     log.Print(
         "OpenXR force mono projection eye: %s(%d)",
         ForceMonoProjectionEyeName(options.forceMonoProjectionEye),

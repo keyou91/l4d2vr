@@ -8,6 +8,7 @@
 
 #include <openvr.h>
 
+#include "L4D2VR/openxr_helper_bridge.h"
 #include "L4D2VR/vr_runtime_backend.h"
 
 #include "../util/util_singleton.h"
@@ -37,6 +38,56 @@ namespace dxvk {
 #else
     return false;
 #endif
+  }
+
+  static bool BootstrapOpenXrInitialBackBuffer(
+          D3DPRESENT_PARAMETERS*          params,
+          const OpenXrHelperLaunchConfig& helperConfig) {
+    if (params == nullptr || !helperConfig.enabled)
+      return false;
+
+    if (!L4D2VR_StartOpenXrHelper(helperConfig)) {
+      MessageBoxA(0,
+        "OpenXR helper backend selected, but the helper did not start before D3D device creation.",
+        "L4D2VR",
+        MB_ICONERROR | MB_OK);
+      ExitProcess(0);
+    }
+
+    L4D2VROpenXrRuntimeViewConfigDesc runtimeViewConfig = { };
+    uint32_t runtimeViewConfigGeneration = 0;
+    const ULONGLONG startMs = GetTickCount64();
+    const ULONGLONG timeoutMs = (std::max)(1000u, helperConfig.waitReadySeconds * 1000u);
+    while (!L4D2VR_ReadOpenXrRuntimeViewConfig(runtimeViewConfig, &runtimeViewConfigGeneration)) {
+      if (GetTickCount64() - startMs > timeoutMs) {
+        MessageBoxA(0,
+          "OpenXR helper backend selected, but runtime view projection was not published before D3D device creation.",
+          "L4D2VR",
+          MB_ICONERROR | MB_OK);
+        ExitProcess(0);
+      }
+      Sleep(10);
+    }
+
+    const uint32_t width = (std::max)(
+      runtimeViewConfig.views[L4D2VR_OPENXR_EYE_LEFT].width,
+      runtimeViewConfig.views[L4D2VR_OPENXR_EYE_RIGHT].width);
+    const uint32_t height = (std::max)(
+      runtimeViewConfig.views[L4D2VR_OPENXR_EYE_LEFT].height,
+      runtimeViewConfig.views[L4D2VR_OPENXR_EYE_RIGHT].height);
+    if (width == 0 || height == 0)
+      return false;
+
+    const uint32_t oldWidth = params->BackBufferWidth;
+    const uint32_t oldHeight = params->BackBufferHeight;
+    params->BackBufferWidth = width;
+    params->BackBufferHeight = height;
+
+    Logger::info(str::format(
+      "L4D2VR OpenXR helper bootstrap forcing initial backbuffer to runtime eye size: ",
+      oldWidth, "x", oldHeight, " -> ", width, "x", height,
+      " runtimeViewGen=", runtimeViewConfigGeneration));
+    return oldWidth != width || oldHeight != height;
   }
 
   Singleton<DxvkInstance> g_dxvkInstance;
@@ -316,6 +367,20 @@ namespace dxvk {
 
     const bool useOpenVrBootstrap =
       !noHmd && runtimeSelection.active == VrRuntimeBackend::OpenVR;
+    const bool useOpenXrHelperBootstrap =
+      !noHmd && runtimeSelection.active == VrRuntimeBackend::OpenXR;
+
+    if (useOpenXrHelperBootstrap) {
+      const OpenXrHelperLaunchConfig helperConfig = L4D2VR_ReadOpenXrHelperLaunchConfig();
+      if (!helperConfig.enabled) {
+        MessageBoxA(0,
+          "OpenXR helper backend selected, but OpenXRHelper is disabled.",
+          "L4D2VR",
+          MB_ICONERROR | MB_OK);
+        ExitProcess(0);
+      }
+      BootstrapOpenXrInitialBackBuffer(pPresentationParameters, helperConfig);
+    }
 
     if (useOpenVrBootstrap) {
       vr::HmdError error = vr::VRInitError_None;

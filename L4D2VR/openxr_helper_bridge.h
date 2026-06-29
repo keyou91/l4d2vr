@@ -12,6 +12,9 @@ struct OpenXrHelperLaunchConfig
     bool mirrorProjectionHorizontal = false;
     bool swapGameEyeOrigins = false;
     bool disableQuadOverlays = false;
+    bool disableProjectionLayer = false;
+    bool useSymmetricProjectionFov = false;
+    bool useGameRenderPoseForProjection = false;
     int forceMonoProjectionEye = -1;
     int forceMonoProjectionView = -1;
     uint32_t submitTestFrames = 180;

@@ -248,6 +248,12 @@ OpenXrHelperLaunchConfig L4D2VR_ReadOpenXrHelperLaunchConfig()
         config.swapProjectionViewOrder = ParseBool(value, config.swapProjectionViewOrder);
     if (const std::string value = get("OpenXRHelperMirrorProjectionHorizontal"); !value.empty())
         config.mirrorProjectionHorizontal = ParseBool(value, config.mirrorProjectionHorizontal);
+    if (const std::string value = get("OpenXRHelperDisableProjectionLayer"); !value.empty())
+        config.disableProjectionLayer = ParseBool(value, config.disableProjectionLayer);
+    if (const std::string value = get("OpenXRHelperUseSymmetricProjectionFov"); !value.empty())
+        config.useSymmetricProjectionFov = ParseBool(value, config.useSymmetricProjectionFov);
+    if (const std::string value = get("OpenXRHelperUseGameRenderPoseForProjection"); !value.empty())
+        config.useGameRenderPoseForProjection = ParseBool(value, config.useGameRenderPoseForProjection);
     if (const std::string value = get("OpenXRHelperForceMonoProjectionEye"); !value.empty())
         config.forceMonoProjectionEye = ParseProjectionEye(value, config.forceMonoProjectionEye);
     if (const std::string value = get("OpenXRHelperForceMonoProjectionView"); !value.empty())
@@ -339,6 +345,9 @@ bool L4D2VR_StartOpenXrHelper(const OpenXrHelperLaunchConfig& config)
         << L" --swap-projection-eyes " << (config.swapProjectionEyes ? 1 : 0)
         << L" --swap-projection-view-order " << (config.swapProjectionViewOrder ? 1 : 0)
         << L" --mirror-projection-horizontal " << (config.mirrorProjectionHorizontal ? 1 : 0)
+        << L" --disable-projection-layer " << (config.disableProjectionLayer ? 1 : 0)
+        << L" --use-symmetric-projection-fov " << (config.useSymmetricProjectionFov ? 1 : 0)
+        << L" --use-game-render-pose-for-projection " << (config.useGameRenderPoseForProjection ? 1 : 0)
         << L" --force-mono-projection-eye " << config.forceMonoProjectionEye
         << L" --force-mono-projection-view " << config.forceMonoProjectionView
         << L" --disable-quad-overlays " << (config.disableQuadOverlays ? 1 : 0)
@@ -378,13 +387,16 @@ bool L4D2VR_StartOpenXrHelper(const OpenXrHelperLaunchConfig& config)
 
     state->helperPid = pi.dwProcessId;
     Game::logMsg(
-        "[VR][OpenXRHelper] launched pid=%lu frames=%u waitReadySeconds=%u swapProjectionEyes=%d swapProjectionViewOrder=%d mirrorProjectionHorizontal=%d forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) disableQuadOverlays=%d exe=%ls",
+        "[VR][OpenXRHelper] launched pid=%lu frames=%u waitReadySeconds=%u swapProjectionEyes=%d swapProjectionViewOrder=%d mirrorProjectionHorizontal=%d disableProjectionLayer=%d useSymmetricProjectionFov=%d useGameRenderPoseForProjection=%d forceMonoProjectionEye=%s(%d) forceMonoProjectionView=%s(%d) disableQuadOverlays=%d exe=%ls",
         static_cast<unsigned long>(pi.dwProcessId),
         config.submitTestFrames,
         config.waitReadySeconds,
         config.swapProjectionEyes ? 1 : 0,
         config.swapProjectionViewOrder ? 1 : 0,
         config.mirrorProjectionHorizontal ? 1 : 0,
+        config.disableProjectionLayer ? 1 : 0,
+        config.useSymmetricProjectionFov ? 1 : 0,
+        config.useGameRenderPoseForProjection ? 1 : 0,
         ProjectionEyeName(config.forceMonoProjectionEye),
         config.forceMonoProjectionEye,
         ProjectionEyeName(config.forceMonoProjectionView),

@@ -37,6 +37,8 @@
 #include <windows.h>
 #include <d3d9.h>
 
+static thread_local int g_OpenXrEyeViewportOverrideDepth = 0;
+
 // Normalize Source-style angles:
 // - Bring pitch/yaw into [-180, 180] first (avoid -30 becoming 330 and then clamped to 89).
 // - Then clamp pitch to [-89, 89].
@@ -1058,6 +1060,68 @@ static inline ITexture* DebugCurrentRenderTarget(IMatRenderContext* context)
 		return nullptr;
 	}
 }
+
+static inline bool TryGetOpenXrEyeViewportOverride(void* context, int& x, int& y, int& width, int& height, const char*& targetName)
+{
+	x = 0;
+	y = 0;
+	width = 0;
+	height = 0;
+	targetName = nullptr;
+
+	if (g_OpenXrEyeViewportOverrideDepth <= 0)
+		return false;
+
+	VR* vr = Hooks::m_VR;
+	if (!vr || !vr->m_OpenXrHelperBridgeActive || vr->m_RuntimeBackend != VrRuntimeBackend::OpenXR)
+		return false;
+	if (vr->m_RenderWidth == 0 || vr->m_RenderHeight == 0)
+		return false;
+
+	IMatRenderContext* fallbackContext =
+		(Hooks::m_Game && Hooks::m_Game->m_MaterialSystem)
+		? Hooks::m_Game->m_MaterialSystem->GetRenderContext()
+		: nullptr;
+
+	IMatRenderContext* renderContext = reinterpret_cast<IMatRenderContext*>(context);
+	ITexture* currentRt = DebugCurrentRenderTarget(renderContext);
+	if (currentRt != vr->m_LeftEyeTexture && currentRt != vr->m_RightEyeTexture && fallbackContext != renderContext)
+		currentRt = DebugCurrentRenderTarget(fallbackContext);
+
+	if (currentRt == vr->m_LeftEyeTexture)
+		targetName = "left-eye";
+	else if (currentRt == vr->m_RightEyeTexture)
+		targetName = "right-eye";
+	else if (currentRt == nullptr)
+		targetName = "active-eye";
+	else
+		return false;
+
+	width = static_cast<int>(vr->m_RenderWidth);
+	height = static_cast<int>(vr->m_RenderHeight);
+	return true;
+}
+
+struct ScopedOpenXrEyeViewportOverride
+{
+	explicit ScopedOpenXrEyeViewportOverride(VR* vr)
+	{
+		if (vr && vr->m_OpenXrHelperBridgeActive && vr->m_RuntimeBackend == VrRuntimeBackend::OpenXR)
+		{
+			++g_OpenXrEyeViewportOverrideDepth;
+			m_active = true;
+		}
+	}
+
+	~ScopedOpenXrEyeViewportOverride()
+	{
+		if (m_active)
+			--g_OpenXrEyeViewportOverrideDepth;
+	}
+
+private:
+	bool m_active = false;
+};
 
 static inline bool IsReadableProtection(DWORD protect)
 {

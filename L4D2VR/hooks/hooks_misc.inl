@@ -12849,10 +12849,67 @@ namespace
 void Hooks::dAdjustEngineViewport(int& x, int& y, int& width, int& height)
 {
 	hkAdjustEngineViewport.fOriginal(x, y, width, height);
+
+	int forcedX = 0;
+	int forcedY = 0;
+	int forcedW = 0;
+	int forcedH = 0;
+	const char* targetName = nullptr;
+	if (TryGetOpenXrEyeViewportOverride(nullptr, forcedX, forcedY, forcedW, forcedH, targetName))
+	{
+		if (x != forcedX || y != forcedY || width != forcedW || height != forcedH)
+		{
+			static std::atomic<int> s_openXrAdjustViewportLogBudget{ 16 };
+			int remaining = s_openXrAdjustViewportLogBudget.load(std::memory_order_relaxed);
+			if (remaining > 0 &&
+				s_openXrAdjustViewportLogBudget.compare_exchange_strong(
+					remaining,
+					remaining - 1,
+					std::memory_order_relaxed))
+			{
+				Game::logMsg(
+					"[VR][OpenXRHelper][AdjustEngineViewport] target=%s requested=(%d,%d %dx%d) forced=(%d,%d %dx%d)",
+					targetName ? targetName : "<unknown>",
+					x, y, width, height,
+					forcedX, forcedY, forcedW, forcedH);
+			}
+		}
+		x = forcedX;
+		y = forcedY;
+		width = forcedW;
+		height = forcedH;
+	}
 }
 
 void Hooks::dViewport(void* ecx, void* edx, int x, int y, int width, int height)
 {
+	int forcedX = 0;
+	int forcedY = 0;
+	int forcedW = 0;
+	int forcedH = 0;
+	const char* targetName = nullptr;
+	if (TryGetOpenXrEyeViewportOverride(ecx, forcedX, forcedY, forcedW, forcedH, targetName))
+	{
+		if (x != forcedX || y != forcedY || width != forcedW || height != forcedH)
+		{
+			static std::atomic<int> s_openXrViewportLogBudget{ 16 };
+			int remaining = s_openXrViewportLogBudget.load(std::memory_order_relaxed);
+			if (remaining > 0 &&
+				s_openXrViewportLogBudget.compare_exchange_strong(
+					remaining,
+					remaining - 1,
+					std::memory_order_relaxed))
+			{
+				Game::logMsg(
+					"[VR][OpenXRHelper][Viewport] target=%s requested=(%d,%d %dx%d) forced=(%d,%d %dx%d)",
+					targetName ? targetName : "<unknown>",
+					x, y, width, height,
+					forcedX, forcedY, forcedW, forcedH);
+			}
+		}
+		return hkViewport.fOriginal(ecx, forcedX, forcedY, forcedW, forcedH);
+	}
+
 	hkViewport.fOriginal(ecx, x, y, width, height);
 }
 

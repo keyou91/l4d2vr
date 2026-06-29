@@ -192,6 +192,12 @@ namespace dxvk {
                 return;
             }
 
+            const bool plausibleMainEyeViewport =
+                requestedViewport.Width >= (effectiveWidth / 2u) &&
+                requestedViewport.Height >= (effectiveHeight / 3u);
+            if (!plausibleMainEyeViewport)
+                return;
+
             state->x.store(requestedViewport.X, std::memory_order_release);
             state->y.store(requestedViewport.Y, std::memory_order_release);
             state->width.store(requestedViewport.Width, std::memory_order_release);
@@ -245,8 +251,6 @@ namespace dxvk {
             D3DDISPLAYMODEEX* fullscreenMode = nullptr) {
             if (!vr || !params || vr->m_RenderWidth == 0 || vr->m_RenderHeight == 0)
                 return false;
-            if (vr->m_RuntimeBackend == VrRuntimeBackend::OpenXR)
-                return false;
 
             const UINT eyeWidth = static_cast<UINT>(vr->m_RenderWidth);
             const UINT eyeHeight = static_cast<UINT>(vr->m_RenderHeight);
@@ -264,7 +268,9 @@ namespace dxvk {
             const bool changed = oldWidth != eyeWidth || oldHeight != eyeHeight;
             if (changed) {
                 Logger::info(str::format(
-                    "L4D2VR forcing reset backbuffer to VR eye size: ",
+                    "L4D2VR forcing reset backbuffer to VR eye size for ",
+                    (vr->m_RuntimeBackend == VrRuntimeBackend::OpenXR ? "OpenXR helper" : "OpenVR"),
+                    ": ",
                     oldWidth, "x", oldHeight, " -> ", eyeWidth, "x", eyeHeight));
             }
 
@@ -620,6 +626,7 @@ namespace dxvk {
             IDirect3DSurface9* submitTarget,
             const char* eyeName,
             bool openXrHelper,
+            bool useOpenXrRequestedViewport,
             const vr::VRTextureBounds_t* prebakeBounds = nullptr) {
             if (!device || !source || !submitTarget || source == submitTarget)
                 return;
@@ -635,7 +642,7 @@ namespace dxvk {
             D3DTEXTUREFILTERTYPE filter = D3DTEXF_NONE;
             const char* sourceMode = "none";
 
-            if (openXrHelper && haveSourceDesc && VrOpenXrRequestedViewportToSourceRect(eyeName, sourceDesc, srcRect)) {
+            if (useOpenXrRequestedViewport && haveSourceDesc && VrOpenXrRequestedViewportToSourceRect(eyeName, sourceDesc, srcRect)) {
                 srcRectPtr = &srcRect;
                 filter = D3DTEXF_LINEAR;
                 sourceMode = "openxr-requested-viewport";
@@ -741,8 +748,23 @@ namespace dxvk {
             IDirect3DSurface9* right = vr->m_D9RightEyeSubmitSurface ? vr->m_D9RightEyeSubmitSurface : vr->m_D9RightEyeSurface;
             const char* leftLabel = vr->m_D9LeftEyeSubmitSurface ? "left-eye-submit" : "left-eye-raw";
             const char* rightLabel = vr->m_D9RightEyeSubmitSurface ? "right-eye-submit" : "right-eye-raw";
-            return VrPrepareOpenXrSurfaceForRead(left, leftLabel) &&
-                VrPrepareOpenXrSurfaceForRead(right, rightLabel);
+            if (!VrPrepareOpenXrSurfaceForRead(left, leftLabel) ||
+                !VrPrepareOpenXrSurfaceForRead(right, rightLabel))
+                return false;
+
+            const HRESULT idleHr = g_D3DVR9->WaitDeviceIdle();
+            static std::atomic<int> s_openXrIdleBeforePublishLogBudget{ 32 };
+            int remaining = s_openXrIdleBeforePublishLogBudget.load(std::memory_order_relaxed);
+            if (remaining > 0 &&
+                s_openXrIdleBeforePublishLogBudget.compare_exchange_strong(
+                    remaining, remaining - 1, std::memory_order_relaxed)) {
+                Game::logMsg(
+                    "[VR][OpenXRHelper][PrepareRead] waited DXVK device idle before publishing shared eye frame hr=0x%08lX left=%s right=%s",
+                    static_cast<unsigned long>(idleHr),
+                    leftLabel,
+                    rightLabel);
+            }
+            return SUCCEEDED(idleHr);
         }
 
         static HWND VrGetPresentWindow(D3D9DeviceEx* device, HWND hDestWindowOverride) {
@@ -867,12 +889,13 @@ namespace dxvk {
                 return;
 
             const bool prebakeTextureBounds = vrState->m_ReShadeVRCompat || vrState->m_OpenXrHelperBridgeActive;
+            const bool useOpenXrRequestedViewport = false;
             const vr::VRTextureBounds_t* leftPrebakeBounds = prebakeTextureBounds ? &vrState->m_TextureBounds[0] : nullptr;
             const vr::VRTextureBounds_t* rightPrebakeBounds = prebakeTextureBounds ? &vrState->m_TextureBounds[1] : nullptr;
             if (vrState->m_D9LeftEyeSubmitSurface)
-                VrResolveSurfaceToSubmit(device, vrState->m_D9LeftEyeSurface, vrState->m_D9LeftEyeSubmitSurface, "left", vrState->m_OpenXrHelperBridgeActive, leftPrebakeBounds);
+                VrResolveSurfaceToSubmit(device, vrState->m_D9LeftEyeSurface, vrState->m_D9LeftEyeSubmitSurface, "left", vrState->m_OpenXrHelperBridgeActive, useOpenXrRequestedViewport, leftPrebakeBounds);
             if (vrState->m_D9RightEyeSubmitSurface)
-                VrResolveSurfaceToSubmit(device, vrState->m_D9RightEyeSurface, vrState->m_D9RightEyeSubmitSurface, "right", vrState->m_OpenXrHelperBridgeActive, rightPrebakeBounds);
+                VrResolveSurfaceToSubmit(device, vrState->m_D9RightEyeSurface, vrState->m_D9RightEyeSubmitSurface, "right", vrState->m_OpenXrHelperBridgeActive, useOpenXrRequestedViewport, rightPrebakeBounds);
         }
 
         static bool VrGetPositiveRectSize(const RECT* rect, UINT& width, UINT& height) {
@@ -2106,10 +2129,11 @@ namespace dxvk {
 
 
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
-        // Source applies video settings through IDirect3DDevice9::Reset. OpenVR keeps the
-        // implicit swapchain locked to the VR eye size across resets. OpenXR keeps the
-        // menu swapchain desktop-sized because its backbuffer is submitted as a quad
-        // overlay, so desktop/window resolution must remain the UI layout source.
+        // Source applies video settings through IDirect3DDevice9::Reset. Keep the
+        // implicit swapchain locked to the VR eye size for real projection output.
+        // OpenXR still uses its own helper/compositor path; matching this size prevents
+        // Source fullscreen/postprocess passes from sampling desktop-sized intermediates
+        // into the larger eye RT and producing edge-clamped strips in the HMD image.
         VR* vr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
         if (vr) {
             vr->ReleaseVRRenderTargetsForDeviceReset();

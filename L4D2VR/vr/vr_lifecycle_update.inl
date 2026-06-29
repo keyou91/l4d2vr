@@ -2080,12 +2080,16 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_RightEye;
     m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
 
-    // OpenXR helper submits full swapchain rects to the runtime. Bake the runtime
-    // asymmetric per-eye crop into dedicated submit textures before sharing them.
+    // The OpenXR helper reads the shared eye images from a separate process after
+    // the game publishes a frame. Never publish the raw eye render targets here:
+    // Source can reuse them for the next eye/frame while the helper is still
+    // blitting, which shows up as strip/full-eye flicker and partially rendered
+    // projection images.
     const bool useDedicatedEyeSubmitTextures =
         m_OpenXrHelperBridgeActive ||
-        m_ReShadeVRCompat ||
-        m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16;
+        (!m_OpenXrHelperBridgeActive &&
+        (m_ReShadeVRCompat ||
+            m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16));
     if (useDedicatedEyeSubmitTextures)
     {
         m_CreatingTextureID = Texture_LeftEyeSubmit;
@@ -2600,6 +2604,13 @@ void VR::SubmitVRTextures()
 {
     if (m_RuntimeBackend == VrRuntimeBackend::OpenXR)
     {
+        static bool s_clearedOpenVrCompositorForOpenXr = false;
+        if (!s_clearedOpenVrCompositorForOpenXr && m_Compositor)
+        {
+            m_Compositor->ClearLastSubmittedFrame();
+            Game::logMsg("[VR][OpenXRHelper] cleared OpenVR compositor frame; OpenXR helper owns HMD projection output");
+            s_clearedOpenVrCompositorForOpenXr = true;
+        }
         m_RenderedNewFrame.store(false, std::memory_order_release);
         return;
     }
