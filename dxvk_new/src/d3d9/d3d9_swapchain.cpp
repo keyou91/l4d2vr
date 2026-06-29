@@ -5,6 +5,13 @@
 #include "d3d9_hud.h"
 #include "d3d9_window.h"
 
+#include "L4D2VR/game.h"
+#include "L4D2VR/vr.h"
+#include "L4D2VR/sdk/sdk.h"
+
+#include <algorithm>
+#include <atomic>
+
 namespace dxvk {
 
   static uint16_t MapGammaControlPoint(float x) {
@@ -159,6 +166,49 @@ namespace dxvk {
 
     UpdatePresentRegion(pSourceRect, pDestRect);
     UpdatePresentParameters();
+
+    if (g_Game && g_Game->m_VR &&
+        g_Game->m_VR->m_RuntimeBackend == VrRuntimeBackend::OpenXR &&
+        (!g_Game->m_EngineClient || !g_Game->m_EngineClient->IsInGame()) &&
+        m_presentParams.Windowed &&
+        m_swapchainExtent.width > 0 && m_swapchainExtent.height > 0 &&
+        (m_presentParams.BackBufferWidth > m_swapchainExtent.width ||
+         m_presentParams.BackBufferHeight > m_swapchainExtent.height)) {
+      const bool sourceIsFullBackbuffer =
+        m_srcRect.left == 0 &&
+        m_srcRect.top == 0 &&
+        m_srcRect.right == static_cast<LONG>(m_presentParams.BackBufferWidth) &&
+        m_srcRect.bottom == static_cast<LONG>(m_presentParams.BackBufferHeight);
+
+      if (sourceIsFullBackbuffer) {
+        const RECT originalSrcRect = m_srcRect;
+        m_srcRect.right = static_cast<LONG>((std::min)(m_presentParams.BackBufferWidth, m_swapchainExtent.width));
+        m_srcRect.bottom = static_cast<LONG>((std::min)(m_presentParams.BackBufferHeight, m_swapchainExtent.height));
+
+        static std::atomic<int> s_openXrMenuDesktopPresentLogBudget{ 24 };
+        const int remaining = s_openXrMenuDesktopPresentLogBudget.fetch_sub(1, std::memory_order_relaxed);
+        if (remaining > 0) {
+          Game::logMsg(
+            "[VR][OpenXRHelper][DesktopPresent] clipped menu desktop source backbuffer=%ux%u window=%ux%u srcRect=(%ld,%ld %ldx%ld)->(%ld,%ld %ldx%ld) dstRect=(%ld,%ld %ldx%ld)",
+            m_presentParams.BackBufferWidth,
+            m_presentParams.BackBufferHeight,
+            m_swapchainExtent.width,
+            m_swapchainExtent.height,
+            originalSrcRect.left,
+            originalSrcRect.top,
+            originalSrcRect.right - originalSrcRect.left,
+            originalSrcRect.bottom - originalSrcRect.top,
+            m_srcRect.left,
+            m_srcRect.top,
+            m_srcRect.right - m_srcRect.left,
+            m_srcRect.bottom - m_srcRect.top,
+            m_dstRect.left,
+            m_dstRect.top,
+            m_dstRect.right - m_dstRect.left,
+            m_dstRect.bottom - m_dstRect.top);
+        }
+      }
+    }
 
     m_parent->PublishOpenXrBackbufferOverlayFromPresentSource(m_backBuffers[0].ptr(), &m_srcRect);
 

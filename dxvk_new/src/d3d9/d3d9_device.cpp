@@ -2255,12 +2255,76 @@ namespace dxvk {
         IDirect3DSurface9* copyTarget = vr->m_D9BackBufferOverlaySurface;
         copyTarget->AddRef();
 
-        HRESULT copyHr = StretchRect(pSourceSurface, pSourceRect, copyTarget, nullptr, D3DTEXF_LINEAR);
+        RECT clippedSourceRect{};
+        const RECT* copySourceRect = pSourceRect;
+
+        D3DSURFACE_DESC sourceDesc{};
+        D3DSURFACE_DESC targetDesc{};
+        const bool haveSourceDesc = SUCCEEDED(pSourceSurface->GetDesc(&sourceDesc));
+        const bool haveTargetDesc = SUCCEEDED(copyTarget->GetDesc(&targetDesc));
+        if (haveSourceDesc && haveTargetDesc &&
+            sourceDesc.Width > 0 && sourceDesc.Height > 0 &&
+            targetDesc.Width > 0 && targetDesc.Height > 0 &&
+            (sourceDesc.Width > targetDesc.Width || sourceDesc.Height > targetDesc.Height)) {
+            const RECT fullSourceRect{
+                0,
+                0,
+                static_cast<LONG>(sourceDesc.Width),
+                static_cast<LONG>(sourceDesc.Height)
+            };
+            const bool sourceIsFullBackbuffer =
+                copySourceRect == nullptr ||
+                (copySourceRect->left == fullSourceRect.left &&
+                    copySourceRect->top == fullSourceRect.top &&
+                    copySourceRect->right == fullSourceRect.right &&
+                    copySourceRect->bottom == fullSourceRect.bottom);
+
+            if (sourceIsFullBackbuffer) {
+                clippedSourceRect.left = 0;
+                clippedSourceRect.top = 0;
+                clippedSourceRect.right = static_cast<LONG>((std::min)(sourceDesc.Width, targetDesc.Width));
+                clippedSourceRect.bottom = static_cast<LONG>((std::min)(sourceDesc.Height, targetDesc.Height));
+                copySourceRect = &clippedSourceRect;
+            }
+        }
+
+        HRESULT copyHr = StretchRect(pSourceSurface, copySourceRect, copyTarget, nullptr, D3DTEXF_LINEAR);
         if (FAILED(copyHr))
-            copyHr = StretchRect(pSourceSurface, pSourceRect, copyTarget, nullptr, D3DTEXF_NONE);
+            copyHr = StretchRect(pSourceSurface, copySourceRect, copyTarget, nullptr, D3DTEXF_NONE);
 
         if (SUCCEEDED(copyHr))
         {
+            if (haveSourceDesc && haveTargetDesc)
+            {
+                static std::atomic<int> s_openXrBackbufferOverlayCopyLogBudget{ 24 };
+                const int remaining = s_openXrBackbufferOverlayCopyLogBudget.fetch_sub(1, std::memory_order_relaxed);
+                if (remaining > 0)
+                {
+                    RECT loggedRect{};
+                    if (copySourceRect)
+                        loggedRect = *copySourceRect;
+                    else
+                    {
+                        loggedRect.left = 0;
+                        loggedRect.top = 0;
+                        loggedRect.right = static_cast<LONG>(sourceDesc.Width);
+                        loggedRect.bottom = static_cast<LONG>(sourceDesc.Height);
+                    }
+
+                    Game::logMsg(
+                        "[VR][OpenXRHelper][Overlay] copied menu backbuffer source=%ux%u target=%ux%u srcRect=(%ld,%ld %ldx%ld) hr=0x%08lX",
+                        sourceDesc.Width,
+                        sourceDesc.Height,
+                        targetDesc.Width,
+                        targetDesc.Height,
+                        loggedRect.left,
+                        loggedRect.top,
+                        loggedRect.right - loggedRect.left,
+                        loggedRect.bottom - loggedRect.top,
+                        static_cast<unsigned long>(copyHr));
+                }
+            }
+
             if (VrPrepareOpenXrSurfaceForRead(copyTarget, "backbuffer-overlay"))
             {
                 D3D9_TEXTURE_VR_DESC desc{};
