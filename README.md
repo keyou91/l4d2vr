@@ -29,6 +29,33 @@ The dedicated server plugin keeps the server-side pieces needed by VR clients:
 
 Non-VR clients continue through the original server code path.
 
+## Server Config
+
+On plugin load, `l4d2vr_server_log.txt` is recreated instead of appended. The plugin
+also creates `l4d2vr_server_config.txt` if it does not already exist. Edit it and
+restart the server, or change map, to reload the values.
+
+Available settings:
+
+```text
+TeleportEnabled=true
+TeleportBlockWhileControlled=true
+TeleportBlockWhileIncapacitated=true
+TeleportMaxDistanceUnits=2500
+# Optional alternative; if set after TeleportMaxDistanceUnits it overrides it.
+# TeleportMaxDistanceMeters=20
+TeleportCooldownSeconds=1.0
+
+MeleeSwingEnabled=true
+MeleeSwingBlockWhileControlled=true
+MeleeSwingBlockWhileIncapacitated=true
+MeleeSwingCooldownSeconds=0.35
+MeleeSwingBurstWindowSeconds=2.0
+MeleeSwingBurstMax=4
+```
+
+Distances are Source units. Rough reference: 43.2 units is about 1 meter.
+
 ## Build
 
 Open a Visual Studio Developer PowerShell, then run:

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
+#include <cctype>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -263,8 +264,35 @@ namespace
     constexpr int kVrExtraFlagCrouched = 1 << 0;
     constexpr int kServerAckMaxAttempts = 8;
     constexpr int kServerAckRetryMs = 1000;
-    constexpr float kDedicatedTeleportMaxDistanceUnits = 2500.0f;
+    constexpr int kMeleeSwingHistoryCapacity = 16;
+    constexpr float kDefaultTeleportMaxDistanceUnits = 2500.0f;
     constexpr char kServerAckCommand[] = "l4d2vr_server_ack 1\n";
+    constexpr char kServerLogFileName[] = "l4d2vr_server_log.txt";
+    constexpr char kServerConfigFileName[] = "l4d2vr_server_config.txt";
+
+    constexpr int kIsIncapacitatedOffset = 0x1EA9;
+    constexpr int kTongueOwnerOffset = 0x1F6C;
+    constexpr int kIsHangingFromTongueOffset = 0x1F84;
+    constexpr int kCarryAttackerOffset = 0x2714;
+    constexpr int kPummelAttackerOffset = 0x2720;
+    constexpr int kPounceAttackerOffset = 0x272C;
+    constexpr int kJockeyAttackerOffset = 0x274C;
+
+    struct ServerConfig
+    {
+        bool teleportEnabled = true;
+        bool teleportBlockWhileControlled = true;
+        bool teleportBlockWhileIncapacitated = true;
+        float teleportMaxDistanceUnits = kDefaultTeleportMaxDistanceUnits;
+        float teleportCooldownSeconds = 1.0f;
+
+        bool meleeSwingEnabled = true;
+        bool meleeSwingBlockWhileControlled = true;
+        bool meleeSwingBlockWhileIncapacitated = true;
+        float meleeSwingCooldownSeconds = 0.35f;
+        float meleeSwingBurstWindowSeconds = 2.0f;
+        int meleeSwingBurstMax = 4;
+    };
 
     struct PlayerVrState
     {
@@ -272,10 +300,14 @@ namespace
         bool isMeleeing = false;
         bool physicalCrouch = false;
         bool isNewSwing = false;
+        bool currentMeleeSwingAllowed = false;
         bool serverAckPending = false;
         int serverAckAttempts = 0;
         edict_t* serverAckEdict = nullptr;
         std::chrono::steady_clock::time_point nextServerAckTime{};
+        std::chrono::steady_clock::time_point lastTeleportTime{};
+        std::chrono::steady_clock::time_point lastMeleeSwingTime{};
+        std::array<std::chrono::steady_clock::time_point, kMeleeSwingHistoryCapacity> meleeSwingHistory{};
         Vector controllerPos = Vector(0.0f, 0.0f, 0.0f);
         QAngle controllerAngle = QAngle(0.0f, 0.0f, 0.0f);
         QAngle prevControllerAngle = QAngle(0.0f, 0.0f, 0.0f);
@@ -341,6 +373,7 @@ namespace
     HMODULE g_module = nullptr;
     IEngineTrace* g_engineTraceServer = nullptr;
     IVEngineServer* g_engineServer = nullptr;
+    ServerConfig g_config{};
 
     thread_local int g_currentUsercmdPlayerIndex = -1;
     thread_local Server_BaseEntity* g_currentUsercmdPlayer = nullptr;
@@ -357,6 +390,18 @@ namespace
     thread_local QAngle g_useControllerAimAngles = QAngle(0.0f, 0.0f, 0.0f);
     thread_local QAngle g_returnEyeAngles = QAngle(0.0f, 0.0f, 0.0f);
     thread_local VrExtraCommand g_pendingExtraCommand{};
+
+    void ResetLogFile()
+    {
+        std::lock_guard<std::mutex> lock(g_logMutex);
+
+        FILE* file = nullptr;
+        if (fopen_s(&file, kServerLogFileName, "w") == 0 && file)
+        {
+            fputs("L4D2VR dedicated server log\n", file);
+            fclose(file);
+        }
+    }
 
     void Log(const char* fmt, ...)
     {
@@ -379,7 +424,7 @@ namespace
         OutputDebugStringA(line);
 
         FILE* file = nullptr;
-        if (fopen_s(&file, "l4d2vr_server_log.txt", "a") == 0 && file)
+        if (fopen_s(&file, kServerLogFileName, "a") == 0 && file)
         {
             fputs(line, file);
             fclose(file);
@@ -389,6 +434,178 @@ namespace
     bool IsValidPlayerIndex(int index)
     {
         return index >= 0 && index < static_cast<int>(g_players.size());
+    }
+
+    std::string Trim(std::string value)
+    {
+        auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        while (!value.empty() && isSpace(static_cast<unsigned char>(value.front())))
+            value.erase(value.begin());
+        while (!value.empty() && isSpace(static_cast<unsigned char>(value.back())))
+            value.pop_back();
+        return value;
+    }
+
+    std::string ToLowerAscii(std::string value)
+    {
+        for (char& ch : value)
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return value;
+    }
+
+    bool ParseBoolValue(const std::string& value, bool& out)
+    {
+        const std::string lower = ToLowerAscii(Trim(value));
+        if (lower == "1" || lower == "true" || lower == "yes" || lower == "on")
+        {
+            out = true;
+            return true;
+        }
+
+        if (lower == "0" || lower == "false" || lower == "no" || lower == "off")
+        {
+            out = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    bool ParseFloatValue(const std::string& value, float& out)
+    {
+        char* end = nullptr;
+        const float parsed = std::strtof(value.c_str(), &end);
+        if (end == value.c_str() || !std::isfinite(parsed))
+            return false;
+
+        out = parsed;
+        return true;
+    }
+
+    bool ParseIntValue(const std::string& value, int& out)
+    {
+        char* end = nullptr;
+        const long parsed = std::strtol(value.c_str(), &end, 10);
+        if (end == value.c_str())
+            return false;
+
+        out = static_cast<int>(std::clamp<long>(parsed, -1000000L, 1000000L));
+        return true;
+    }
+
+    void WriteDefaultServerConfigIfMissing()
+    {
+        FILE* existing = nullptr;
+        if (fopen_s(&existing, kServerConfigFileName, "r") == 0 && existing)
+        {
+            fclose(existing);
+            return;
+        }
+
+        FILE* file = nullptr;
+        if (fopen_s(&file, kServerConfigFileName, "w") != 0 || !file)
+            return;
+
+        fputs(
+            "# L4D2VR dedicated server config. Edit values, then restart the server.\n"
+            "# Distances are Source units. Rough reference: 43.2 units is about 1 meter.\n"
+            "TeleportEnabled=true\n"
+            "TeleportBlockWhileControlled=true\n"
+            "TeleportBlockWhileIncapacitated=true\n"
+            "TeleportMaxDistanceUnits=2500\n"
+            "# Optional alternative; if set after TeleportMaxDistanceUnits it overrides it.\n"
+            "# TeleportMaxDistanceMeters=20\n"
+            "TeleportCooldownSeconds=1.0\n"
+            "\n"
+            "MeleeSwingEnabled=true\n"
+            "MeleeSwingBlockWhileControlled=true\n"
+            "MeleeSwingBlockWhileIncapacitated=true\n"
+            "MeleeSwingCooldownSeconds=0.35\n"
+            "MeleeSwingBurstWindowSeconds=2.0\n"
+            "MeleeSwingBurstMax=4\n",
+            file);
+        fclose(file);
+    }
+
+    void ApplyServerConfigValue(const std::string& rawKey, const std::string& rawValue)
+    {
+        const std::string key = ToLowerAscii(Trim(rawKey));
+        const std::string value = Trim(rawValue);
+
+        bool boolValue = false;
+        float floatValue = 0.0f;
+        int intValue = 0;
+
+        if (key == "teleportenabled" && ParseBoolValue(value, boolValue))
+            g_config.teleportEnabled = boolValue;
+        else if (key == "teleportblockwhilecontrolled" && ParseBoolValue(value, boolValue))
+            g_config.teleportBlockWhileControlled = boolValue;
+        else if (key == "teleportblockwhileincapacitated" && ParseBoolValue(value, boolValue))
+            g_config.teleportBlockWhileIncapacitated = boolValue;
+        else if (key == "teleportmaxdistanceunits" && ParseFloatValue(value, floatValue))
+            g_config.teleportMaxDistanceUnits = std::clamp(floatValue, 1.0f, 100000.0f);
+        else if (key == "teleportmaxdistancemeters" && ParseFloatValue(value, floatValue))
+            g_config.teleportMaxDistanceUnits = std::clamp(floatValue * 43.2f, 1.0f, 100000.0f);
+        else if (key == "teleportcooldownseconds" && ParseFloatValue(value, floatValue))
+            g_config.teleportCooldownSeconds = std::clamp(floatValue, 0.0f, 600.0f);
+        else if (key == "meleeswingenabled" && ParseBoolValue(value, boolValue))
+            g_config.meleeSwingEnabled = boolValue;
+        else if (key == "meleeswingblockwhilecontrolled" && ParseBoolValue(value, boolValue))
+            g_config.meleeSwingBlockWhileControlled = boolValue;
+        else if (key == "meleeswingblockwhileincapacitated" && ParseBoolValue(value, boolValue))
+            g_config.meleeSwingBlockWhileIncapacitated = boolValue;
+        else if (key == "meleeswingcooldownseconds" && ParseFloatValue(value, floatValue))
+            g_config.meleeSwingCooldownSeconds = std::clamp(floatValue, 0.0f, 60.0f);
+        else if (key == "meleeswingburstwindowseconds" && ParseFloatValue(value, floatValue))
+            g_config.meleeSwingBurstWindowSeconds = std::clamp(floatValue, 0.0f, 60.0f);
+        else if (key == "meleeswingburstmax" && ParseIntValue(value, intValue))
+            g_config.meleeSwingBurstMax = std::clamp(intValue, 0, kMeleeSwingHistoryCapacity);
+    }
+
+    void LoadServerConfig()
+    {
+        g_config = ServerConfig{};
+        WriteDefaultServerConfigIfMissing();
+
+        FILE* file = nullptr;
+        if (fopen_s(&file, kServerConfigFileName, "r") != 0 || !file)
+        {
+            Log("server config not found; using defaults");
+            return;
+        }
+
+        char lineBuffer[512] = {};
+        while (fgets(lineBuffer, sizeof(lineBuffer), file))
+        {
+            std::string line(lineBuffer);
+            const size_t comment = line.find('#');
+            if (comment != std::string::npos)
+                line.erase(comment);
+
+            line = Trim(line);
+            if (line.empty())
+                continue;
+
+            const size_t equals = line.find('=');
+            if (equals == std::string::npos)
+                continue;
+
+            ApplyServerConfigValue(line.substr(0, equals), line.substr(equals + 1));
+        }
+        fclose(file);
+
+        Log("server config loaded: teleport enabled=%d controlledBlock=%d incapBlock=%d maxUnits=%.1f cooldown=%.2f melee enabled=%d controlledBlock=%d incapBlock=%d cooldown=%.2f burstWindow=%.2f burstMax=%d",
+            g_config.teleportEnabled ? 1 : 0,
+            g_config.teleportBlockWhileControlled ? 1 : 0,
+            g_config.teleportBlockWhileIncapacitated ? 1 : 0,
+            g_config.teleportMaxDistanceUnits,
+            g_config.teleportCooldownSeconds,
+            g_config.meleeSwingEnabled ? 1 : 0,
+            g_config.meleeSwingBlockWhileControlled ? 1 : 0,
+            g_config.meleeSwingBlockWhileIncapacitated ? 1 : 0,
+            g_config.meleeSwingCooldownSeconds,
+            g_config.meleeSwingBurstWindowSeconds,
+            g_config.meleeSwingBurstMax);
     }
 
     int GetPlayerIndexFromEdict(const edict_t* entity)
@@ -473,6 +690,66 @@ namespace
     bool IsFiniteAngles(const QAngle& value)
     {
         return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    }
+
+    template <typename T>
+    bool TryReadEntityValue(const Server_BaseEntity* entity, int offset, T& out)
+    {
+        if (!entity || offset < 0)
+            return false;
+
+#ifdef _MSC_VER
+        __try
+        {
+            out = *reinterpret_cast<const T*>(reinterpret_cast<const unsigned char*>(entity) + offset);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        out = *reinterpret_cast<const T*>(reinterpret_cast<const unsigned char*>(entity) + offset);
+        return true;
+#endif
+    }
+
+    bool HandleValid(int handle)
+    {
+        return handle != 0 && handle != -1;
+    }
+
+    bool IsServerPlayerIncapacitated(const Server_BaseEntity* player)
+    {
+        unsigned char incapacitated = 0;
+        return TryReadEntityValue(player, kIsIncapacitatedOffset, incapacitated) && incapacitated != 0;
+    }
+
+    bool IsServerPlayerControlledBySI(const Server_BaseEntity* player)
+    {
+        if (!player)
+            return false;
+
+        int tongueOwner = 0;
+        unsigned char hangingFromTongue = 0;
+        int carryAttacker = 0;
+        int pummelAttacker = 0;
+        int pounceAttacker = 0;
+        int jockeyAttacker = 0;
+
+        TryReadEntityValue(player, kTongueOwnerOffset, tongueOwner);
+        TryReadEntityValue(player, kIsHangingFromTongueOffset, hangingFromTongue);
+        TryReadEntityValue(player, kCarryAttackerOffset, carryAttacker);
+        TryReadEntityValue(player, kPummelAttackerOffset, pummelAttacker);
+        TryReadEntityValue(player, kPounceAttackerOffset, pounceAttacker);
+        TryReadEntityValue(player, kJockeyAttackerOffset, jockeyAttacker);
+
+        return hangingFromTongue != 0 ||
+            HandleValid(tongueOwner) ||
+            HandleValid(carryAttacker) ||
+            HandleValid(pummelAttacker) ||
+            HandleValid(pounceAttacker) ||
+            HandleValid(jockeyAttacker);
     }
 
     int DecodeSigned16(int value)
@@ -831,7 +1108,7 @@ namespace
         outStart = *originPtr;
         const Vector requestedDelta = requestedTarget - outStart;
         const float requestedDistance = requestedDelta.Length();
-        if (!std::isfinite(requestedDistance) || requestedDistance > kDedicatedTeleportMaxDistanceUnits)
+        if (!std::isfinite(requestedDistance) || requestedDistance > g_config.teleportMaxDistanceUnits)
             return false;
 
         constexpr unsigned int kTeleportLandingStaticTraceMask =
@@ -857,7 +1134,7 @@ namespace
 
         const Vector acceptedDelta = landingTarget - outStart;
         const float acceptedDistance = acceptedDelta.Length();
-        if (!std::isfinite(acceptedDistance) || acceptedDistance > kDedicatedTeleportMaxDistanceUnits)
+        if (!std::isfinite(acceptedDistance) || acceptedDistance > g_config.teleportMaxDistanceUnits)
             return false;
 
         bool occupancyClear = false;
@@ -888,6 +1165,40 @@ namespace
         if (command.type != VrExtraCommandType::Teleport)
             return false;
 
+        if (!g_config.teleportEnabled)
+        {
+            Log("teleport rejected player=%d reason=disabled", playerIndex);
+            return false;
+        }
+
+        if (g_config.teleportBlockWhileControlled && IsServerPlayerControlledBySI(serverPlayer))
+        {
+            Log("teleport rejected player=%d reason=controlled", playerIndex);
+            return false;
+        }
+
+        if (g_config.teleportBlockWhileIncapacitated && IsServerPlayerIncapacitated(serverPlayer))
+        {
+            Log("teleport rejected player=%d reason=incapacitated", playerIndex);
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (IsValidPlayerIndex(playerIndex) && g_config.teleportCooldownSeconds > 0.0f)
+        {
+            PlayerVrState& vrPlayer = g_players[playerIndex];
+            if (vrPlayer.lastTeleportTime.time_since_epoch().count() != 0)
+            {
+                const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - vrPlayer.lastTeleportTime).count();
+                const float elapsedSeconds = static_cast<float>(elapsedMs) / 1000.0f;
+                if (elapsedSeconds < g_config.teleportCooldownSeconds)
+                {
+                    Log("teleport rejected player=%d reason=cooldown remaining=%.2f", playerIndex, g_config.teleportCooldownSeconds - elapsedSeconds);
+                    return false;
+                }
+            }
+        }
+
         Vector start{};
         Vector landingTarget{};
         if (!ValidateServerTeleportLanding(serverPlayer, serverUnknown, command.value, command.crouched, start, landingTarget))
@@ -898,6 +1209,9 @@ namespace
 
         if (!SafeSetOrigin(serverPlayer, landingTarget))
             return false;
+
+        if (IsValidPlayerIndex(playerIndex))
+            g_players[playerIndex].lastTeleportTime = now;
 
         Log("teleport applied player=%d start=(%.1f %.1f %.1f) target=(%.1f %.1f %.1f)",
             playerIndex, start.x, start.y, start.z, landingTarget.x, landingTarget.y, landingTarget.z);
@@ -1131,6 +1445,7 @@ namespace
             else if (hasValidPlayer)
             {
                 g_players[playerIndex].isMeleeing = false;
+                g_players[playerIndex].currentMeleeSwingAllowed = false;
             }
 
             int rollEncoding = move->command_number / 10000000;
@@ -1158,6 +1473,7 @@ namespace
                 {
                     vrPlayer.isUsingVR = false;
                     vrPlayer.isMeleeing = false;
+                    vrPlayer.currentMeleeSwingAllowed = false;
                 }
             }
 
@@ -1233,9 +1549,94 @@ namespace
         {
             g_players[playerIndex].isUsingVR = false;
             g_players[playerIndex].isMeleeing = false;
+            g_players[playerIndex].currentMeleeSwingAllowed = false;
         }
 
         return originalResult;
+    }
+
+    int CountRecentMeleeSwings(const PlayerVrState& vrPlayer, std::chrono::steady_clock::time_point now)
+    {
+        if (g_config.meleeSwingBurstWindowSeconds <= 0.0f || g_config.meleeSwingBurstMax <= 0)
+            return 0;
+
+        const auto windowMs = std::chrono::milliseconds(
+            static_cast<int>(g_config.meleeSwingBurstWindowSeconds * 1000.0f));
+        int count = 0;
+        for (const auto& swingTime : vrPlayer.meleeSwingHistory)
+        {
+            if (swingTime.time_since_epoch().count() != 0 && now - swingTime <= windowMs)
+                ++count;
+        }
+        return count;
+    }
+
+    void RecordMeleeSwing(PlayerVrState& vrPlayer, std::chrono::steady_clock::time_point now)
+    {
+        vrPlayer.lastMeleeSwingTime = now;
+
+        size_t writeIndex = 0;
+        for (size_t i = 0; i < vrPlayer.meleeSwingHistory.size(); ++i)
+        {
+            if (vrPlayer.meleeSwingHistory[i].time_since_epoch().count() == 0)
+            {
+                writeIndex = i;
+                break;
+            }
+
+            if (vrPlayer.meleeSwingHistory[i] < vrPlayer.meleeSwingHistory[writeIndex])
+                writeIndex = i;
+        }
+
+        vrPlayer.meleeSwingHistory[writeIndex] = now;
+    }
+
+    bool CanStartMeleeSwing(Server_BaseEntity* player, int playerIndex, PlayerVrState& vrPlayer)
+    {
+        if (!g_config.meleeSwingEnabled)
+        {
+            Log("melee swing rejected player=%d reason=disabled", playerIndex);
+            return false;
+        }
+
+        if (g_config.meleeSwingBlockWhileControlled && IsServerPlayerControlledBySI(player))
+        {
+            Log("melee swing rejected player=%d reason=controlled", playerIndex);
+            return false;
+        }
+
+        if (g_config.meleeSwingBlockWhileIncapacitated && IsServerPlayerIncapacitated(player))
+        {
+            Log("melee swing rejected player=%d reason=incapacitated", playerIndex);
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (g_config.meleeSwingCooldownSeconds > 0.0f &&
+            vrPlayer.lastMeleeSwingTime.time_since_epoch().count() != 0)
+        {
+            const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - vrPlayer.lastMeleeSwingTime).count();
+            const float elapsedSeconds = static_cast<float>(elapsedMs) / 1000.0f;
+            if (elapsedSeconds < g_config.meleeSwingCooldownSeconds)
+            {
+                Log("melee swing rejected player=%d reason=cooldown remaining=%.2f", playerIndex, g_config.meleeSwingCooldownSeconds - elapsedSeconds);
+                return false;
+            }
+        }
+
+        if (g_config.meleeSwingBurstWindowSeconds > 0.0f &&
+            g_config.meleeSwingBurstMax > 0 &&
+            CountRecentMeleeSwings(vrPlayer, now) >= g_config.meleeSwingBurstMax)
+        {
+            Log("melee swing rejected player=%d reason=burst-limit window=%.2f max=%d",
+                playerIndex,
+                g_config.meleeSwingBurstWindowSeconds,
+                g_config.meleeSwingBurstMax);
+            return false;
+        }
+
+        RecordMeleeSwing(vrPlayer, now);
+        return true;
     }
 
     void ApplyVrMeleeTrace(Server_BaseEntity* player, int playerIndex)
@@ -1247,17 +1648,36 @@ namespace
         if (!vrPlayer.isUsingVR || !vrPlayer.isMeleeing)
         {
             vrPlayer.isNewSwing = true;
+            vrPlayer.currentMeleeSwingAllowed = false;
             return;
         }
 
         Server_WeaponCSBase* weapon = SafeGetActiveWeapon(player);
         if (!weapon || SafeGetWeaponId(weapon) != kWeaponMelee)
+        {
+            vrPlayer.currentMeleeSwingAllowed = false;
             return;
+        }
 
         if (vrPlayer.isNewSwing)
         {
             vrPlayer.isNewSwing = false;
+            vrPlayer.currentMeleeSwingAllowed = CanStartMeleeSwing(player, playerIndex, vrPlayer);
+            if (!vrPlayer.currentMeleeSwingAllowed)
+                return;
+
             weapon->entitiesHitThisSwing = 0;
+        }
+
+        if (!vrPlayer.currentMeleeSwingAllowed)
+            return;
+
+        if ((g_config.meleeSwingBlockWhileControlled && IsServerPlayerControlledBySI(player)) ||
+            (g_config.meleeSwingBlockWhileIncapacitated && IsServerPlayerIncapacitated(player)))
+        {
+            vrPlayer.currentMeleeSwingAllowed = false;
+            Log("melee swing stopped player=%d reason=state-changed", playerIndex);
+            return;
         }
 
         void* meleeInfo = SafeGetMeleeWeaponInfo(weapon);
@@ -1577,6 +1997,9 @@ namespace
     public:
         bool Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn) override
         {
+            ResetLogFile();
+            LoadServerConfig();
+
             g_unloading.store(false);
             g_engineTraceServer = nullptr;
             g_engineServer = nullptr;
@@ -1620,6 +2043,7 @@ namespace
 
         void LevelInit(const char*) override
         {
+            LoadServerConfig();
             for (PlayerVrState& player : g_players)
                 player = PlayerVrState{};
         }
