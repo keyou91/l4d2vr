@@ -1,0 +1,3 @@
+LIBRARY "l4d2vr_server"
+EXPORTS
+    CreateInterface

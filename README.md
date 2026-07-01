@@ -1,82 +1,70 @@
-# L4D2 VR Prototype
-### Use this mod at your own risk of getting VAC banned. Use the -insecure launch option to help protect yourself. (Also contains lots of flashing lights)
+# L4D2VR Dedicated Server Plugin
 
-#### [Video demo](https://www.youtube.com/watch?v=zU-8-9qe6wQ)
+This branch keeps the full L4D2VR source tree, but the Visual Studio solution is scoped
+to building the dedicated server plugin. It does not build or install the old client-side
+`d3d9.dll` proxy as part of this server target.
 
-## Things that work
-* Singleplayer and multiplayer (see below)
-* 6DoF VR view
-* Motion controls for guns and melee weapons
-* Desktop mirror
-* Workshop content
-* Multi-core rendering support(Set it in L4D2VRConfigTool.exe, not in-game.When enabled, moving the HMD causes ghosting, so only seated play is supported.)
-* AntiAliasing support(Set it in L4D2VRConfigTool.exe, not in-game.)
-  
-## Things that need fixing
-* Interactions and throwables require you to aim with your face(Except for servers that do not support non‑VR)
-* 
-## How to play multiplayer
-* You can join any server to play, but if the server wasn't created by VR some VR-exclusive features. 
-* Versus works but it's barely been tested.
-* 
-## How to use
-1. Download [L4D2VR.zip](https://github.com/liu547161153/l4d2vr/releases) and extract the files to your Left 4 Dead 2 directory (steamapps\common\Left 4 Dead 2)
-2. Launch SteamVR, then launch Left 4 Dead 2 with these launch options:
-   
-   ``-heapsize 524288 -processheap -high -novid```
+## What It Builds
 
-If you use a desktop client resolution of 2k or higher, add -bigfonts to the launch options to make in-game text larger; otherwise the text on the HUD will be very small.
+- `l4d2vr_server.dll`: a Source server plugin loaded by the dedicated server.
+- `l4d2vr_server.vdf`: the plugin descriptor for `left4dead2/addons`.
 
-3. Join or create your campaign and enjoy the game.
-4. To recenter the camera height, press down on the left stick. To see the HUD, aim the left controller up or down.
+The plugin waits for `server.dll`, resolves the dedicated-server signatures it needs,
+and installs MinHook hooks for the server-side VR usercmd path.
 
+## Runtime Behavior
 
+The dedicated server plugin keeps the server-side pieces needed by VR clients:
 
+- decodes the VR pose data packed into `CUserCmd`;
+- uses controller origin/angles for server bullet direction;
+- preserves server melee swing traces from controller motion;
+- routes use, throwables, and mounted weapon aiming through controller pose when available.
+- accepts dedicated-server extra usercmd payloads for teleport targets and 1:1 roomscale
+  movement deltas;
+- validates teleport landings with `EngineTraceServer003`, then moves the server player
+  with the server `CBaseEntity::SetOrigin` path;
+- applies roomscale server movement directly when the hull sweep is clear, and falls
+  back to Source's normal movement command path when blocked.
 
-## Troubleshooting
-If the game isn't loading in VR:
-* Disable SteamVR theater in [Steam settings](https://external-preview.redd.it/1WdLExouo_YKhTGT6C5GGrOjeWO7qNdIdDRvIRBhw-0.png?auto=webp&s=0d4447a9d954e1ec15b2c010cf50eeabd51f4197)
+Non-VR clients continue through the original server code path.
 
-If the game shows "Failed to create D3D device!":
-* L4D2VR uses a custom `d3d9.dll` based on DXVK. Even though the error says D3D, the failure is often the Vulkan backend failing to initialize.
-* Update the GPU driver from NVIDIA, AMD, or Intel. Windows Update drivers are often too old for DXVK 2.x.
-* Make sure the GPU and driver support Vulkan 1.3. Very old GPUs and some virtual/remote desktop display adapters will not work.
-* Do not launch the Steam "Vulkan" launch option and do not add `-vulkan`. Launch the normal DirectX 9 game with the L4D2VR files installed.
-* Remove forced display launch options such as `-w`, `-h`, `-fullscreen`, or unusual refresh-rate settings, then try windowed/default video settings.
-* Check `left4dead2_d3d9.log` next to `left4dead2.exe`; lines such as "No adapters found" or "A Vulkan 1.3 capable driver is required" indicate a driver/GPU support problem.
+## Build
 
-If the game is stuttering, try: 
-* Steam Settings -> Shader Pre-Caching -> Allow background processing of Vulkan shaders
+Open a Visual Studio Developer PowerShell, then run:
 
-If the game is crashing, try:
-* Lowering video settings
-* Disabling all add-ons then verifying integrity of game files
-* Re-installing the game
+```powershell
+.\build_release_x86.ps1
+```
 
-## Build instructions
-1. ```git clone --recurse-submodules https://github.com/liu547161153/l4d2vr.git ```
-2. Initialize submodules:
-   ```powershell
-   git submodule update --init --recursive
-   ```
-3. Run the fixed build script (locks target to `Release|x86`):
-   ```powershell
-   .\build_release_x86.ps1
-   ```
-   or:
-   ```cmd
-   build_release_x86.cmd
-   ```
-4. (Optional/manual) Open l4d2vr.sln and build `Release|x86`.
+or:
 
-Note: After building, it will attempt to copy the new d3d9.dll to your L4D2 directory.
+```cmd
+build_release_x86.cmd
+```
 
-## Dev note: VTable lookup
-For quick vtable inspection, use [asherkin's VTable Dumper](https://asherkin.github.io/vtable/).
-It can be used for `server.dll`-side symbols and also for `engine.dll` targets (drop the binary and search symbol names like `bob`, `viewmodel`, etc.).
+The solution intentionally exposes only x86 configurations because Left 4 Dead 2's
+dedicated server target is 32-bit. A successful Release build writes:
 
-## Utilizes code from
-* [VirtualFortress2](https://github.com/PinkMilkProductions/VirtualFortress2)
-* [gmcl_openvr](https://github.com/Planimeter/gmcl_openvr/)
-* [DXVK](https://github.com/doitsujin/dxvk)
-* [source-sdk-2013](https://github.com/ValveSoftware/source-sdk-2013/)
+```text
+D:\l4d2vr\Release\l4d2vr_server.dll
+```
+
+If the local Left 4 Dead 2 Dedicated Server install exists at the configured path, the
+post-build step copies both files to:
+
+```text
+D:\SteamLibrary\steamapps\common\Left 4 Dead 2 Dedicated Server\left4dead2\addons\l4d2vr_server.dll
+D:\SteamLibrary\steamapps\common\Left 4 Dead 2 Dedicated Server\left4dead2\addons\l4d2vr_server.vdf
+```
+
+## Install Manually
+
+Copy these files into the server's `left4dead2\addons` directory:
+
+```text
+l4d2vr_server.dll
+l4d2vr_server.vdf
+```
+
+The VDF points Source's server plugin loader at `../left4dead2/addons/l4d2vr_server`.

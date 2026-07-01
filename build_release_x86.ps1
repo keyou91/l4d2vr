@@ -13,7 +13,7 @@ if (-not $msbuildCmd) {
     Write-Error "msbuild not found in PATH. Open a Visual Studio Developer PowerShell and retry."
 }
 
-Write-Host "Building fixed target: Release|x86 from l4d2vr.sln"
+Write-Host "Building L4D2VR dedicated server plugin: Release|x86 from l4d2vr.sln"
 
 & $msbuildCmd.Source `
     $solutionPath `

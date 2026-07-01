@@ -1948,6 +1948,60 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 	to->tick_count *= -1;
 
 	int originalCommandNum = to->command_number;
+	int originalWeaponSelect = to->weaponselect;
+	int originalWeaponSubType = to->weaponsubtype;
+
+	constexpr int kVrExtraCommandMagic = 0x56000000;
+	constexpr int kVrExtraTypeShift = 20;
+	constexpr int kVrExtraFlagsShift = 16;
+	constexpr int kVrExtraTypeTeleport = 1;
+	constexpr int kVrExtraTypeRoomscale = 2;
+	constexpr int kVrExtraFlagCrouched = 1 << 0;
+
+	auto encodeSigned16 = [](float value, float scale) -> int {
+		const float scaled = value * scale;
+		if (!std::isfinite(scaled))
+			return 0;
+		const long rounded = lroundf(scaled);
+		return std::clamp<long>(rounded, -32768, 32767) & 0xFFFF;
+		};
+
+	auto packSigned16Pair = [&](float x, float y, float scale) -> int {
+		return encodeSigned16(x, scale) | (encodeSigned16(y, scale) << 16);
+		};
+
+	auto writeExtraCommand = [&](int type, int flags, const Vector& value, float xyScale, float zScale) -> bool {
+		if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
+			return false;
+
+		to->weaponselect =
+			kVrExtraCommandMagic |
+			((type & 0x0F) << kVrExtraTypeShift) |
+			((flags & 0x0F) << kVrExtraFlagsShift) |
+			encodeSigned16(value.z, zScale);
+		to->weaponsubtype = packSigned16Pair(value.x, value.y, xyScale);
+		return true;
+		};
+
+	if (to->weaponselect == 0 && to->weaponsubtype == 0)
+	{
+		const int extraFlags = m_VR->m_Roomscale1To1PhysicalCrouchActive ? kVrExtraFlagCrouched : 0;
+		Vector teleportTarget{};
+		if (m_VR->ConsumeTeleportServerTarget(teleportTarget))
+		{
+			writeExtraCommand(kVrExtraTypeTeleport, extraFlags, teleportTarget, 1.0f, 1.0f);
+		}
+		else
+		{
+			Vector roomscaleWorldDelta{};
+			Vector roomscaleVisualWorldDelta{};
+			if (m_VR->ConsumeRoomscale1To1ServerMoveDelta(roomscaleWorldDelta, roomscaleVisualWorldDelta))
+			{
+				roomscaleWorldDelta.z = 0.0f;
+				writeExtraCommand(kVrExtraTypeRoomscale, extraFlags, roomscaleWorldDelta, 10.0f, 1.0f);
+			}
+		}
+	}
 
 	QAngle controllerAngles = m_VR->GetRightControllerAbsAngle();
 	to->mousedx = (int)(controllerAngles.x * 10.0f); // Strip off 2nd decimal to save bits.
@@ -1982,6 +2036,8 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 	to->viewangles.z = 0.0f;
 	to->upmove = 0.0f;
 	to->command_number = originalCommandNum;
+	to->weaponselect = originalWeaponSelect;
+	to->weaponsubtype = originalWeaponSubType;
 
 	// 重算校验，否则多人下枪声会异常
 	pVerified->m_cmd = *to;

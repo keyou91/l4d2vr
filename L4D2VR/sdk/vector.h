@@ -836,18 +836,19 @@ inline vec_t VectorNormalize(Vector& v)
 inline Vector VectorRotate(const Vector& v, const Vector& k, float degrees)
 {
 	// Rodrigues rotation
-	float radians = degrees * 3.14159265 / 180;
+	float radians = degrees * (M_PI_F / 180.0f);
 
 	Vector crossProduct;
 	CrossProduct(k, v, crossProduct);
 
-	return v * cos(radians) + crossProduct * sin(radians) + k * DotProduct(k, v) * (1 - cos(radians));
+	return v * cosf(radians) + crossProduct * sinf(radians) + k * DotProduct(k, v) * (1.0f - cosf(radians));
 }
 
 inline void VectorPivotXY(Vector& point, const Vector& pivot, float degrees)
 {
-	float s = sin(degrees * 3.14159265 / 180);
-	float c = cos(degrees * 3.14159265 / 180);
+	float radians = degrees * (M_PI_F / 180.0f);
+	float s = sinf(radians);
+	float c = cosf(radians);
 	point.x -= pivot.x;
 	point.y -= pivot.y;
 	float xnew = point.x * c - point.y * s;
@@ -1046,12 +1047,12 @@ inline void QAngle::VectorAngles(const Vector& forward, QAngle& angles)
 	}
 	else
 	{
-		yaw = (atan2(forward[1], forward[0]) * 180 / M_PI);
+		yaw = (atan2f(forward[1], forward[0]) * (180.0f / M_PI_F));
 		if (yaw < 0)
 			yaw += 360;
 
-		tmp = sqrt(forward[0] * forward[0] + forward[1] * forward[1]);
-		pitch = (atan2(-forward[2], tmp) * 180 / M_PI);
+		tmp = sqrtf(forward[0] * forward[0] + forward[1] * forward[1]);
+		pitch = (atan2f(-forward[2], tmp) * (180.0f / M_PI_F));
 		if (pitch < 0)
 			pitch += 360;
 	}
