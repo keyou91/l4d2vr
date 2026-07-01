@@ -197,6 +197,51 @@ public:
     virtual void TraceRay(const Ray_t& ray, unsigned int mask, CTraceFilter* filter, trace_t* trace) = 0;
 };
 
+class IVEngineServer
+{
+public:
+    virtual void ChangeLevel(const char*, const char*) = 0;
+    virtual int IsMapValid(const char*) = 0;
+    virtual bool IsDedicatedServer() = 0;
+    virtual int IsInEditMode() = 0;
+    virtual void* GetLaunchOptions() = 0;
+    virtual int PrecacheModel(const char*, bool = false) = 0;
+    virtual int PrecacheSentenceFile(const char*, bool = false) = 0;
+    virtual int PrecacheDecal(const char*, bool = false) = 0;
+    virtual int PrecacheGeneric(const char*, bool = false) = 0;
+    virtual bool IsModelPrecached(const char*) const = 0;
+    virtual bool IsDecalPrecached(const char*) const = 0;
+    virtual bool IsGenericPrecached(const char*) const = 0;
+    virtual int GetClusterForOrigin(const Vector&) = 0;
+    virtual int GetPVSForCluster(int, int, unsigned char*) = 0;
+    virtual bool CheckOriginInPVS(const Vector&, const unsigned char*, int) = 0;
+    virtual bool CheckBoxInPVS(const Vector&, const Vector&, const unsigned char*, int) = 0;
+    virtual int GetPlayerUserId(const edict_t*) = 0;
+    virtual const char* GetPlayerNetworkIDString(const edict_t*) = 0;
+    virtual bool IsUserIDInUse(int) = 0;
+    virtual int GetLoadingProgressForUserID(int) = 0;
+    virtual int GetEntityCount() = 0;
+    virtual void* GetPlayerNetInfo(int) = 0;
+    virtual edict_t* CreateEdict(int = -1) = 0;
+    virtual void RemoveEdict(edict_t*) = 0;
+    virtual void* PvAllocEntPrivateData(long) = 0;
+    virtual void FreeEntPrivateData(void*) = 0;
+    virtual void* SaveAllocMemory(size_t, size_t) = 0;
+    virtual void SaveFreeMemory(void*) = 0;
+    virtual void EmitAmbientSound(int, const Vector&, const char*, float, int, int, int, float = 0.0f) = 0;
+    virtual void FadeClientVolume(const edict_t*, float, float, float, float) = 0;
+    virtual int SentenceGroupPick(int, char*, int) = 0;
+    virtual int SentenceGroupPickSequential(int, char*, int, int, int) = 0;
+    virtual int SentenceIndexFromName(const char*) = 0;
+    virtual const char* SentenceNameFromIndex(int) = 0;
+    virtual int SentenceGroupIndexFromName(const char*) = 0;
+    virtual const char* SentenceGroupNameFromIndex(int) = 0;
+    virtual float SentenceLength(int) = 0;
+    virtual void ServerCommand(const char*) = 0;
+    virtual void ServerExecute() = 0;
+    virtual void ClientCommand(edict_t*, const char*, ...) = 0;
+};
+
 namespace
 {
     static_assert(sizeof(void*) == 4, "L4D2VR dedicated server plugin must be built as 32-bit/x86.");
@@ -216,7 +261,10 @@ namespace
     constexpr int kVrExtraTypeTeleport = 1;
     constexpr int kVrExtraTypeRoomscale = 2;
     constexpr int kVrExtraFlagCrouched = 1 << 0;
+    constexpr int kServerAckMaxAttempts = 8;
+    constexpr int kServerAckRetryMs = 1000;
     constexpr float kDedicatedTeleportMaxDistanceUnits = 2500.0f;
+    constexpr char kServerAckCommand[] = "l4d2vr_server_ack 1\n";
 
     struct PlayerVrState
     {
@@ -224,6 +272,10 @@ namespace
         bool isMeleeing = false;
         bool physicalCrouch = false;
         bool isNewSwing = false;
+        bool serverAckPending = false;
+        int serverAckAttempts = 0;
+        edict_t* serverAckEdict = nullptr;
+        std::chrono::steady_clock::time_point nextServerAckTime{};
         Vector controllerPos = Vector(0.0f, 0.0f, 0.0f);
         QAngle controllerAngle = QAngle(0.0f, 0.0f, 0.0f);
         QAngle prevControllerAngle = QAngle(0.0f, 0.0f, 0.0f);
@@ -288,6 +340,7 @@ namespace
     std::atomic_bool g_unloading{ false };
     HMODULE g_module = nullptr;
     IEngineTrace* g_engineTraceServer = nullptr;
+    IVEngineServer* g_engineServer = nullptr;
 
     thread_local int g_currentUsercmdPlayerIndex = -1;
     thread_local Server_BaseEntity* g_currentUsercmdPlayer = nullptr;
@@ -336,6 +389,80 @@ namespace
     bool IsValidPlayerIndex(int index)
     {
         return index >= 0 && index < static_cast<int>(g_players.size());
+    }
+
+    int GetPlayerIndexFromEdict(const edict_t* entity)
+    {
+        if (!entity)
+            return -1;
+
+        return static_cast<int>(entity->m_EdictIndex);
+    }
+
+    bool SendServerAckToClient(edict_t* entity, int playerIndex, const char* reason)
+    {
+        if (!g_engineServer || !entity || !IsValidPlayerIndex(playerIndex))
+            return false;
+
+#ifdef _MSC_VER
+        __try
+        {
+            g_engineServer->ClientCommand(entity, kServerAckCommand);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            Log("failed to send L4D2VR server ack to player %d (%s)", playerIndex, reason ? reason : "unknown");
+            return false;
+        }
+#else
+        g_engineServer->ClientCommand(entity, kServerAckCommand);
+#endif
+
+        Log("sent L4D2VR server ack to player %d (%s)", playerIndex, reason ? reason : "unknown");
+        return true;
+    }
+
+    void QueueServerAckForClient(edict_t* entity, const char* reason)
+    {
+        const int playerIndex = GetPlayerIndexFromEdict(entity);
+        if (!IsValidPlayerIndex(playerIndex))
+            return;
+
+        PlayerVrState& player = g_players[playerIndex];
+        player.serverAckEdict = entity;
+        player.serverAckPending = true;
+        player.serverAckAttempts = 0;
+        player.nextServerAckTime = {};
+        SendServerAckToClient(entity, playerIndex, reason);
+        player.serverAckAttempts = 1;
+        player.nextServerAckTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(kServerAckRetryMs);
+    }
+
+    void PumpPendingServerAcks()
+    {
+        if (!g_engineServer)
+            return;
+
+        const auto now = std::chrono::steady_clock::now();
+        for (int playerIndex = 1; playerIndex < static_cast<int>(g_players.size()); ++playerIndex)
+        {
+            PlayerVrState& player = g_players[playerIndex];
+            if (!player.serverAckPending || !player.serverAckEdict)
+                continue;
+
+            if (player.serverAckAttempts >= kServerAckMaxAttempts)
+            {
+                player.serverAckPending = false;
+                continue;
+            }
+
+            if (player.nextServerAckTime.time_since_epoch().count() != 0 && now < player.nextServerAckTime)
+                continue;
+
+            SendServerAckToClient(player.serverAckEdict, playerIndex, "retry");
+            ++player.serverAckAttempts;
+            player.nextServerAckTime = now + std::chrono::milliseconds(kServerAckRetryMs);
+        }
     }
 
     bool IsFiniteVector(const Vector& value)
@@ -1452,14 +1579,22 @@ namespace
         {
             g_unloading.store(false);
             g_engineTraceServer = nullptr;
+            g_engineServer = nullptr;
             if (interfaceFactory)
             {
                 int returnCode = IFACE_FAILED;
+                g_engineServer = static_cast<IVEngineServer*>(interfaceFactory("VEngineServer022", &returnCode));
+                if (!g_engineServer)
+                    g_engineServer = static_cast<IVEngineServer*>(interfaceFactory("VEngineServer021", &returnCode));
+                if (!g_engineServer)
+                    g_engineServer = static_cast<IVEngineServer*>(interfaceFactory("VEngineServer023", &returnCode));
                 g_engineTraceServer = static_cast<IEngineTrace*>(interfaceFactory("EngineTraceServer003", &returnCode));
                 if (!g_engineTraceServer)
                     g_engineTraceServer = static_cast<IEngineTrace*>(interfaceFactory("EngineTraceClient003", &returnCode));
             }
 
+            if (!g_engineServer)
+                Log("VEngineServer022 unavailable; L4D2VR client ack handshake will be disabled");
             if (!g_engineTraceServer)
                 Log("EngineTraceServer003 unavailable; teleport and roomscale server movement will be disabled until it resolves");
             Log("L4D2VR dedicated server plugin loaded");
@@ -1471,6 +1606,7 @@ namespace
         {
             g_unloading.store(true);
             UninstallHooks();
+            g_engineServer = nullptr;
             Log("L4D2VR dedicated server plugin unloaded");
         }
 
@@ -1493,11 +1629,23 @@ namespace
         {
             if (!g_hooksInstalled.load() && !g_unloading.load())
                 StartHookWorker();
+            PumpPendingServerAcks();
         }
         void LevelShutdown() override {}
-        void ClientActive(edict_t*) override {}
-        void ClientDisconnect(edict_t*) override {}
-        void ClientPutInServer(edict_t*, const char*) override {}
+        void ClientActive(edict_t* entity) override
+        {
+            QueueServerAckForClient(entity, "ClientActive");
+        }
+        void ClientDisconnect(edict_t* entity) override
+        {
+            const int playerIndex = GetPlayerIndexFromEdict(entity);
+            if (IsValidPlayerIndex(playerIndex))
+                g_players[playerIndex] = PlayerVrState{};
+        }
+        void ClientPutInServer(edict_t* entity, const char*) override
+        {
+            QueueServerAckForClient(entity, "ClientPutInServer");
+        }
         void SetCommandClient(int) override {}
         void ClientSettingsChanged(edict_t*) override {}
         PLUGIN_RESULT ClientConnect(bool*, edict_t*, const char*, const char*, char*, int) override { return PLUGIN_CONTINUE; }
