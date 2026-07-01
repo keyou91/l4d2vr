@@ -7,10 +7,15 @@ to building the dedicated server plugin. It does not build or install the old cl
 ## What It Builds
 
 - `l4d2vr_server.dll`: a Source server plugin loaded by the dedicated server.
+- `l4d2vr_server.so`: the Linux Source server plugin build for `server_srv.so`.
 - `l4d2vr_server.vdf`: the plugin descriptor for `left4dead2/addons`.
 
 The plugin waits for `server.dll`, resolves the dedicated-server signatures it needs,
 and installs MinHook hooks for the server-side VR usercmd path.
+
+On Linux the plugin waits for `server_srv.so`, resolves the needed local ELF symbols
+from the loaded module, and installs equivalent x86 inline hooks. It does not use the
+client `d3d9.dll` proxy path.
 
 ## Runtime Behavior
 
@@ -56,7 +61,7 @@ MeleeSwingBurstMax=4
 
 Distances are Source units. Rough reference: 43.2 units is about 1 meter.
 
-## Build
+## Build Windows
 
 Open a Visual Studio Developer PowerShell, then run:
 
@@ -85,12 +90,51 @@ D:\SteamLibrary\steamapps\common\Left 4 Dead 2 Dedicated Server\left4dead2\addon
 D:\SteamLibrary\steamapps\common\Left 4 Dead 2 Dedicated Server\left4dead2\addons\l4d2vr_server.vdf
 ```
 
+## Build Linux
+
+Build on a Linux host that has a 32-bit toolchain available:
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt update
+sudo apt install g++-multilib
+./build_release_linux.sh
+```
+
+The Linux build writes:
+
+```text
+Release/linux/l4d2vr_server.so
+Release/linux/l4d2vr_server.vdf
+```
+
+The current Linux resolver targets the 32-bit L4D2 dedicated server binaries:
+
+```text
+left4dead2/bin/server_srv.so
+bin/engine_srv.so
+```
+
+The `server_srv.so` symbol table is used for the server hooks; the engine interfaces
+come from Source's plugin loader.
+
 ## Install Manually
+
+### Windows
 
 Copy these files into the server's `left4dead2\addons` directory:
 
 ```text
 l4d2vr_server.dll
+l4d2vr_server.vdf
+```
+
+### Linux
+
+Copy these files into the server's `left4dead2/addons` directory:
+
+```text
+l4d2vr_server.so
 l4d2vr_server.vdf
 ```
 
