@@ -2151,7 +2151,7 @@ namespace
             MagazineInteractionWeaponUsesShotgunShells(weaponId);
     }
 
-    bool VrHandsWeaponSupportsTwoHandedGrip(C_WeaponCSBase::WeaponID weaponId)
+    bool VrHandsWeaponLong(C_WeaponCSBase::WeaponID weaponId)
     {
         switch (weaponId)
         {
@@ -5283,10 +5283,11 @@ bool VR::UpdateMagazineInteraction(
         (IsMagazineInteractionServerHookActive(static_cast<int>(activeWeaponId)) ||
             IsMagazineInteractionAnyServerHookActive());
 
-    const bool twoHandedGripRuntimeAllowed =
-        VrHandsWeaponSupportsTwoHandedGrip(activeWeaponId);
+    m_VrHandsVirtualStockHoldingLong =
+        VrHandsWeaponLong(activeWeaponId);
+
     if (m_VrHandsTwoHandedGripActive &&
-        (!twoHandedGripRuntimeAllowed || m_VrHandsTwoHandedGripWeaponId != activeWeaponIdInt))
+        (m_VrHandsTwoHandedGripWeaponId != activeWeaponIdInt))
     {
         if (m_VrHandsDebugLog)
         {
@@ -5442,7 +5443,7 @@ bool VR::UpdateMagazineInteraction(
         }
     };
 
-    if (!twoHandedGripRuntimeAllowed || manualReloadOwnsOffhandInput)
+    if (manualReloadOwnsOffhandInput)
         clearMountFriendlyGripContact();
 
     if (m_VrHandsTwoHandedAimMountFriendly && manualReloadOwnsOffhandInput)
@@ -5450,7 +5451,7 @@ bool VR::UpdateMagazineInteraction(
         if (m_VrHandsTwoHandedGripActive)
             releaseMountFriendlyGrip("manual-reload", false);
     }
-    else if (m_VrHandsTwoHandedAimMountFriendly && twoHandedGripRuntimeAllowed)
+    else if (m_VrHandsTwoHandedAimMountFriendly)
     {
         if (m_VrHandsTwoHandedGripActive)
         {
@@ -5516,7 +5517,7 @@ bool VR::UpdateMagazineInteraction(
     {
         clearMountFriendlyGripContact();
 
-        if (leftGripJustPressed && twoHandedGripRuntimeAllowed && m_VrHandsTwoHandedGripActive)
+        if (!leftHandguardGripDown && m_VrHandsTwoHandedGripActive)
         {
             m_VrHandsTwoHandedGripActive = false;
             m_VrHandsTwoHandedGripWeaponId = 0;
@@ -5533,7 +5534,6 @@ bool VR::UpdateMagazineInteraction(
         }
 
         if (leftGripJustPressed &&
-            twoHandedGripRuntimeAllowed &&
             !IsMagazineInteractionManualActive() &&
             !m_MagazineInteractionLeftHandHolding &&
             !leftHandTouchesMagazineForGripExclusion())
