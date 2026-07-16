@@ -3411,6 +3411,7 @@ bool VR::ShouldSuppressMagazineInteractionEmptyClipAutoReload(C_BasePlayer* loca
 {
     if (!m_MagazineInteractionEnabled ||
         !m_IsVREnabled ||
+        !m_MagazineInteractionChamberEmpty ||
         (!m_VrHandsEnabled && !m_NativeViewmodelHandsOnly))
     {
         return false;
@@ -3472,7 +3473,7 @@ bool VR::IsMagazineInteractionBlockingFire() const
             m_MagazineInteractionState == MagazineInteractionManualState::AutoBolting;
     }
 
-    return IsMagazineInteractionManualActive();
+    return IsMagazineInteractionManualActive() && m_MagazineInteractionChamberEmpty;
 }
 
 void VR::PlayMagazineInteractionBlockedFireEmptySound()
@@ -6238,14 +6239,31 @@ bool VR::UpdateMagazineInteraction(
             m_MagazineInteractionState == MagazineInteractionManualState::WaitingForFreshMagazine ||
             m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine))
     {
-        applyServerHookClipSettlement(
-            0,
-            -1,
-            -1,
-            -1,
-            "magazine-out-maintain-empty",
-            0.35f,
-            false);
+        if (m_MagazineInteractionChamberEmpty) // Chamber is empty lock it to 0
+            applyServerHookClipSettlement(
+                0,
+                -1,
+                -1,
+                -1,
+                "magazine-out-maintain-empty",
+                0.35f,
+                false);
+        else // One in the chamber
+        {
+            if (activeClip == 0) // Chamber was loaded, but the clip just went empty.
+            {
+                m_MagazineInteractionChamberEmpty = true;
+            }
+            else if (activeClip != 1) // Anti-spam call to block +attack when there is still ammo
+                applyServerHookClipSettlement(
+                    1,
+                    -1,
+                    -1,
+                    -1,
+                    "magazine-out-maintain-empty",
+                    0.35f,
+                    false);
+        }
     }
 
     if (m_MagazineInteractionState == MagazineInteractionManualState::WaitingForBackendReload)
@@ -7109,8 +7127,9 @@ bool VR::UpdateMagazineInteraction(
                 m_MagazineInteractionReloadCommandPending = false;
                 m_MagazineInteractionReloadCommandIssued = false;
                 m_MagazineInteractionReloadCommandHoldUntil = {};
+                m_MagazineInteractionChamberEmpty = activeClip == 0;
                 applyServerHookClipSettlement(
-                    0,
+                    m_MagazineInteractionChamberEmpty ? 0 : 1,
                     -1,
                     -1,
                     -1,
