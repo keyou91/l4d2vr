@@ -166,11 +166,11 @@ namespace
             if (vr->m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire) != m_Epoch)
                 return;
 
-            vr->PublishRenderCompletedFrame(
+            vr->PublishSourceQueueCompletedFrame(
+                m_Epoch,
                 m_RenderPoseToken,
                 m_RenderFrameSeq,
                 m_AllowDuplicatePoseSubmit,
-                "source-queue",
                 m_MarkerId,
                 m_RenderHmdPoseValid ? &m_RenderHmdPose : nullptr);
         }
@@ -185,6 +185,49 @@ namespace
         bool m_AllowDuplicatePoseSubmit = false;
         vr::HmdMatrix34_t m_RenderHmdPose{};
         bool m_RenderHmdPoseValid = false;
+    };
+
+    class SourceRenderOwnershipReleaseFunctor final : public CFunctor
+    {
+    public:
+        SourceRenderOwnershipReleaseFunctor(VR* vr, uint32_t epoch)
+            : m_VR(vr), m_Epoch(epoch)
+        {
+        }
+
+        int AddRef() override
+        {
+            return static_cast<int>(m_RefCount.fetch_add(1, std::memory_order_acq_rel) + 1);
+        }
+
+        int Release() override
+        {
+            const long remaining = m_RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining == 0)
+                delete this;
+            return static_cast<int>(remaining);
+        }
+
+        void operator()() override
+        {
+            VR* vr = m_VR;
+            if (!vr || vr->m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire) != m_Epoch)
+                return;
+
+            uint32_t pending = vr->m_SourceRenderQueueAuxPendingCount.load(std::memory_order_acquire);
+            while (pending != 0 &&
+                !vr->m_SourceRenderQueueAuxPendingCount.compare_exchange_weak(
+                    pending, pending - 1,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire))
+            {
+            }
+        }
+
+    private:
+        std::atomic<long> m_RefCount{ 0 };
+        VR* m_VR = nullptr;
+        uint32_t m_Epoch = 0;
     };
 
     class VrHandsQueuedDrawFunctor final : public CFunctor
@@ -810,6 +853,7 @@ namespace
             Hooks::hkViewport.fOriginal(ctx, oldX, oldY, oldW, oldH);
 
         vr->m_RenderedNewFrame.store(false, std::memory_order_release);
+        vr->m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
         vr->m_RenderCompletedPoseToken.store(0, std::memory_order_release);
         vr->m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
         {
@@ -817,6 +861,7 @@ namespace
             vr->m_RenderCompletedHmdPoseValid = false;
         }
         vr->m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
+        vr->m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
         vr->m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
         vr->m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
         vr->m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
@@ -1556,6 +1601,18 @@ void VR::Update()
     if (s_LastObservedQueueMode != queueModeAfterAuto)
     {
         const uint32_t completedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+        if (queueModeAfterAuto != 0 && m_CreatedVRTextures.load(std::memory_order_acquire))
+        {
+            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+            if (!m_D9LeftEyeSubmitSurface || !m_D9RightEyeSubmitSurface)
+            {
+                // A manual q=0 -> queued switch can reuse textures created before the
+                // submit-snapshot policy was active. Let the next RenderView recreate
+                // the full target set before publishing another queued frame.
+                m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+                m_CreatedVRTextures.store(false, std::memory_order_release);
+            }
+        }
         if (queueModeAfterAuto == 0)
         {
             m_LastSubmittedFrameId.store(completedFrameId, std::memory_order_release);
@@ -1607,8 +1664,7 @@ void VR::Update()
                 lensHz = 90.0f;
             lensHz = std::clamp(lensHz, 1.0f, 240.0f);
 
-            if (!ShouldThrottle(m_LastScopeLensPostProcessTime, lensHz) &&
-                m_QueuedScopeLensPostProcessPending.exchange(0u, std::memory_order_acq_rel) != 0u)
+            if (m_QueuedScopeLensPostProcessPending.exchange(0u, std::memory_order_acq_rel) != 0u)
             {
                 const bool scopeLensOk = ApplyScopeLensPostProcess();
                 if (m_RenderPipelineDebugLog)
@@ -1987,7 +2043,9 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_RenderCompletedFrameId.store(0, std::memory_order_release);
     m_RenderCompletedPoseToken.store(0, std::memory_order_release);
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
+    m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
     m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
+    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
@@ -2130,21 +2188,23 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_RightEye;
     m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
 
-    // ReShade/OpenVR compatibility: real HMD runtimes such as ALVR can lose the
-    // first eye when submitting Vulkan eye textures with non-full texture bounds.
-    // Create dedicated submit textures even without MSAA so the D3D9 Present path
-    // can pre-bake the per-eye projection crop into a full-frame texture and submit
-    // it with full bounds. This keeps the original stereo crop while avoiding the
-    // ReShade/OpenVR non-full-bounds path.
+    // Queued rendering needs a stable consumer pair: Source writes leftEye0/rightEye0,
+    // then its completion functor snapshots both into these submit RTs. OpenVR never
+    // reads the raw eye pair while Source is already building the next frame.
+    // ReShade/MSAA use the same pair for crop pre-bake / resolve respectively.
+    const bool queuedEyeIsolationRequested =
+        m_AutoMatQueueMode ||
+        (m_Game && m_Game->GetMatQueueMode() != 0);
     const bool useDedicatedEyeSubmitTextures =
+        queuedEyeIsolationRequested ||
         m_ReShadeVRCompat ||
         m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16;
     if (useDedicatedEyeSubmitTextures)
     {
         m_CreatingTextureID = Texture_LeftEyeSubmit;
-        m_LeftEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+        m_LeftEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
         m_CreatingTextureID = Texture_RightEyeSubmit;
-        m_RightEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+        m_RightEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
     }
     else
     {
@@ -2250,7 +2310,9 @@ void VR::CreateVRTextures()
     m_RenderCompletedFrameId.store(0, std::memory_order_release);
     m_RenderCompletedPoseToken.store(0, std::memory_order_release);
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
+    m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
     m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
+    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
@@ -2321,6 +2383,10 @@ void VR::InvalidateSourceRenderQueueMarkers()
     m_SourceRenderQueueMarkerEpoch.fetch_add(1, std::memory_order_acq_rel);
     m_SourceRenderQueueMarkerQueuedId.store(0, std::memory_order_release);
     m_SourceRenderQueueMarkerCompletedId.store(0, std::memory_order_release);
+    m_SourceRenderQueueAuxPendingCount.store(0, std::memory_order_release);
+    m_SourceRenderQueueOwnershipUncertain.store(false, std::memory_order_release);
+    m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     {
         std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
         m_RenderCompletedHmdPoseValid = false;
@@ -2415,6 +2481,22 @@ bool VR::QueueVrHandsDrawForEye(
     return true;
 }
 
+bool VR::QueueSourceRenderOwnershipReleaseMarker(IMatRenderContext* renderContext)
+{
+    if (!renderContext)
+        return false;
+
+    ICallQueue* callQueue = GetSourceRenderContextCallQueue(renderContext, nullptr, nullptr);
+    if (!callQueue || !IsSourceCallQueueUsable(callQueue, nullptr))
+        return false;
+
+    std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+    const uint32_t epoch = m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire);
+    m_SourceRenderQueueAuxPendingCount.fetch_add(1, std::memory_order_acq_rel);
+    callQueue->QueueFunctor(new SourceRenderOwnershipReleaseFunctor(this, epoch));
+    return true;
+}
+
 bool VR::QueueSourceRenderCompletionMarker(
     IMatRenderContext* renderContext,
     uint32_t renderPoseToken,
@@ -2483,17 +2565,26 @@ bool VR::QueueSourceRenderCompletionMarker(
         return false;
     }
 
-    const uint32_t epoch = m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire);
-    const uint32_t markerId = m_SourceRenderQueueMarkerQueuedId.fetch_add(1, std::memory_order_acq_rel) + 1;
-    const uint32_t completedMarkerIdBeforeQueue = m_SourceRenderQueueMarkerCompletedId.load(std::memory_order_acquire);
-    callQueue->QueueFunctor(new SourceRenderCompletionFunctor(
-        this,
-        epoch,
-        markerId,
-        renderPoseToken,
-        renderFrameSeq,
-        allowDuplicatePoseSubmit,
-        renderHmdPose));
+    uint32_t epoch = 0;
+    uint32_t markerId = 0;
+    uint32_t completedMarkerIdBeforeQueue = 0;
+    {
+        // Reset/texture recreation invalidates the epoch while holding this same mutex.
+        // Keep epoch capture, marker allocation and queue insertion indivisible so an
+        // old-epoch functor can never leave a new marker permanently outstanding.
+        std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+        epoch = m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire);
+        markerId = m_SourceRenderQueueMarkerQueuedId.fetch_add(1, std::memory_order_acq_rel) + 1;
+        completedMarkerIdBeforeQueue = m_SourceRenderQueueMarkerCompletedId.load(std::memory_order_acquire);
+        callQueue->QueueFunctor(new SourceRenderCompletionFunctor(
+            this,
+            epoch,
+            markerId,
+            renderPoseToken,
+            renderFrameSeq,
+            allowDuplicatePoseSubmit,
+            renderHmdPose));
+    }
 
     if (sourceMarkerDebugLog)
     {
@@ -2528,7 +2619,178 @@ bool VR::QueueSourceRenderCompletionMarker(
     return true;
 }
 
-void VR::PublishRenderCompletedFrame(
+void VR::PublishSourceQueueCompletedFrame(
+    uint32_t sourceQueueEpoch,
+    uint32_t renderPoseToken,
+    uint32_t renderFrameSeq,
+    bool allowDuplicatePoseSubmit,
+    uint32_t sourceQueueMarkerId,
+    const vr::HmdMatrix34_t* renderHmdPose)
+{
+    // This mutex is the ownership token for both the submit surfaces and their
+    // published frame/pose generation. Present holds it while consuming a pair.
+    std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+
+    if (m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire) != sourceQueueEpoch)
+        return;
+
+    m_SourceRenderQueueOwnershipUncertain.store(false, std::memory_order_release);
+
+    const bool canSnapshotQueuedEyes =
+        !m_ReShadeVRCompat &&
+        g_D3DVR9 != nullptr &&
+        m_CreatedVRTextures.load(std::memory_order_acquire) &&
+        m_CreatingTextureID == Texture_None &&
+        m_D9LeftEyeSurface != nullptr &&
+        m_D9RightEyeSurface != nullptr &&
+        m_D9LeftEyeSubmitSurface != nullptr &&
+        m_D9RightEyeSubmitSurface != nullptr;
+
+    if (canSnapshotQueuedEyes)
+    {
+        IDirect3DDevice9* device = nullptr;
+        HRESULT deviceHr = m_D9LeftEyeSurface->GetDevice(&device);
+        HRESULT leftHr = E_FAIL;
+        HRESULT rightHr = E_FAIL;
+        HRESULT overlayHr = E_FAIL;
+        HRESULT leftTransferHr = E_FAIL;
+        HRESULT rightTransferHr = E_FAIL;
+        HRESULT submissionReadyHr = E_FAIL;
+        HRESULT lockHr = E_FAIL;
+
+        if (SUCCEEDED(deviceHr) && device)
+        {
+            // One real DXVK device lock makes the stereo copy an indivisible producer
+            // transaction. Publish happens while textureLock is still held, so Present
+            // cannot pair these pixels with an older pose/frame generation.
+            lockHr = g_D3DVR9->LockDevice();
+            if (SUCCEEDED(lockHr))
+            {
+                leftHr = device->StretchRect(
+                    m_D9LeftEyeSurface, nullptr,
+                    m_D9LeftEyeSubmitSurface, nullptr,
+                    D3DTEXF_NONE);
+                rightHr = device->StretchRect(
+                    m_D9RightEyeSurface, nullptr,
+                    m_D9RightEyeSubmitSurface, nullptr,
+                    D3DTEXF_NONE);
+                if (SUCCEEDED(leftHr) && SUCCEEDED(rightHr))
+                {
+                    // Item labels and the D3D aim line are part of this exact snapshot
+                    // generation. Drawing them later from Present would invalidate the
+                    // prepared layout/visibility proof and force a main-thread CS drain.
+                    overlayHr = g_D3DVR9->DrawQueuedEyeSubmitOverlays(this);
+
+                    // OpenVR's Vulkan path requires submitted images in transfer-source
+                    // layout. These barriers stay ordered behind the stereo copies.
+                    if (SUCCEEDED(overlayHr))
+                    {
+                        leftTransferHr = g_D3DVR9->TransferSurface(m_D9LeftEyeSubmitSurface, FALSE);
+                        rightTransferHr = g_D3DVR9->TransferSurface(m_D9RightEyeSubmitSurface, FALSE);
+                    }
+
+                    if (SUCCEEDED(leftTransferHr) && SUCCEEDED(rightTransferHr))
+                    {
+                        // Establish the publish-time visibility proof while the producer
+                        // still owns the D3D9 device: flush the copies/layout barriers,
+                        // wait only for DXVK's CPU command stream to hand them to VkQueue,
+                        // and briefly serialize that queue. The consumer can then use the
+                        // lightweight prepared gate without draining the next frame's CS work.
+                        submissionReadyHr = g_D3DVR9->LockSubmissionQueue();
+                        if (SUCCEEDED(submissionReadyHr))
+                            g_D3DVR9->UnlockSubmissionQueue();
+                    }
+                }
+                g_D3DVR9->UnlockDevice();
+            }
+            device->Release();
+        }
+
+        if (SUCCEEDED(leftHr) && SUCCEEDED(rightHr) &&
+            SUCCEEDED(overlayHr) &&
+            SUCCEEDED(leftTransferHr) && SUCCEEDED(rightTransferHr) &&
+            SUCCEEDED(submissionReadyHr))
+        {
+            m_QueuedEyeSubmitIsolationReady.store(true, std::memory_order_release);
+            const uint32_t publishedFrameId = PublishRenderCompletedFrame(
+                renderPoseToken,
+                renderFrameSeq,
+                allowDuplicatePoseSubmit,
+                "source-queue-snapshot",
+                sourceQueueMarkerId,
+                renderHmdPose);
+            m_PostPresentSubmitOverlayFrameId.store(publishedFrameId, std::memory_order_release);
+            return;
+        }
+
+        // A half-copied pair is never consumable. Retire the ownership marker so the
+        // queue cannot wedge permanently, but do not publish a new render generation.
+        m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+        m_RenderedNewFrame.store(false, std::memory_order_release);
+        m_SourceRenderQueueMarkerCompletedId.store(sourceQueueMarkerId, std::memory_order_release);
+        if (m_RenderFrameReadyEvent)
+            SetEvent(m_RenderFrameReadyEvent);
+
+        if (m_RenderPipelineDebugLog || m_QueuedSourceMarkerDebugLog)
+        {
+            Game::logMsg("[VR][Queued][SnapshotDrop] tid=%lu epoch=%u marker=%u frameSeq=%u device=0x%08X lock=0x%08X left=0x%08X right=0x%08X overlay=0x%08X xferL=0x%08X xferR=0x%08X ready=0x%08X",
+                GetCurrentThreadId(),
+                sourceQueueEpoch,
+                sourceQueueMarkerId,
+                renderFrameSeq,
+                static_cast<unsigned int>(deviceHr),
+                static_cast<unsigned int>(lockHr),
+                static_cast<unsigned int>(leftHr),
+                static_cast<unsigned int>(rightHr),
+                static_cast<unsigned int>(overlayHr),
+                static_cast<unsigned int>(leftTransferHr),
+                static_cast<unsigned int>(rightTransferHr),
+                static_cast<unsigned int>(submissionReadyHr));
+        }
+        return;
+    }
+
+    if (m_ReShadeVRCompat)
+    {
+        // ReShade publishes the Source completion here; Present owns its dedicated
+        // resolve/pre-bake transaction before the pair becomes submit-ready.
+        PublishRenderCompletedFrame(
+            renderPoseToken,
+            renderFrameSeq,
+            allowDuplicatePoseSubmit,
+            "source-queue-direct",
+            sourceQueueMarkerId,
+            renderHmdPose);
+        return;
+    }
+
+    // A normal queued frame without the dedicated snapshot resources is not safe to
+    // publish. In particular, never associate a newer pose/frame id with pixels left
+    // in the submit pair by an older successful snapshot.
+    m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_RenderedNewFrame.store(false, std::memory_order_release);
+    m_SourceRenderQueueMarkerCompletedId.store(sourceQueueMarkerId, std::memory_order_release);
+    if (m_RenderFrameReadyEvent)
+        SetEvent(m_RenderFrameReadyEvent);
+
+    if (m_RenderPipelineDebugLog || m_QueuedSourceMarkerDebugLog)
+    {
+        Game::logMsg("[VR][Queued][SnapshotUnavailable] tid=%lu epoch=%u marker=%u frameSeq=%u created=%d creating=%d d3dvr=%p rawL=%p rawR=%p submitL=%p submitR=%p",
+            GetCurrentThreadId(),
+            sourceQueueEpoch,
+            sourceQueueMarkerId,
+            renderFrameSeq,
+            m_CreatedVRTextures.load(std::memory_order_acquire) ? 1 : 0,
+            static_cast<int>(m_CreatingTextureID),
+            g_D3DVR9,
+            m_D9LeftEyeSurface,
+            m_D9RightEyeSurface,
+            m_D9LeftEyeSubmitSurface,
+            m_D9RightEyeSubmitSurface);
+    }
+}
+
+uint32_t VR::PublishRenderCompletedFrame(
     uint32_t renderPoseToken,
     uint32_t renderFrameSeq,
     bool allowDuplicatePoseSubmit,
@@ -2586,6 +2848,34 @@ void VR::PublishRenderCompletedFrame(
                 m_RenderedNewFrame.load(std::memory_order_acquire) ? 1 : 0);
         }
     }
+
+    return completedFrameId;
+}
+
+vr::EVROverlayError VR::SetOverlayTextureSynchronized(
+    vr::IVROverlay* overlay,
+    vr::VROverlayHandle_t overlayHandle,
+    const vr::Texture_t* texture,
+    bool producerPrepared)
+{
+    if (!overlay || !texture)
+        return vr::VROverlayError_RequestFailed;
+
+    if (!g_D3DVR9)
+        return overlay->SetOverlayTexture(overlayHandle, texture);
+
+    // All D3D producer work must be complete before entering either queue gate.
+    // The prepared form only serializes native VkQueue access; the heavy form also
+    // flushes/synchronizes DXVK's D3D command stream before taking that same gate.
+    const HRESULT lockHr = producerPrepared
+        ? g_D3DVR9->LockPreparedSubmissionQueue()
+        : g_D3DVR9->LockSubmissionQueue();
+    if (FAILED(lockHr))
+        return vr::VROverlayError_RequestFailed;
+
+    const vr::EVROverlayError result = overlay->SetOverlayTexture(overlayHandle, texture);
+    g_D3DVR9->UnlockSubmissionQueue();
+    return result;
 }
 
 void VR::SubmitVRTextures()
@@ -2601,6 +2891,7 @@ void VR::SubmitVRTextures()
         hasLocalPlayer = (m_Game->GetClientEntity(playerIndex) != nullptr);
     }
     const bool sceneReadyForStaleResubmit = inGame && hasLocalPlayer;
+    const bool queued = (m_Game && (m_Game->GetMatQueueMode() != 0));
     bool renderedNewFrame = m_RenderedNewFrame.load(std::memory_order_acquire);
     if (inGame && !hasLocalPlayer)
         renderedNewFrame = false;
@@ -2625,7 +2916,11 @@ void VR::SubmitVRTextures()
         if (!vr::VROverlay()->IsOverlayVisible(m_MainMenuHandle))
             RepositionOverlays();
 
-        vr::VROverlay()->SetOverlayTexture(m_MainMenuHandle, &m_VKBackBuffer.m_VRTexture);
+        SetOverlayTextureSynchronized(
+            vr::VROverlay(),
+            m_MainMenuHandle,
+            &m_VKBackBuffer.m_VRTexture,
+            false);
         vr::VROverlay()->ShowOverlay(m_MainMenuHandle);
         vr::VROverlay()->HideOverlay(m_HUDTopHandle);
         for (vr::VROverlayHandle_t& overlay : m_HUDBottomHandles)
@@ -2641,8 +2936,6 @@ void VR::SubmitVRTextures()
 
     if (renderedNewFrame || inGame)
         m_MenuBlankSubmitted = false;
-
-    const bool queued = (m_Game && (m_Game->GetMatQueueMode() != 0));
 
     static const vr::VRTextureBounds_t fullEyeSubmitBounds{ 0.0f, 0.0f, 1.0f, 1.0f };
 
@@ -2959,6 +3252,7 @@ void VR::SubmitVRTextures()
     bool successfulSubmit = false;
     bool frameHandled = false;
     bool timingDataSubmitted = false;
+    uint32_t submitSnapshotFrameId = 0;
 
     auto finalizeSubmitState = [&](bool markFrameHandled)
         {
@@ -2970,7 +3264,9 @@ void VR::SubmitVRTextures()
             if (compositorFrameIndex != 0)
                 m_LastSubmittedCompositorFrameIndex.store(compositorFrameIndex, std::memory_order_release);
 
-            const uint32_t renderedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+            const uint32_t renderedFrameId = submitSnapshotFrameId != 0
+                ? submitSnapshotFrameId
+                : m_RenderCompletedFrameId.load(std::memory_order_acquire);
             if (renderedFrameId != 0)
                 m_LastSubmittedFrameId.store(renderedFrameId, std::memory_order_release);
         };
@@ -3069,9 +3365,124 @@ void VR::SubmitVRTextures()
             return true;
         };
 
+    PendingOverlayTextureBindBatch pendingOverlayTextureBinds{};
+    auto stageOverlayTextureBind = [&](vr::VROverlayHandle_t overlay, const vr::Texture_t* texture,
+        IDirect3DSurface9* surface, bool hideOnFailure = false)
+        {
+            return pendingOverlayTextureBinds.Stage(overlay, texture, surface, hideOnFailure);
+        };
+
     auto submitStereoPair = [&](vr::Texture_t* leftTexture, const vr::VRTextureBounds_t* leftBounds,
         vr::Texture_t* rightTexture, const vr::VRTextureBounds_t* rightBounds) -> bool
         {
+            // Keep the submit descriptors, pixels and frame/pose generation together.
+            // The Source completion functor takes the same mutex before replacing the pair.
+            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+
+            const bool sceneEyePair =
+                leftTexture == &m_VKLeftEye.m_VRTexture &&
+                rightTexture == &m_VKRightEye.m_VRTexture;
+            const bool preparedQueuedEyePair =
+                queued && sceneEyePair &&
+                !m_ReShadeVRCompat &&
+                m_QueuedEyeSubmitIsolationReady.load(std::memory_order_acquire);
+            if (queued && sceneReadyForStaleResubmit && sceneEyePair &&
+                !m_ReShadeVRCompat &&
+                !preparedQueuedEyePair)
+            {
+                return false;
+            }
+
+            submitSnapshotFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+            if (queued && sceneEyePair && m_QueuedSubmitUseRenderPoseToken)
+            {
+                useRenderPoseTextureSubmit = false;
+                const uint32_t lockedRenderPoseToken = m_RenderCompletedPoseToken.load(std::memory_order_acquire);
+                if (lockedRenderPoseToken != 0)
+                    poseToken = lockedRenderPoseToken;
+
+                if (sceneReadyForStaleResubmit &&
+                    m_QueuedRenderPoseFromTracking &&
+                    !m_ReShadeVRCompat)
+                {
+                    std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
+                    if (m_RenderCompletedHmdPoseValid)
+                    {
+                        completedRenderHmdPose = m_RenderCompletedHmdPose;
+                        useRenderPoseTextureSubmit = true;
+                    }
+                }
+            }
+
+            // Queue overlay layout transitions before taking the native VkQueue gate.
+            // A staged overlay forces the heavy gate below so these new D3D commands
+            // are flushed and synchronized exactly once for the whole consumer batch.
+            if (g_D3DVR9)
+            {
+                for (size_t i = 0; i < pendingOverlayTextureBinds.count; ++i)
+                {
+                    PendingOverlayTextureBind& bind = pendingOverlayTextureBinds.binds[i];
+                    if (bind.surface && FAILED(g_D3DVR9->TransferSurface(bind.surface, FALSE)))
+                        bind.texture = nullptr;
+                }
+            }
+
+            // Queued normal eyes were copied, transitioned and flushed before their
+            // completion generation was published. Other paths (single-threaded raw
+            // eyes and the ReShade resolve path) still prepare their layout here.
+            if (g_D3DVR9 && sceneEyePair && !preparedQueuedEyePair)
+            {
+                IDirect3DSurface9* leftSurface = m_D9LeftEyeSubmitSurface
+                    ? m_D9LeftEyeSubmitSurface : m_D9LeftEyeSurface;
+                IDirect3DSurface9* rightSurface = m_D9RightEyeSubmitSurface
+                    ? m_D9RightEyeSubmitSurface : m_D9RightEyeSurface;
+                if (!leftSurface || !rightSurface ||
+                    FAILED(g_D3DVR9->TransferSurface(leftSurface, FALSE)) ||
+                    FAILED(g_D3DVR9->TransferSurface(rightSurface, FALSE)))
+                {
+                    return false;
+                }
+            }
+
+            struct SubmissionQueueGuard
+            {
+                bool locked = false;
+                ~SubmissionQueueGuard()
+                {
+                    if (locked && g_D3DVR9)
+                        g_D3DVR9->UnlockSubmissionQueue();
+                }
+            } submissionQueueGuard;
+
+            if (g_D3DVR9)
+            {
+                const bool canUsePreparedQueueGate =
+                    preparedQueuedEyePair && pendingOverlayTextureBinds.count == 0;
+                const HRESULT queueLockHr = canUsePreparedQueueGate
+                    ? g_D3DVR9->LockPreparedSubmissionQueue()
+                    : g_D3DVR9->LockSubmissionQueue();
+                if (FAILED(queueLockHr))
+                    return false;
+                submissionQueueGuard.locked = true;
+            }
+
+            // All D3D producers have completed before this point. Publish the scene's
+            // Vulkan-backed overlays while the same native queue gate used for the eye
+            // pair is held, avoiding one queue drain/lock cycle per overlay.
+            if (vr::IVROverlay* overlayApi = vr::VROverlay())
+            {
+                for (size_t i = 0; i < pendingOverlayTextureBinds.count; ++i)
+                {
+                    const PendingOverlayTextureBind& bind = pendingOverlayTextureBinds.binds[i];
+                    const vr::EVROverlayError bindError = bind.texture
+                        ? overlayApi->SetOverlayTexture(bind.overlay, bind.texture)
+                        : vr::VROverlayError_RequestFailed;
+                    if (bindError != vr::VROverlayError_None && bind.hideOnFailure)
+                        overlayApi->HideOverlay(bind.overlay);
+                }
+            }
+            pendingOverlayTextureBinds.Clear();
+
             if (queued)
             {
                 if (!submitEye(vr::Eye_Left, leftTexture, leftBounds))
@@ -3082,12 +3493,22 @@ void VR::SubmitVRTextures()
 
                 successfulSubmit = true;
                 finalizeSubmitState(true);
+                if (m_CompositorExplicitTiming)
+                {
+                    m_CompositorNeedsHandoff = true;
+                    FinishFrame();
+                }
                 return true;
             }
 
             const bool leftOk = submitEye(vr::Eye_Left, leftTexture, leftBounds);
             const bool rightOk = submitEye(vr::Eye_Right, rightTexture, rightBounds);
             successfulSubmit = leftOk || rightOk;
+            if (successfulSubmit && m_CompositorExplicitTiming)
+            {
+                m_CompositorNeedsHandoff = true;
+                FinishFrame();
+            }
             return successfulSubmit;
         };
 
@@ -3102,23 +3523,20 @@ void VR::SubmitVRTextures()
     auto applyHudTexture = [&](vr::VROverlayHandle_t overlay, const vr::VRTextureBounds_t& bounds)
         {
             vr::VROverlay()->SetOverlayTextureBounds(overlay, &bounds);
-            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
-            vr::VROverlay()->SetOverlayTexture(overlay, &m_VKHUD.m_VRTexture);
+            stageOverlayTextureBind(overlay, &m_VKHUD.m_VRTexture, m_D9HUDSurface);
         };
 
     auto applyScopeTexture = [&](vr::VROverlayHandle_t overlay) -> bool
         {
             static const vr::VRTextureBounds_t full{ 0.0f, 0.0f, 1.0f, 1.0f };
             vr::VROverlay()->SetOverlayTextureBounds(overlay, &full);
-            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
             if (m_ScopeLensOverlayReady.load(std::memory_order_acquire) == 0 ||
                 !m_VKScopeLens.m_VRTexture.handle)
             {
                 return false;
             }
 
-            const vr::EVROverlayError texErr = vr::VROverlay()->SetOverlayTexture(overlay, &m_VKScopeLens.m_VRTexture);
-            return texErr == vr::VROverlayError_None;
+            return stageOverlayTextureBind(overlay, &m_VKScopeLens.m_VRTexture, m_D9ScopeLensSurface, true);
         };
     auto applyRearMirrorTexture = [&](vr::VROverlayHandle_t overlay)
         {
@@ -3126,11 +3544,9 @@ void VR::SubmitVRTextures()
             if (m_RearMirrorFlipHorizontal)
                 std::swap(bounds.uMin, bounds.uMax);
             vr::VROverlay()->SetOverlayTextureBounds(overlay, &bounds);
-            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
-            vr::VROverlay()->SetOverlayTexture(overlay, &m_VKRearMirror.m_VRTexture);
+            stageOverlayTextureBind(overlay, &m_VKRearMirror.m_VRTexture, m_D9RearMirrorSurface);
         };
 
-    //     ֡û       ݣ    ߲˵ /Overlay ·
     if (!renderedNewFrame)
     {
         // In mat_queue_mode!=0 (queued/multicore), the render thread can lag behind the submit thread.
@@ -3154,12 +3570,6 @@ void VR::SubmitVRTextures()
             if (successfulSubmit)
                 m_HasSubmittedSceneFrame = true;
 
-            if (successfulSubmit && m_CompositorExplicitTiming)
-            {
-                m_CompositorNeedsHandoff = true;
-                FinishFrame();
-            }
-
             return;
         }
 
@@ -3169,7 +3579,11 @@ void VR::SubmitVRTextures()
         if (!vr::VROverlay()->IsOverlayVisible(m_MainMenuHandle))
             RepositionOverlays();
 
-        vr::VROverlay()->SetOverlayTexture(m_MainMenuHandle, &m_VKBackBuffer.m_VRTexture);
+        SetOverlayTextureSynchronized(
+            vr::VROverlay(),
+            m_MainMenuHandle,
+            &m_VKBackBuffer.m_VRTexture,
+            false);
         vr::VROverlay()->ShowOverlay(m_MainMenuHandle);
         hideHudOverlays();
         vr::VROverlay()->HideOverlay(m_ScopeHandle);
@@ -3201,12 +3615,6 @@ void VR::SubmitVRTextures()
                 if (successfulSubmit)
                     m_MenuBlankSubmitted = true;
             }
-        }
-
-        if (successfulSubmit && m_CompositorExplicitTiming)
-        {
-            m_CompositorNeedsHandoff = true;
-            FinishFrame();
         }
 
         return;
@@ -3447,21 +3855,20 @@ void VR::SubmitVRTextures()
         UpdateDesktopRearMirrorWindow(false);
     }
 
-    UpdateHandHudOverlays();
+    // Upload and bind dynamic intent/hand HUD textures on every fresh frame.
+    UpdateHandHudOverlays(&pendingOverlayTextureBinds);
 
     submitStereoPair(&m_VKLeftEye.m_VRTexture, leftEyeSubmitBounds,
         &m_VKRightEye.m_VRTexture, rightEyeSubmitBounds);
     if (successfulSubmit)
         m_HasSubmittedSceneFrame = true;
 
-    if (successfulSubmit && m_CompositorExplicitTiming)
-    {
-        m_CompositorNeedsHandoff = true;
-        FinishFrame();
-    }
-
     if (!queued || successfulSubmit || frameHandled)
-        m_RenderedNewFrame.store(false, std::memory_order_release);
+    {
+        std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+        if (!queued || m_RenderCompletedFrameId.load(std::memory_order_acquire) == submitSnapshotFrameId)
+            m_RenderedNewFrame.store(false, std::memory_order_release);
+    }
 }
 
 void VR::LogCompositorError(const char* action, vr::EVRCompositorError error)

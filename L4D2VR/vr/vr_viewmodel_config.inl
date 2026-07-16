@@ -1,5 +1,3 @@
-extern "C" void L4D2VR_D3D9_SetForceDeviceLock(int enabled);
-
 void VR::GetAimLineColor(int& r, int& g, int& b, int& a) const
 {
     if (m_SpecialInfectedBlindSpotWarningActive)
@@ -1060,6 +1058,8 @@ void VR::ParseConfigFile()
         {"menuright", &m_MenuRight},
         {"spray", &m_Spray},
         {"scoreboard", &m_Scoreboard},
+        {"showhud", &m_ToggleHUD},
+        // Compatibility alias for existing combo settings.
         {"togglehud", &m_ToggleHUD},
         {"pause", &m_Pause}
     };
@@ -2768,6 +2768,9 @@ void VR::ParseConfigFile()
     // post-Present idle wait that includes ReShade's desktop backbuffer work.
     const bool oldReShadeVRCompat = m_ReShadeVRCompat;
     m_ReShadeVRCompat = getBool("ReShadeVRCompat", m_ReShadeVRCompat);
+    // ReShade injects D3D work outside Source's known producer windows and therefore
+    // retains the conservative all-call lock. Normal queued rendering uses DXVK's
+    // scoped exclusive transactions instead of locking every draw call.
     L4D2VR_D3D9_SetForceDeviceLock(m_ReShadeVRCompat ? 1 : 0);
     if (oldReShadeVRCompat != m_ReShadeVRCompat)
     {

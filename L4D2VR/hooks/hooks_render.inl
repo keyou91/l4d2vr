@@ -190,6 +190,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		int w = 0;
 		int h = 0;
 		bool hasViewport = false;
+		bool restored = false;
 		RenderContextStateGuard(IMatRenderContext* renderContext)
 			: ctx(renderContext)
 		{
@@ -202,17 +203,48 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				hasViewport = true;
 			}
 		}
-		~RenderContextStateGuard()
+		void Restore()
 		{
-			if (!ctx)
+			if (!ctx || restored)
 				return;
 			ctx->SetRenderTarget(rt);
 			if (hasViewport && hkViewport.fOriginal)
 				hkViewport.fOriginal(ctx, x, y, w, h);
+			restored = true;
 		}
+		~RenderContextStateGuard() { Restore(); }
 	};
 	RenderContextStateGuard renderContextStateGuard(rndrContext);
 	const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+	// Normal queued rendering uses DXVK's lightweight activity gate and takes an
+	// exclusive lock only for Present/plugin transactions. ReShade injects work
+	// outside those known windows, so it retains the conservative all-call lock.
+	L4D2VR_D3D9_SetForceDeviceLock(m_VR->m_ReShadeVRCompat ? 1 : 0);
+	struct SourceRenderQueueBuildScope
+	{
+		VR* vr = nullptr;
+		bool active = false;
+		SourceRenderQueueBuildScope(VR* owner, bool enabled)
+			: vr(owner), active(enabled && owner != nullptr)
+		{
+			if (active)
+			{
+				std::lock_guard<std::recursive_mutex> consumerGate(vr->m_SourceRenderConsumerGate);
+				vr->m_SourceRenderQueueBuildCount.fetch_add(1, std::memory_order_acq_rel);
+			}
+		}
+		~SourceRenderQueueBuildScope()
+		{
+			if (active)
+			{
+				std::lock_guard<std::recursive_mutex> consumerGate(vr->m_SourceRenderConsumerGate);
+				vr->m_SourceRenderQueueBuildCount.fetch_sub(1, std::memory_order_acq_rel);
+			}
+		}
+	};
+	// Enter the producer window before any queued pass-through branch. Even a
+	// non-drawable-window RenderView can append commands that outlive this call.
+	SourceRenderQueueBuildScope sourceRenderQueueBuildScope(m_VR, queueMode != 0);
 	const bool inGameForWindowState =
 		m_Game && m_Game->m_EngineClient && m_Game->m_EngineClient->IsInGame();
 	const bool vrWindowDrawable = DebugIsCurrentProcessMainWindowDrawable();
@@ -234,6 +266,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		m_VR->m_RenderedNewFrame.store(false, std::memory_order_release);
 		callOriginalRenderView(setup, hudViewSetup, nClearFlags, whatToDraw);
+		renderContextStateGuard.Restore();
+		if (!m_VR->QueueSourceRenderOwnershipReleaseMarker(rndrContext))
+		{
+			m_VR->m_SourceRenderQueueOwnershipUncertain.store(true, std::memory_order_release);
+			m_VR->m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+			if (m_VR->m_RenderPipelineDebugLog)
+				Game::logMsg("[VR][Queued][InactiveWindowOwnershipMarkerMissing] tid=%lu", GetCurrentThreadId());
+		}
 		return;
 	}
 
@@ -405,6 +445,23 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		}
 
 		callOriginalRenderView(setup, hudViewSetup, nClearFlags, whatToDraw);
+		if (queueMode != 0)
+		{
+			// Top-level water/offscreen passes can return while their material commands
+			// are still executing. Restore the caller's RT/viewport before appending the
+			// tail marker, then hand ownership back only when that marker runs.
+			renderContextStateGuard.Restore();
+			if (!m_VR->QueueSourceRenderOwnershipReleaseMarker(rndrContext))
+			{
+				// No execution fence means this submit snapshot cannot be considered safe
+				// while the orphaned offscreen command stream may still be active.
+				m_VR->m_SourceRenderQueueOwnershipUncertain.store(true, std::memory_order_release);
+				m_VR->m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+				if (m_VR->m_RenderPipelineDebugLog)
+					Game::logMsg("[VR][Queued][OffscreenOwnershipMarkerMissing] tid=%lu reason=%s",
+						GetCurrentThreadId(), passThroughReason);
+			}
+		}
 		return;
 	}
 
@@ -1397,36 +1454,36 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					VectorNormalize(rightCtrlUp) != 0.0f;
 
 				auto buildRenderControllerBasis = [&](const vr::TrackedDevicePose_t& pose, Vector& posLocal, Vector& ctrlF, Vector& ctrlR, Vector& ctrlU) -> bool
-				{
-					if (!pose.bPoseIsValid)
-						return false;
-
-					const vr::HmdMatrix34_t& mat = pose.mDeviceToAbsoluteTracking;
-					posLocal.x = -mat.m[2][3];
-					posLocal.y = -mat.m[0][3];
-					posLocal.z = mat.m[1][3];
-
-					// Build the controller basis directly from the OpenVR pose matrix.
-					// The old queued path converted matrix -> Euler -> basis every render frame.
-					// Near Source QAngle singularities, tiny runtime pose noise can become large
-					// yaw/roll flips, which moves the viewmodel even when the controller is still.
-					ctrlF = Vector(mat.m[2][2], mat.m[0][2], -mat.m[1][2]);
-					ctrlR = Vector(-mat.m[2][0], -mat.m[0][0], mat.m[1][0]);
-					ctrlU = Vector(-mat.m[2][1], -mat.m[0][1], mat.m[1][1]);
-
-					if (VectorNormalize(ctrlF) == 0.0f || VectorNormalize(ctrlR) == 0.0f || VectorNormalize(ctrlU) == 0.0f)
-						return false;
-
-					if (std::fabs(extrapRot) > 0.0001f)
 					{
-						const Vector worldUp(0.0f, 0.0f, 1.0f);
-						ctrlF = VectorRotate(ctrlF, worldUp, extrapRot);
-						ctrlR = VectorRotate(ctrlR, worldUp, extrapRot);
-						ctrlU = VectorRotate(ctrlU, worldUp, extrapRot);
-					}
+						if (!pose.bPoseIsValid)
+							return false;
 
-					return true;
-				};
+						const vr::HmdMatrix34_t& mat = pose.mDeviceToAbsoluteTracking;
+						posLocal.x = -mat.m[2][3];
+						posLocal.y = -mat.m[0][3];
+						posLocal.z = mat.m[1][3];
+
+						// Build the controller basis directly from the OpenVR pose matrix.
+						// The old queued path converted matrix -> Euler -> basis every render frame.
+						// Near Source QAngle singularities, tiny runtime pose noise can become large
+						// yaw/roll flips, which moves the viewmodel even when the controller is still.
+						ctrlF = Vector(mat.m[2][2], mat.m[0][2], -mat.m[1][2]);
+						ctrlR = Vector(-mat.m[2][0], -mat.m[0][0], mat.m[1][0]);
+						ctrlU = Vector(-mat.m[2][1], -mat.m[0][1], mat.m[1][1]);
+
+						if (VectorNormalize(ctrlF) == 0.0f || VectorNormalize(ctrlR) == 0.0f || VectorNormalize(ctrlU) == 0.0f)
+							return false;
+
+						if (std::fabs(extrapRot) > 0.0001f)
+						{
+							const Vector worldUp(0.0f, 0.0f, 1.0f);
+							ctrlF = VectorRotate(ctrlF, worldUp, extrapRot);
+							ctrlR = VectorRotate(ctrlR, worldUp, extrapRot);
+							ctrlU = VectorRotate(ctrlU, worldUp, extrapRot);
+						}
+
+						return true;
+					};
 
 				if (leftIdx != vr::k_unTrackedDeviceIndexInvalid && leftIdx < vr::k_unMaxTrackedDeviceCount && renderPoses[leftIdx].bPoseIsValid)
 				{
@@ -1474,19 +1531,19 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					Vector aimRight = rightCtrlRight;
 					Vector aimUp = rightCtrlUp;
 					if (m_VR->ResolvePavlovTwoHandedAimBasis(
-							leftCtrlPosAbs,
-							rightCtrlPosAbs,
-							rightCtrlForward,
-							rightCtrlRight,
-							rightCtrlUp,
-							hmdPosAbs,
-							hmdForward,
-							hmdRight,
-							hmdUp,
-							vp.vrScale,
-							aimForward,
-							aimRight,
-							aimUp))
+						leftCtrlPosAbs,
+						rightCtrlPosAbs,
+						rightCtrlForward,
+						rightCtrlRight,
+						rightCtrlUp,
+						hmdPosAbs,
+						hmdForward,
+						hmdRight,
+						hmdUp,
+						vp.vrScale,
+						aimForward,
+						aimRight,
+						aimUp))
 					{
 						QAngle::VectorAngles(aimForward, aimUp, rightCtrlAngAbs);
 					}
@@ -2459,6 +2516,53 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				m_VR->FinishVrHandsEyeRender();
 		};
 
+	auto drawPostEyeWork = [&](int eyeIndex, ITexture* eyeTexture, CViewSetup& eyeView)
+		{
+			if (!m_VR->m_IsVREnabled || !eyeTexture)
+				return;
+
+			ITexture* oldRT = nullptr;
+			int oldX = 0, oldY = 0, oldW = 0, oldH = 0;
+			bool haveOldViewport = false;
+			bool pushed = false;
+			if (hkPushRenderTargetAndViewport.fOriginal && hkPopRenderTargetAndViewport.fOriginal)
+			{
+				hkPushRenderTargetAndViewport.fOriginal(
+					rndrContext,
+					eyeTexture,
+					nullptr,
+					0,
+					0,
+					static_cast<int>(m_VR->m_RenderWidth),
+					static_cast<int>(m_VR->m_RenderHeight));
+				pushed = true;
+			}
+			else
+			{
+				oldRT = rndrContext->GetRenderTarget();
+				if (hkGetViewport.fOriginal && hkViewport.fOriginal)
+				{
+					hkGetViewport.fOriginal(rndrContext, oldX, oldY, oldW, oldH);
+					haveOldViewport = true;
+				}
+				rndrContext->SetRenderTarget(eyeTexture);
+				if (hkViewport.fOriginal)
+					hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
+			}
+
+			m_VR->DrawPostMirrorPluginOverlays(rndrContext, localPlayer, eyeView, eyeIndex);
+			m_VR->UpdateD3DAimLineOverlayForView(localPlayer, eyeView, eyeIndex);
+
+			if (pushed)
+				hkPopRenderTargetAndViewport.fOriginal(rndrContext);
+			else
+			{
+				rndrContext->SetRenderTarget(oldRT);
+				if (haveOldViewport && hkViewport.fOriginal)
+					hkViewport.fOriginal(rndrContext, oldX, oldY, oldW, oldH);
+			}
+		};
+
 	const bool copyRightEyeFromLeft =
 		m_VR->m_RightEyeCopyFromLeft &&
 		queueMode == 0 &&
@@ -2472,15 +2576,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			m_VR->CopyEyeToDesktopMirrorTexture(0);
 		if (copyRightEyeFromLeft)
 			rightEyeCopiedFromLeft = m_VR->CopyLeftEyeToRightEyeTexture();
-		if (m_VR->m_IsVREnabled)
-		{
-			rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
-			if (hkViewport.fOriginal)
-				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
-			m_VR->DrawPostMirrorPluginOverlays(rndrContext, localPlayer, leftEyeView, 0);
-		}
-		if (m_VR->m_IsVREnabled)
-			m_VR->UpdateD3DAimLineOverlayForView(localPlayer, leftEyeView, 0);
+		drawPostEyeWork(0, m_VR->m_LeftEyeTexture, leftEyeView);
 	}
 	m_PushedHud = false;
 
@@ -2491,15 +2587,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		}
 		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye != 0)
 			m_VR->CopyEyeToDesktopMirrorTexture(1);
-		if (m_VR->m_IsVREnabled)
-		{
-			rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
-			if (hkViewport.fOriginal)
-				hkViewport.fOriginal(rndrContext, 0, 0, m_VR->m_RenderWidth, m_VR->m_RenderHeight);
-			m_VR->DrawPostMirrorPluginOverlays(rndrContext, localPlayer, rightEyeView, 1);
-		}
-		if (m_VR->m_IsVREnabled)
-			m_VR->UpdateD3DAimLineOverlayForView(localPlayer, rightEyeView, 1);
+		drawPostEyeWork(1, m_VR->m_RightEyeTexture, rightEyeView);
 	}
 	timingStereoSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stereoSceneStartTime).count();
 
@@ -2678,6 +2766,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	if (touchedEngineAngles && m_Game && m_Game->m_EngineClient)
 		m_Game->m_EngineClient->SetViewAngles(prevEngineAngles);
 
+	// Queue the outer RT/viewport restore before the completion marker. Previously the
+	// guard restored from its destructor after QueueSourceRenderCompletionMarker(), so
+	// Present could observe a "completed" frame while Source still had state commands
+	// behind the marker.
+	renderContextStateGuard.Restore();
+
 	const uint32_t renderFrameSeq = m_VR->m_RenderFrameSeq.load(std::memory_order_acquire);
 	if (queueMode != 0)
 	{
@@ -2752,6 +2846,22 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			}
 			return;
 		}
+
+		// Without a usable Source call queue there is no execution-order proof that the
+		// queued stereo commands have finished. Keep reprojecting the last stable submit
+		// snapshot instead of publishing half-executed raw eye textures.
+		m_VR->m_SourceRenderQueueOwnershipUncertain.store(true, std::memory_order_release);
+		m_VR->m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+		if (m_VR->m_RenderPipelineDebugLog)
+		{
+			static thread_local std::chrono::steady_clock::time_point s_lastMissingMarkerDropLog{};
+			if (!ShouldThrottleLog(s_lastMissingMarkerDropLog, m_VR->m_RenderPipelineDebugLogHz))
+			{
+				Game::logMsg("[VR][Queued][RenderCompleteDropNoCallQueue] tid=%lu q=%d frameSeq=%u renderPose=%u",
+					GetCurrentThreadId(), queueMode, renderFrameSeq, renderPoseTokenUsed);
+			}
+		}
+		return;
 	}
 
 	m_VR->PublishRenderCompletedFrame(

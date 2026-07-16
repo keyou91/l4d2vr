@@ -40,6 +40,7 @@ class C_BasePlayer;
 class C_WeaponCSBase;
 
 bool L4D2VR_ApplyRecommendedVideoSettings();
+extern "C" void L4D2VR_D3D9_SetForceDeviceLock(int enabled);
 class CUserCmd;
 struct IDirect3DDevice9;
 struct IDirect3DTexture9;
@@ -84,6 +85,38 @@ struct SharedTextureHolder
 };
 
 using TextureStateMutex = std::recursive_mutex;
+
+struct PendingOverlayTextureBind
+{
+	vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
+	const vr::Texture_t* texture = nullptr;
+	IDirect3DSurface9* surface = nullptr;
+	bool hideOnFailure = false;
+};
+
+struct PendingOverlayTextureBindBatch
+{
+	static constexpr size_t kCapacity = 8;
+	std::array<PendingOverlayTextureBind, kCapacity> binds{};
+	size_t count = 0;
+
+	bool Stage(
+		vr::VROverlayHandle_t overlay,
+		const vr::Texture_t* texture,
+		IDirect3DSurface9* surface = nullptr,
+		bool hideOnFailure = false)
+	{
+		if (!texture || count >= binds.size())
+			return false;
+		binds[count++] = { overlay, texture, surface, hideOnFailure };
+		return true;
+	}
+
+	void Clear()
+	{
+		count = 0;
+	}
+};
 
 struct CustomActionBinding
 {
@@ -276,7 +309,7 @@ public:
 	Vector m_SetupOriginToHMD = { 0,0,0 };
 
 	float m_HeightOffset = 0.0;
-	static constexpr uint32_t kResetPositionStableFramesRequired = 3;
+	static constexpr uint32_t kResetPositionStableFramesRequired = 8;
 	std::atomic<uint32_t> m_ResetPositionStableFrames{ 0 };
 	std::atomic<uint32_t> m_ResetPositionDeferredPending{ 0 };
 	bool m_ResetPositionStableEyeZValid = false;
@@ -469,6 +502,7 @@ public:
 	bool m_QueuedRenderPoseFromTracking = false;
 	std::atomic<uint32_t> m_QueuedRenderPoseFromTrackingSeq{ 0 };
 	std::atomic<int> m_CachedTrackingUniverseOrigin{ static_cast<int>(vr::TrackingUniverseStanding) };
+	std::atomic<int> m_CachedTrackingPredictionUsec{ 0 };
 	inline vr::ETrackingUniverseOrigin GetCachedTrackingUniverseOrigin() const
 	{
 		const int origin = m_CachedTrackingUniverseOrigin.load(std::memory_order_acquire);
@@ -477,12 +511,19 @@ public:
 			return vr::TrackingUniverseStanding;
 		return static_cast<vr::ETrackingUniverseOrigin>(origin);
 	}
+	inline void CacheQueuedTrackingPredictionSeconds(float seconds)
+	{
+		if (!(seconds >= 0.0f && seconds <= 0.5f))
+			seconds = 0.0f;
+		const int usec = static_cast<int>(seconds * 1000000.0f + 0.5f);
+		m_CachedTrackingPredictionUsec.store(usec, std::memory_order_release);
+	}
 	inline float GetQueuedTrackingPredictionSeconds() const
 	{
-		float hz = m_HmdDisplayFrequencyHz.load(std::memory_order_relaxed);
-		if (!(hz > 1.0f))
-			hz = 90.0f;
-		return std::clamp(1.0f / hz, 0.0f, 0.030f);
+		const int usec = m_CachedTrackingPredictionUsec.load(std::memory_order_acquire);
+		if (usec <= 0)
+			return 0.0f;
+		return std::clamp(static_cast<float>(usec) / 1000000.0f, 0.0f, 0.030f);
 	}
 
 	// Queued rendering: optional render-thread FPS cap, expressed as a percentage of the HMD refresh rate.
@@ -878,6 +919,34 @@ public:
 	std::atomic<uint32_t> m_SourceRenderQueueMarkerEpoch{ 1 };
 	std::atomic<uint32_t> m_SourceRenderQueueMarkerQueuedId{ 0 };
 	std::atomic<uint32_t> m_SourceRenderQueueMarkerCompletedId{ 0 };
+	// Independent top-level water/offscreen RenderView passes do not publish stereo
+	// frames, but their queued D3D work must still block raw Present-side postwork.
+	std::atomic<uint32_t> m_SourceRenderQueueAuxPendingCount{ 0 };
+	std::atomic<bool> m_SourceRenderQueueOwnershipUncertain{ false };
+	// A completed queued stereo pair is copied into dedicated submit RTs before its
+	// completion marker is published. Source may then render the next frame into the
+	// raw eye RTs while OpenVR consumes this stable snapshot.
+	std::atomic<bool> m_QueuedEyeSubmitIsolationReady{ false };
+	// The marker id alone cannot describe ownership while dRenderView is still building
+	// a queued frame: the marker is appended only at the end of the command stream. Keep
+	// the producer phase visible to Present so it cannot touch the single-buffered eye
+	// textures in that gap.
+	std::atomic<uint32_t> m_SourceRenderQueueBuildCount{ 0 };
+	// Couples producer 0->1 transitions with Present's final idle recheck. Present
+	// holds this only across auxiliary overlay consumption, never across pose waits.
+	mutable std::recursive_mutex m_SourceRenderConsumerGate;
+	inline bool IsSourceRenderQueueBusy() const
+	{
+		if (m_SourceRenderQueueBuildCount.load(std::memory_order_acquire) != 0)
+			return true;
+		if (m_SourceRenderQueueAuxPendingCount.load(std::memory_order_acquire) != 0)
+			return true;
+		if (m_SourceRenderQueueOwnershipUncertain.load(std::memory_order_acquire))
+			return true;
+
+		return m_SourceRenderQueueMarkerQueuedId.load(std::memory_order_acquire) !=
+			m_SourceRenderQueueMarkerCompletedId.load(std::memory_order_acquire);
+	}
 	// Present-side wait budget (ms) for a fresh rendered frame in mat_queue_mode!=0.
 	// 0 disables waiting. Used as an upper bound by adaptive submit-wait logic.
 	int m_QueuedSubmitWaitMs = 0;
@@ -1378,6 +1447,7 @@ public:
 	std::chrono::steady_clock::time_point m_MagazineInteractionReloadCommandHoldUntil{};
 	bool m_MagazineInteractionSuppressLeftInputUntilRelease = false;
 	bool m_MagazineInteractionOldMagazinePulled = false;
+	bool m_MagazineInteractionChamberEmpty = false;
 	bool m_MagazineInteractionOldMagazineContactActive = false;
 	bool m_MagazineInteractionFreshMagazineContactActive = false;
 	bool m_MagazineInteractionBoltContactActive = false;
@@ -1528,8 +1598,9 @@ public:
 	bool m_HudFollowHmdMovement = false;
 	bool m_HudAlwaysVisible = false;
 	bool m_HudToggleState = false;
-	// Runtime HUD request used by HudAlwaysVisible=false. Raised off-hand temporarily enables
-	// normal VGUI capture and top HUD display instead of only showing a stale overlay.
+	// Runtime HUD requests used by HudAlwaysVisible=false. ShowHUD is a hold action;
+	// the off-hand lift gesture is suppressed while that hand is gripping a two-handed weapon.
+	std::atomic<uint32_t> m_HudShowActionHeld{ 0 };
 	std::atomic<uint32_t> m_HudLiftGestureActive{ 0 };
 	std::chrono::steady_clock::time_point m_HudLiftGestureVisibleUntil{};
 	std::chrono::steady_clock::time_point m_HudChatVisibleUntil{};
@@ -1929,6 +2000,8 @@ public:
 	// scenes make the queued render worker lag behind.
 	mutable std::recursive_mutex m_ReShadeVRCompatSurfaceMutex;
 	std::atomic<uint32_t> m_ReShadeVRCompatResolvedFrameId{ 0 };
+	// Raw D3D overlays must be composited into a submit snapshot at most once.
+	std::atomic<uint32_t> m_PostPresentSubmitOverlayFrameId{ 0 };
 	// In Source queued rendering, RenderView can return before MaterialSystem::EndFrame
 	// has flushed all D3D work. ReShadeVRCompat resolves eye RTs after Present, so only
 	// publish a completed stereo frame after EndFrame has finished.
@@ -3180,6 +3253,8 @@ public:
 		C_BasePlayer* localPlayer,
 		bool leftGripDown,
 		bool leftGripJustPressed,
+		bool leftHandguardGripDown,
+    	bool leftHandguardGripJustPressed,
 		bool allowGameplayInputOnTwoHandedGripRelease);
 	void MarkMagazineInteractionReloadCommandIssued();
 	bool IsMagazineInteractionReloadCommandActive() const;
@@ -3239,9 +3314,16 @@ public:
 	void LogVAS(const char* tag);
 	void HandleMissingRenderContext(const char* location);
 	void SubmitVRTextures();
+	vr::EVROverlayError SetOverlayTextureSynchronized(
+		vr::IVROverlay* overlay,
+		vr::VROverlayHandle_t overlayHandle,
+		const vr::Texture_t* texture,
+		bool producerPrepared);
 	void InvalidateSourceRenderQueueMarkers();
+	bool QueueSourceRenderOwnershipReleaseMarker(IMatRenderContext* renderContext);
 	bool QueueSourceRenderCompletionMarker(IMatRenderContext* renderContext, uint32_t renderPoseToken, uint32_t renderFrameSeq, bool allowDuplicatePoseSubmit, const vr::HmdMatrix34_t* renderHmdPose = nullptr);
-	void PublishRenderCompletedFrame(uint32_t renderPoseToken, uint32_t renderFrameSeq, bool allowDuplicatePoseSubmit, const char* sourceTag, uint32_t sourceQueueMarkerId = 0, const vr::HmdMatrix34_t* renderHmdPose = nullptr);
+	void PublishSourceQueueCompletedFrame(uint32_t sourceQueueEpoch, uint32_t renderPoseToken, uint32_t renderFrameSeq, bool allowDuplicatePoseSubmit, uint32_t sourceQueueMarkerId, const vr::HmdMatrix34_t* renderHmdPose = nullptr);
+	uint32_t PublishRenderCompletedFrame(uint32_t renderPoseToken, uint32_t renderFrameSeq, bool allowDuplicatePoseSubmit, const char* sourceTag, uint32_t sourceQueueMarkerId = 0, const vr::HmdMatrix34_t* renderHmdPose = nullptr);
 	void LogCompositorError(const char* action, vr::EVRCompositorError error);
 	void RepositionOverlays();
 	void UpdateHudLiftGestureState(bool inGame);
@@ -3251,7 +3333,7 @@ public:
 	bool IsQueuedHudFresh() const;
 	void UpdateRearMirrorOverlayTransform();
 	void UpdateScopeOverlayTransform();
-	void UpdateHandHudOverlays();
+	void UpdateHandHudOverlays(PendingOverlayTextureBindBatch* pendingTextureBinds = nullptr);
 	void DestroyHandHudWorldQuadTextures();
 	void GetPoses();
 	bool UpdatePosesAndActions();
@@ -3454,7 +3536,7 @@ public:
 	void PublishQueuedProjectedItemLabels(int eyeIndex, std::vector<QueuedProjectedItemLabelDraw> draws);
 	void ClearQueuedProjectedItemLabelEye(int eyeIndex);
 	void ClearQueuedProjectedItemLabels();
-	void DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int eyeIndex, IDirect3DSurface9* target);
+	void DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int eyeIndex, IDirect3DSurface9* target, bool manageScene = true);
 	void PumpDesktopCompanionWindows();
 	void UpdateDesktopRearMirrorWindow(bool visible);
 	void UpdateDesktopIntentSenseHudWindow(const uint8_t* rgba, int width, int height, bool visible);
@@ -3465,7 +3547,7 @@ public:
 	void MaybeLogKillIndicatorStats(std::chrono::steady_clock::time_point now);
 	void DestroyKillIndicatorOverlay(ActiveKillIndicator& indicator);
 	bool EnsureKillIndicatorOverlaySlot(int slotIndex);
-	int AcquireKillIndicatorOverlaySlot() const;
+	int AcquireKillIndicatorOverlaySlot(int materialIndex) const;
 	int FindReusableKillIndicatorIndex(bool preferNonKill) const;
 	void AddOrRecycleKillIndicator(const Vector& worldPos, bool killConfirmed, bool headshot, std::chrono::steady_clock::time_point now, bool preferNonKill);
 	bool BuildKillIndicatorOverlayPixels(IMaterial* material, std::vector<uint8_t>& outPixels, uint32_t& outWidth, uint32_t& outHeight, uint32_t preferredFrameIndex = UINT32_MAX, bool* outUsedDecodedFrames = nullptr);

@@ -929,10 +929,6 @@ void VR::UpdateTracking()
 
         const bool liveLocalPlayer = (teamNum != 1) && (lifeState == 0) && (obsMode == 0);
         const bool stableInEyeObserver = inEyeObserver && viewPlayer && IsEntityAlive(viewPlayer);
-        const bool resetStateCandidate =
-            (liveLocalPlayer || stableInEyeObserver) &&
-            !m_TeleportVisualScoutActive &&
-            !IsThirdPersonMapLoadCooldownActive();
         const Vector resetEyeOrigin = stableInEyeObserver ? viewPlayer->EyePosition() : localPlayer->EyePosition();
         const bool resetCameraFinite =
             isFiniteVector(resetEyeOrigin) &&
@@ -940,10 +936,33 @@ void VR::UpdateTracking()
             isFiniteVector(m_HmdPosAbs) &&
             isFiniteVector(m_HmdPosLocalInWorld);
 
+        bool resetVerticalMovementSafe = false;
+        if (stableInEyeObserver)
+        {
+            resetVerticalMovementSafe = true;
+        }
+        else if (liveLocalPlayer)
+        {
+            const float verticalSpeed = localPlayer->m_vecVelocity.z;
+            resetVerticalMovementSafe =
+                localPlayer->m_hGroundEntity != -1 &&
+                std::isfinite(verticalSpeed) &&
+                std::fabs(verticalSpeed) <= 4.0f;
+        }
+
+        const bool resetStateCandidate =
+            (liveLocalPlayer || stableInEyeObserver) &&
+            resetVerticalMovementSafe &&
+            !m_TeleportVisualScoutActive &&
+            !IsThirdPersonMapLoadCooldownActive();
+
         uint32_t stableFrames = 0u;
         if (resetStateCandidate && resetCameraFinite)
         {
-            constexpr float kMaxStableEyeZStep = 24.0f;
+            // ResetPosition writes the current Z delta into m_HeightOffset.  Keep the
+            // gate tight so jump, stair, slope, and ladder Z motion cannot be baked
+            // into the user's standing height.
+            constexpr float kMaxStableEyeZStep = 0.75f;
             const bool eyeZStable =
                 !m_ResetPositionStableEyeZValid ||
                 std::fabs(resetEyeOrigin.z - m_ResetPositionStableEyeZ) <= kMaxStableEyeZStep;
@@ -996,7 +1015,9 @@ void VR::UpdateTracking()
     }
 
     const float hardRecenterDistance = std::max(m_AutoRecenterSoftStartDistance + 1.0f, m_AutoRecenterHardDistance);
-    if (!m_TeleportVisualScoutActive && !suppressTeleportCameraClip && VectorLength(m_SetupOriginToHMD) > hardRecenterDistance)
+    Vector hardRecenterDrift = m_SetupOriginToHMD;
+    hardRecenterDrift.z = 0.0f;
+    if (!m_TeleportVisualScoutActive && !suppressTeleportCameraClip && VectorLength(hardRecenterDrift) > hardRecenterDistance)
         ResetPosition();
     // Observer in-eye: when switching spectated target, re-align anchors once.
     if (m_ResetPositionAfterObserverTargetSwitchPending)

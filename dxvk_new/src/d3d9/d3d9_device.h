@@ -40,6 +40,8 @@
 #include "../util/util_flush.h"
 #include "../util/util_lru.h"
 
+class VR;
+
 namespace dxvk {
 
   class D3D9InterfaceEx;
@@ -1016,6 +1018,10 @@ namespace dxvk {
       return m_multithread.AcquireLock();
     }
 
+    D3D9DeviceLock LockDeviceExclusive() {
+      return m_multithread.AcquireExclusiveLock();
+    }
+
     const D3D9Options* GetOptions() const {
       return &m_d3d9Options;
     }
@@ -1176,6 +1182,10 @@ namespace dxvk {
       DxvkCsChunk* chunk = m_csChunkPool.allocChunk(DxvkCsChunkFlag::SingleUse);
       return DxvkCsChunkRef(chunk, &m_csChunkPool);
     }
+
+    // Called by the queued-render completion transaction before the submit
+    // surfaces are transitioned and published to OpenVR.
+    void DrawQueuedEyeSubmitOverlays(VR* vr);
 
   private:
 

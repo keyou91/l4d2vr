@@ -4220,6 +4220,7 @@ void VR::CancelMagazineInteractionManual()
     m_MagazineInteractionReloadCommandIssued = false;
     m_MagazineInteractionReloadCommandHoldUntil = {};
     m_MagazineInteractionOldMagazinePulled = false;
+    m_MagazineInteractionChamberEmpty = false;
     m_MagazineInteractionOldMagazineContactActive = false;
     m_MagazineInteractionFreshMagazineContactActive = false;
     m_MagazineInteractionBoltContactActive = false;
@@ -4374,6 +4375,10 @@ bool VR::UpdateMagazineInteraction(
     C_BasePlayer* localPlayer,
     bool leftGripDown,
     bool leftGripJustPressed,
+
+    bool leftHandguardGripDown,
+    bool leftHandguardGripJustPressed,
+
     bool allowGameplayInputOnTwoHandedGripRelease)
 {
     const auto now = std::chrono::steady_clock::now();
@@ -4880,6 +4885,9 @@ bool VR::UpdateMagazineInteraction(
 
     auto beginBoltStage = [&](C_WeaponCSBase::WeaponID weaponId, const char* reason, bool backendReloadStillPending = false) -> bool
     {
+        if(m_MagazineInteractionSuppressEmptyClipAutoReload && !m_MagazineInteractionChamberEmpty)
+            return false;
+
         if (!MagazineInteractionWeaponRequiresManualBolt(weaponId))
             return false;
 
@@ -7144,6 +7152,7 @@ bool VR::UpdateMagazineInteraction(
         {
             beginMagazineInteractionSession(box);
             m_MagazineInteractionState = MagazineInteractionManualState::WaitingForFreshMagazine;
+            m_MagazineInteractionChamberEmpty = true;
             m_MagazineInteractionLeftHandHolding = false;
             m_MagazineInteractionOldMagazinePulled = true;
             m_MagazineInteractionFreshPickupBasisValid = false;

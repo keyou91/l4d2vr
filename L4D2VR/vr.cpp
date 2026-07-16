@@ -523,9 +523,13 @@ void VR::UpdateHudLiftGestureState(bool inGame)
     if (!inGame || !m_System)
     {
         stopLiftHudCapture(true);
+        m_HudShowActionHeld.store(0, std::memory_order_release);
         m_HudToggleState = false;
         return;
     }
+
+    const bool showHudHeld = PressedDigitalAction(m_ToggleHUD, false);
+    m_HudShowActionHeld.store(showHudHeld ? 1u : 0u, std::memory_order_release);
 
     if (m_HudAlwaysVisible)
     {
@@ -546,8 +550,12 @@ void VR::UpdateHudLiftGestureState(bool inGame)
         leftControllerIndex < vr::k_unMaxTrackedDeviceCount &&
         m_Poses[leftControllerIndex].bPoseIsValid;
 
+    // When the off-hand is actively gripping a two-handed weapon, its normal aiming
+    // movement must never be interpreted as a request to reveal the HUD. ShowHUD
+    // remains available as the explicit, hold-to-show action.
+    const bool offhandGripActive = m_VrHandsTwoHandedGripActive;
     bool raised = false;
-    if (leftControllerValid)
+    if (leftControllerValid && !offhandGripActive)
     {
         const float scale = (std::max)(1.0f, m_VRScale);
 
@@ -587,6 +595,7 @@ void VR::UpdateHudLiftGestureState(bool inGame)
 bool VR::IsGameplayHudRequested() const
 {
     return m_HudAlwaysVisible ||
+        m_HudShowActionHeld.load(std::memory_order_acquire) != 0 ||
         m_HudLiftGestureActive.load(std::memory_order_acquire) != 0;
 }
 
@@ -3745,6 +3754,18 @@ namespace
         Kill = 1,
         Headshot = 2,
     };
+
+    static int GetPreboundKillIndicatorMaterialForSlot(int slotIndex)
+    {
+        // Most simultaneous markers are ordinary hits. Keep small dedicated pools
+        // for kill/headshot so gameplay never has to rebind a Vulkan texture when
+        // an event fires.
+        if (slotIndex < 12)
+            return static_cast<int>(KillIndicatorMaterialKind::Hit);
+        if (slotIndex < 14)
+            return static_cast<int>(KillIndicatorMaterialKind::Kill);
+        return static_cast<int>(KillIndicatorMaterialKind::Headshot);
+    }
 
     static IDirect3DDevice9* GetKillIndicatorD3DDevice(VR* vr)
     {
@@ -7823,7 +7844,6 @@ void VR::DestroyKillIndicatorOverlay(ActiveKillIndicator& indicator)
     }
 
     slot.visible = false;
-    slot.materialIndex = -1;
     indicator.overlaySlot = -1;
 }
 
@@ -7860,7 +7880,7 @@ bool VR::EnsureKillIndicatorOverlaySlot(int slotIndex)
     return true;
 }
 
-int VR::AcquireKillIndicatorOverlaySlot() const
+int VR::AcquireKillIndicatorOverlaySlot(int materialIndex) const
 {
     std::array<bool, 16> used{};
     for (const ActiveKillIndicator& active : m_ActiveKillIndicators)
@@ -7871,7 +7891,8 @@ int VR::AcquireKillIndicatorOverlaySlot() const
 
     for (int slotIndex = 0; slotIndex < static_cast<int>(used.size()); ++slotIndex)
     {
-        if (!used[slotIndex])
+        if (!used[slotIndex] &&
+            GetPreboundKillIndicatorMaterialForSlot(slotIndex) == materialIndex)
             return slotIndex;
     }
 
@@ -8099,7 +8120,7 @@ void VR::UpdateKillIndicatorOverlays()
     MaybeTrimExpiredKillIndicators(now, true);
     MaybeLogKillIndicatorStats(now);
 
-    if (!m_KillIndicatorEnabled || m_ActiveKillIndicators.empty())
+    if (!m_KillIndicatorEnabled)
         return;
 
     if (!m_Game || !m_Game->m_EngineClient || !m_Game->m_EngineClient->IsInGame())
@@ -8135,7 +8156,8 @@ void VR::UpdateKillIndicatorOverlays()
         if (decoded.loaded && !decoded.frames.empty())
         {
             usesDecodedFrames = true;
-            if (decoded.frames.size() > 1 && decoded.frameRate > 0.01f)
+            if (!m_ActiveKillIndicators.empty() &&
+                decoded.frames.size() > 1 && decoded.frameRate > 0.01f)
             {
                 const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
                 desiredFrameIndex = static_cast<uint32_t>(std::floor(nowSeconds * decoded.frameRate)) % static_cast<uint32_t>(decoded.frames.size());
@@ -8166,6 +8188,51 @@ void VR::UpdateKillIndicatorOverlays()
         textureReady[materialIndex] = m_KillIndicatorOverlayTextures[materialIndex].sharedTexture.m_VRTexture.handle != nullptr;
     }
 
+    // Pre-create and pre-bind fixed material pools before any hit event needs a
+    // slot. Texture uploads above are flushed once for the whole pool; subsequent
+    // hits only update transform/alpha/visibility and never drain DXVK's CS thread.
+    std::array<int, 16> slotsToBind{};
+    size_t slotsToBindCount = 0;
+    for (int slotIndex = 0; slotIndex < static_cast<int>(m_KillIndicatorOverlaySlots.size()); ++slotIndex)
+    {
+        const int materialIndex = GetPreboundKillIndicatorMaterialForSlot(slotIndex);
+        if (!textureReady[materialIndex])
+            continue;
+        if (!EnsureKillIndicatorOverlaySlot(slotIndex))
+            continue;
+
+        KillIndicatorOverlaySlot& slot = m_KillIndicatorOverlaySlots[slotIndex];
+        if (slot.materialIndex != materialIndex)
+            slotsToBind[slotsToBindCount++] = slotIndex;
+    }
+
+    if (slotsToBindCount != 0 && g_D3DVR9)
+    {
+        // Preserve the established overlay -> submission-queue lock order used by
+        // the rest of the OpenVR paths.
+        std::lock_guard<std::mutex> lock(m_VROverlayMutex);
+        const HRESULT queueHr = g_D3DVR9->LockSubmissionQueue();
+        if (SUCCEEDED(queueHr))
+        {
+            for (size_t i = 0; i < slotsToBindCount; ++i)
+            {
+                KillIndicatorOverlaySlot& slot = m_KillIndicatorOverlaySlots[slotsToBind[i]];
+                const int materialIndex = GetPreboundKillIndicatorMaterialForSlot(slotsToBind[i]);
+                const vr::EVROverlayError textureError = overlay->SetOverlayTexture(
+                    slot.overlayHandle,
+                    &m_KillIndicatorOverlayTextures[materialIndex].sharedTexture.m_VRTexture);
+                if (textureError == vr::VROverlayError_None)
+                    slot.materialIndex = materialIndex;
+                else if (textureError == vr::VROverlayError_InvalidHandle)
+                    slot.overlayHandle = vr::k_ulOverlayHandleInvalid;
+            }
+            g_D3DVR9->UnlockSubmissionQueue();
+        }
+    }
+
+    if (m_ActiveKillIndicators.empty())
+        return;
+
     for (ActiveKillIndicator& indicator : m_ActiveKillIndicators)
     {
         const KillIndicatorMaterialKind kind = !indicator.killConfirmed
@@ -8178,7 +8245,7 @@ void VR::UpdateKillIndicatorOverlays()
 
         if (indicator.overlaySlot < 0)
         {
-            indicator.overlaySlot = AcquireKillIndicatorOverlaySlot();
+            indicator.overlaySlot = AcquireKillIndicatorOverlaySlot(materialIndex);
             if (indicator.overlaySlot < 0)
                 continue;
         }
@@ -8227,22 +8294,13 @@ void VR::UpdateKillIndicatorOverlays()
         const float alpha = Clamp01((alphaBase + (1.0f - alphaBase) * intro) * fade);
         const float widthMeters = std::clamp((baseSizePixels / 640.0f) * scale, 0.10f, 0.45f);
 
-        std::lock_guard<std::mutex> lock(m_VROverlayMutex);
+        // A gameplay event must never bind a new Vulkan texture. If prewarming is
+        // still pending, defer this marker for one frame instead of introducing a
+        // hit-correlated queue drain (and a Source render interleave window).
         if (slot.materialIndex != materialIndex)
-        {
-            const vr::EVROverlayError textureError = overlay->SetOverlayTexture(slot.overlayHandle, &m_KillIndicatorOverlayTextures[materialIndex].sharedTexture.m_VRTexture);
-            if (textureError != vr::VROverlayError_None)
-            {
-                slot.materialIndex = -1;
-                slot.visible = false;
-                if (textureError == vr::VROverlayError_InvalidHandle)
-                    slot.overlayHandle = vr::k_ulOverlayHandleInvalid;
-                DestroyKillIndicatorOverlayTexture(materialIndex);
-                continue;
-            }
-            slot.materialIndex = materialIndex;
-        }
+            continue;
 
+        std::lock_guard<std::mutex> lock(m_VROverlayMutex);
         overlay->SetOverlayTransformTrackedDeviceRelative(slot.overlayHandle, vr::k_unTrackedDeviceIndex_Hmd, &transform);
         overlay->SetOverlayWidthInMeters(slot.overlayHandle, widthMeters);
         overlay->SetOverlayAlpha(slot.overlayHandle, alpha);
@@ -8759,7 +8817,7 @@ void VR::ClearQueuedProjectedItemLabels()
         eye.clear();
 }
 
-void VR::DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int eyeIndex, IDirect3DSurface9* target)
+void VR::DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int eyeIndex, IDirect3DSurface9* target, bool manageScene)
 {
     if (!device || !target || eyeIndex < 0 || eyeIndex >= static_cast<int>(m_QueuedProjectedItemLabelEyes.size()))
         return;
@@ -8793,13 +8851,14 @@ void VR::DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int ey
         ++it;
     }
 
-    if (FAILED(device->BeginScene()))
+    if (manageScene && FAILED(device->BeginScene()))
         return;
 
     IDirect3DStateBlock9* stateBlock = nullptr;
     if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &stateBlock)) || !stateBlock)
     {
-        device->EndScene();
+        if (manageScene)
+            device->EndScene();
         return;
     }
     stateBlock->Capture();
@@ -8902,7 +8961,8 @@ void VR::DrawQueuedProjectedItemLabelsToSurface(IDirect3DDevice9* device, int ey
     if (hasOldViewport)
         device->SetViewport(&oldViewport);
 
-    device->EndScene();
+    if (manageScene)
+        device->EndScene();
 }
 
 IDirect3DTexture9* VR::GetOrCreateProjectedItemLabelTexture(

@@ -592,6 +592,7 @@ namespace
         uint32_t hoverSelectionSuppressedUntilMs = 0;
         std::string componentEditKey;
         int componentEditIndex = 0;
+        std::unordered_map<std::string, int> componentEditIndexByKey;
         bool keyboardActive = false;
         std::string keyboardEditKey;
         vr::VROverlayHandle_t keyboardEventHandle = vr::k_ulOverlayHandleInvalid;
@@ -1098,10 +1099,14 @@ namespace
             return 0;
         if (s.componentEditKey != spec.key)
         {
+            auto it = s.componentEditIndexByKey.find(spec.key);
+            const int index = (it == s.componentEditIndexByKey.end()) ? 0 : it->second;
+            
             s.componentEditKey = spec.key;
-            s.componentEditIndex = 0;
+            s.componentEditIndex = index;
         }
         s.componentEditIndex = (std::clamp)(s.componentEditIndex, 0, count - 1);
+        s.componentEditIndexByKey[spec.key] = s.componentEditIndex;
         return s.componentEditIndex;
     }
 
@@ -1112,6 +1117,7 @@ namespace
             return;
         s.componentEditKey = spec.key;
         s.componentEditIndex = (std::clamp)(index, 0, count - 1);
+        s.componentEditIndexByKey[s.componentEditKey] = s.componentEditIndex;
         s.dirty = true;
     }
 
@@ -1146,6 +1152,7 @@ namespace
             next = CfgClampFloatToSpec(spec, next);
 
         values[(size_t)index] = next;
+        s.componentEditIndexByKey[spec.key] = index;
         const std::string value = CfgFormatComponentValues(spec, values);
         const float formatStep = CfgComponentFormatStep(spec, index, next);
         s.values[spec.key] = value;
@@ -1547,11 +1554,15 @@ namespace
         }
 
         s.selected = (std::clamp)(s.selected, 0, total - 1);
-        if (s.selected < s.scroll)
-            s.scroll = s.selected;
-        if (s.selected >= s.scroll + kCfgOverlayRowsVisible)
-            s.scroll = s.selected - kCfgOverlayRowsVisible + 1;
-        s.scroll = (std::clamp)(s.scroll, 0, (std::max)(0, total - 1));
+
+        if (!CfgIsSelectableRow(s, s.selected))
+        {
+            if (s.selected < s.scroll)
+                s.scroll = s.selected;
+            if (s.selected >= s.scroll + kCfgOverlayRowsVisible)
+                s.scroll = s.selected - kCfgOverlayRowsVisible + 1;
+            s.scroll = (std::clamp)(s.scroll, 0, (std::max)(0, total - 1));
+        }
     }
 
     static void CfgMoveSelection(CfgOverlayState& s, int delta)
@@ -1565,6 +1576,30 @@ namespace
         }
         s.selected = (std::clamp)(s.selected + delta, 0, total - 1);
         CfgEnsureSelectedVisible(s);
+        s.dirty = true;
+    }
+
+    static void CfgScrollBy(CfgOverlayState& s, int delta)
+    {
+        const int total = (int)s.visibleSpecIndexes.size();
+        if (total <= 0)
+        {
+            s.scroll = 0;
+            return;
+        }
+
+        const int nextScroll = (std::clamp)(s.scroll + delta, 0, (std::max)(0, total - kCfgOverlayRowsVisible));
+        if (nextScroll == s.scroll)
+            return;
+
+        s.scroll = nextScroll;
+
+        // Make the selected column stay at top or bottom while pass the selecting column
+        if (s.selected < s.scroll)
+            s.selected = s.scroll;
+        else if (s.selected >= s.scroll + kCfgOverlayRowsVisible)
+            s.selected = s.scroll + kCfgOverlayRowsVisible - 1;
+
         s.dirty = true;
     }
 
@@ -4889,11 +4924,14 @@ namespace
         CfgGdiText(g, 40, 112, 520, 36, s.useChinese ? "\xE6\x96\x87\xE6\x9C\xAC\xE9\xA1\xB9\xEF\xBC\x9A\xE7\x82\xB9\xE2\x80\x9C\xE7\xBC\x96\xE8\xBE\x91\xE2\x80\x9D\xE6\x89\x93\xE5\xBC\x80 VR \xE9\x94\xAE\xE7\x9B\x98\xEF\xBC\x9BVec3/\xE9\xA2\x9C\xE8\x89\xB2\xEF\xBC\x9A\xE5\x85\x88\xE9\x80\x89\xE5\x88\x86\xE9\x87\x8F\xEF\xBC\x8C\xE5\x86\x8D\xE6\x8C\x89 -/+\xE3\x80\x82" : "Text rows: Edit opens VR keyboard. Vec3/Color: select component then -/+.", g.normalFont, { 112, 125, 145 });
 
         const int total = (int)s.visibleSpecIndexes.size();
-        if (s.selected < s.scroll)
-            s.scroll = s.selected;
-        if (s.selected >= s.scroll + kCfgOverlayRowsVisible)
-            s.scroll = s.selected - kCfgOverlayRowsVisible + 1;
-        s.scroll = (std::clamp)(s.scroll, 0, (std::max)(0, total - 1));
+        if (!CfgIsSelectableRow(s, s.selected))
+        {
+            if (s.selected < s.scroll)
+                s.scroll = s.selected;
+            if (s.selected >= s.scroll + kCfgOverlayRowsVisible)
+                s.scroll = s.selected - kCfgOverlayRowsVisible + 1;
+            s.scroll = (std::clamp)(s.scroll, 0, (std::max)(0, total - 1));
+        }
 
         int y = kCfgRowsY;
         int lastDrawnItem = s.scroll;
@@ -4956,7 +4994,7 @@ namespace
                 if (CfgIsComponentEditable(spec))
                 {
                     const int count = CfgComponentCount(spec);
-                    const int activeIndex = selected ? CfgSelectedComponentIndex(s, spec) : (s.componentEditKey == spec.key ? (std::clamp)(s.componentEditIndex, 0, (std::max)(0, count - 1)) : 0);
+                    const int activeIndex = CfgSelectedComponentIndex(s, spec);
                     for (int i = 0; i < count; ++i)
                     {
                         const int bx = kCfgComponentX + i * (kCfgComponentButtonW + kCfgComponentGap);
@@ -6406,7 +6444,7 @@ namespace
                     else
                     {
                         CfgSuppressHoverSelectionAfterScroll(s);
-                        CfgMoveSelection(s, (ydelta > 0.0f) ? -3 : 3);
+                        CfgScrollBy(s, (ydelta > 0.0f) ? -1 : 1); // Scroll the column by 1
                     }
                 }
                 break;

@@ -284,7 +284,11 @@ void VR::ProcessMenuInput()
         overlayApi->SetOverlayTextureBounds(m_HUDTopHandle, &fullHudBounds);
         {
             std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
-            overlayApi->SetOverlayTexture(m_HUDTopHandle, &m_VKHUD.m_VRTexture);
+            SetOverlayTextureSynchronized(
+                overlayApi,
+                m_HUDTopHandle,
+                &m_VKHUD.m_VRTexture,
+                true);
         }
         overlayApi->HideOverlay(m_MainMenuHandle);
         overlayApi->ShowOverlay(m_HUDTopHandle);
@@ -441,7 +445,7 @@ void VR::ProcessMenuInput()
 }
 
 
-void VR::UpdateHandHudOverlays()
+void VR::UpdateHandHudOverlays(PendingOverlayTextureBindBatch* pendingTextureBinds)
 {
     // Debug: hand HUD update diagnostics (rate-limited).
     const auto dbgNow = std::chrono::steady_clock::now();
@@ -980,7 +984,24 @@ void VR::UpdateHandHudOverlays()
                         const vr::VRTextureBounds_t fullBounds{ 0.0f, 0.0f, 1.0f, 1.0f };
                         textureErr = ov->SetOverlayTextureBounds(m_SpecialInfectedIntentSenseHudHandle, &fullBounds);
                         if (textureErr == vr::VROverlayError_None)
-                            textureErr = ov->SetOverlayTexture(m_SpecialInfectedIntentSenseHudHandle, &m_VKSpecialInfectedIntentSenseHudDyn[gpuBackIdx].m_VRTexture);
+                        {
+                            if (pendingTextureBinds)
+                            {
+                                textureErr = pendingTextureBinds->Stage(
+                                    m_SpecialInfectedIntentSenseHudHandle,
+                                    &m_VKSpecialInfectedIntentSenseHudDyn[gpuBackIdx].m_VRTexture)
+                                    ? vr::VROverlayError_None
+                                    : vr::VROverlayError_RequestFailed;
+                            }
+                            else
+                            {
+                                textureErr = SetOverlayTextureSynchronized(
+                                    ov,
+                                    m_SpecialInfectedIntentSenseHudHandle,
+                                    &m_VKSpecialInfectedIntentSenseHudDyn[gpuBackIdx].m_VRTexture,
+                                    false);
+                            }
+                        }
                         if (textureErr == vr::VROverlayError_None)
                         {
                             m_SpecialInfectedIntentSenseHudPixelsFront = backIdx;
@@ -1588,7 +1609,28 @@ void VR::UpdateHandHudOverlays()
                         static const vr::VRTextureBounds_t full{ 0.0f, 0.0f, 1.0f, 1.0f };
                         err = ov ? ov->SetOverlayTextureBounds(m_LeftWristHudHandle, &full) : vr::VROverlayError_RequestFailed;
                         if (err == vr::VROverlayError_None)
-                            err = ov ? ov->SetOverlayTexture(m_LeftWristHudHandle, &m_VKLeftWristHudDyn.m_VRTexture) : vr::VROverlayError_RequestFailed;
+                        {
+                            if (!ov)
+                            {
+                                err = vr::VROverlayError_RequestFailed;
+                            }
+                            else if (pendingTextureBinds)
+                            {
+                                err = pendingTextureBinds->Stage(
+                                    m_LeftWristHudHandle,
+                                    &m_VKLeftWristHudDyn.m_VRTexture)
+                                    ? vr::VROverlayError_None
+                                    : vr::VROverlayError_RequestFailed;
+                            }
+                            else
+                            {
+                                err = SetOverlayTextureSynchronized(
+                                    ov,
+                                    m_LeftWristHudHandle,
+                                    &m_VKLeftWristHudDyn.m_VRTexture,
+                                    false);
+                            }
+                        }
                     }
                     else
                     {
@@ -1940,7 +1982,26 @@ void VR::UpdateHandHudOverlays()
                     const bool okUpload = UploadWorldQuadTextureRGBA(false, pixels.data(), w, h);
                     if (okUpload)
                     {
-                        err = ov ? ov->SetOverlayTexture(m_RightAmmoHudHandle, &m_VKRightAmmoHudDyn.m_VRTexture) : vr::VROverlayError_RequestFailed;
+                        if (!ov)
+                        {
+                            err = vr::VROverlayError_RequestFailed;
+                        }
+                        else if (pendingTextureBinds)
+                        {
+                            err = pendingTextureBinds->Stage(
+                                m_RightAmmoHudHandle,
+                                &m_VKRightAmmoHudDyn.m_VRTexture)
+                                ? vr::VROverlayError_None
+                                : vr::VROverlayError_RequestFailed;
+                        }
+                        else
+                        {
+                            err = SetOverlayTextureSynchronized(
+                                ov,
+                                m_RightAmmoHudHandle,
+                                &m_VKRightAmmoHudDyn.m_VRTexture,
+                                false);
+                        }
                     }
                     else
                     {

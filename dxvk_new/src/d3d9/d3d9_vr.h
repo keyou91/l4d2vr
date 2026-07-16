@@ -9,6 +9,7 @@
 class IDirect3DVR9;
 class D3D9DeviceEx;
 class SharedTextureHolder;
+class VR;
 inline IDirect3DVR9* g_D3DVR9;
 
 struct D3D9_TEXTURE_VR_DESC {
@@ -31,6 +32,10 @@ IDirect3DVR9 : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE TransferSurface(IDirect3DSurface9* pSurface, BOOL waitResourceIdle) = 0;
   virtual HRESULT STDMETHODCALLTYPE LockDevice() = 0;
   virtual HRESULT STDMETHODCALLTYPE UnlockDevice() = 0;
+  virtual HRESULT STDMETHODCALLTYPE LockSubmissionQueue() = 0;
+  virtual HRESULT STDMETHODCALLTYPE LockPreparedSubmissionQueue() = 0;
+  virtual HRESULT STDMETHODCALLTYPE UnlockSubmissionQueue() = 0;
+  virtual HRESULT STDMETHODCALLTYPE DrawQueuedEyeSubmitOverlays(VR* vr) = 0;
   virtual HRESULT STDMETHODCALLTYPE WaitDeviceIdle() = 0;
   virtual HRESULT STDMETHODCALLTYPE GetBackBufferData(SharedTextureHolder* backBufferData) = 0;
 };

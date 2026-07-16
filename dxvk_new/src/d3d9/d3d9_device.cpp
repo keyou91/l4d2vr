@@ -82,20 +82,27 @@ namespace dxvk {
             const UINT eyeHeight = static_cast<UINT>(vr->m_RenderHeight);
             const UINT oldWidth = params->BackBufferWidth;
             const UINT oldHeight = params->BackBufferHeight;
+            const D3DMULTISAMPLE_TYPE oldMultiSampleType = params->MultiSampleType;
+            const DWORD oldMultiSampleQuality = params->MultiSampleQuality;
 
             params->BackBufferWidth = eyeWidth;
             params->BackBufferHeight = eyeHeight;
+            params->MultiSampleType = D3DMULTISAMPLE_NONE;
+            params->MultiSampleQuality = 0;
 
             if (!params->Windowed && fullscreenMode) {
                 fullscreenMode->Width = eyeWidth;
                 fullscreenMode->Height = eyeHeight;
             }
 
-            const bool changed = oldWidth != eyeWidth || oldHeight != eyeHeight;
+            const bool sizeChanged = oldWidth != eyeWidth || oldHeight != eyeHeight;
+            const bool msaaChanged = oldMultiSampleType != D3DMULTISAMPLE_NONE || oldMultiSampleQuality != 0;
+            const bool changed = sizeChanged || msaaChanged;
             if (changed) {
                 Logger::info(str::format(
-                    "L4D2VR forcing reset backbuffer to VR eye size: ",
-                    oldWidth, "x", oldHeight, " -> ", eyeWidth, "x", eyeHeight));
+                    "L4D2VR forcing reset backbuffer to VR eye submit-compatible settings: ",
+                    oldWidth, "x", oldHeight, " msaa=", static_cast<UINT>(oldMultiSampleType), "/", oldMultiSampleQuality,
+                    " -> ", eyeWidth, "x", eyeHeight, " msaa=0/0"));
             }
 
             return changed;
@@ -283,7 +290,8 @@ namespace dxvk {
             VR* vr,
             int eyeIndex,
             IDirect3DSurface9* target,
-            bool backupTarget) {
+            bool backupTarget,
+            bool manageScene = true) {
             if (!device || !vr || !target)
                 return;
 
@@ -298,12 +306,13 @@ namespace dxvk {
             if (backupTarget && !VrAimLineBackupTarget(device, vr, eyeIndex, target, desc))
                 return;
 
-            if (FAILED(device->BeginScene()))
+            if (manageScene && FAILED(device->BeginScene()))
                 return;
 
             IDirect3DStateBlock9* stateBlock = nullptr;
             if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &stateBlock))) {
-                device->EndScene();
+                if (manageScene)
+                    device->EndScene();
                 return;
             }
 
@@ -374,7 +383,8 @@ namespace dxvk {
             if (hasOldViewport)
                 device->SetViewport(&oldViewport);
 
-            device->EndScene();
+            if (manageScene)
+                device->EndScene();
         }
 
 
@@ -388,7 +398,7 @@ namespace dxvk {
                 VrAimLineDrawOverlayToSurface(device, vr, 1, vr->m_D9RightEyeSurface, backupTarget);
         }
 
-        static void VrAimLineDrawOverlaysToSubmitTargets(D3D9DeviceEx* device, VR* vr) {
+        static void VrAimLineDrawOverlaysToSubmitTargets(D3D9DeviceEx* device, VR* vr, bool manageScene = true) {
             if (!device || !vr || !vr->m_D3DAimLineOverlayEnabled)
                 return;
 
@@ -397,12 +407,12 @@ namespace dxvk {
 
 
             if (leftTarget)
-                VrAimLineDrawOverlayToSurface(device, vr, 0, leftTarget, false);
+                VrAimLineDrawOverlayToSurface(device, vr, 0, leftTarget, false, manageScene);
             if (rightTarget)
-                VrAimLineDrawOverlayToSurface(device, vr, 1, rightTarget, false);
+                VrAimLineDrawOverlayToSurface(device, vr, 1, rightTarget, false, manageScene);
         }
 
-        static void VrItemModelLabelDrawOverlaysToSubmitTargets(D3D9DeviceEx* device, VR* vr) {
+        static void VrItemModelLabelDrawOverlaysToSubmitTargets(D3D9DeviceEx* device, VR* vr, bool manageScene = true) {
             if (!device || !vr || !vr->m_ItemModelLabelEnabled)
                 return;
 
@@ -410,9 +420,9 @@ namespace dxvk {
             IDirect3DSurface9* rightTarget = vr->m_D9RightEyeSubmitSurface ? vr->m_D9RightEyeSubmitSurface : vr->m_D9RightEyeSurface;
 
             if (leftTarget)
-                vr->DrawQueuedProjectedItemLabelsToSurface(device, 0, leftTarget);
+                vr->DrawQueuedProjectedItemLabelsToSurface(device, 0, leftTarget, manageScene);
             if (rightTarget)
-                vr->DrawQueuedProjectedItemLabelsToSurface(device, 1, rightTarget);
+                vr->DrawQueuedProjectedItemLabelsToSurface(device, 1, rightTarget, manageScene);
         }
 
         static bool VrTextureBoundsToSourceRect(
@@ -856,6 +866,10 @@ namespace dxvk {
             if (!device || !vr || !vr->m_D9HUDSurface || !VrShouldCompositeNativeHudToDesktop(vr))
                 return;
 
+            D3D9DeviceLock queuedDesktopTransaction;
+            if (vr->m_Game && vr->m_Game->GetMatQueueMode() != 0 && !vr->m_ReShadeVRCompat)
+                queuedDesktopTransaction = device->LockDeviceExclusive();
+
             if (vr->m_NativeDesktopHudPainted.exchange(false, std::memory_order_acq_rel))
                 return;
 
@@ -883,6 +897,10 @@ namespace dxvk {
             HWND presentWindowOverride) {
             if (!device || !vr || !vr->m_DesktopMirrorEnabled)
                 return;
+
+            D3D9DeviceLock queuedDesktopTransaction;
+            if (vr->m_Game && vr->m_Game->GetMatQueueMode() != 0 && !vr->m_ReShadeVRCompat)
+                queuedDesktopTransaction = device->LockDeviceExclusive();
 
             IDirect3DSurface9* source = nullptr;
             if (vr->m_DesktopMirrorHidePluginOverlays && vr->m_D9DesktopMirrorSurface)
@@ -941,6 +959,18 @@ namespace dxvk {
             backBuffer->Release();
         }
 
+    }
+
+    void D3D9DeviceEx::DrawQueuedEyeSubmitOverlays(VR* vr) {
+        if (!vr)
+            return;
+
+        // A Source completion functor normally runs inside the engine's active D3D9
+        // scene. Draw inline in that case; nested BeginScene would fail and silently
+        // drop both overlays. Outside a scene, preserve the legacy self-managed path.
+        const bool manageScene = !m_flags.test(D3D9DeviceFlag::InScene);
+        VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr, manageScene);
+        VrAimLineDrawOverlaysToSubmitTargets(this, vr, manageScene);
     }
 
     D3D9DeviceEx::D3D9DeviceEx(
@@ -1387,9 +1417,10 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
         // Source applies video settings through IDirect3DDevice9::Reset. Keep the
-        // implicit swapchain locked to the VR eye size across resets; otherwise a
-        // user-selected desktop resolution leaves viewport, HUD capture, menu overlay,
-        // and desktop mirror paths disagreeing about the active backbuffer size.
+        // implicit swapchain locked to the VR eye size and non-MSAA across resets;
+        // otherwise a user-selected desktop resolution or MSAA backbuffer leaves
+        // viewport, HUD capture, menu overlay, and desktop mirror paths disagreeing
+        // about the active backbuffer or unable to export it as an OpenVR texture.
         VR* vr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
         if (vr) {
             vr->ReleaseVRRenderTargetsForDeviceReset();
@@ -1475,6 +1506,9 @@ namespace dxvk {
         if (m_d3d9Options.deferSurfaceCreation)
             m_resetCtr++;
 
+        // RefreshBackBufferTexture takes the VR texture mutex and re-enters D3D9.
+        // Drop Reset's outer device lock first to preserve texture -> device order.
+        lock = D3D9DeviceLock();
         if (g_Game && g_Game->m_VR)
             g_Game->m_VR->RefreshBackBufferTexture(true);
 
@@ -5157,13 +5191,20 @@ namespace dxvk {
         bool postPresentResolveEyeSubmit = false;
         bool suppressVRFrameConsumptionOnThisPresent = false;
         bool suspendInactiveQueuedReShadePresent = false;
+        bool queuedSourceRenderBusy = false;
         const char* suppressVRFrameConsumptionReason = "none";
 
         if (g_Game && g_Game->m_VR && g_Game->m_VR->m_CreatedVRTextures) {
             VR* vr = g_Game->m_VR;
-            g_l4d2vrForceDeviceLock.store(vr->m_ReShadeVRCompat, std::memory_order_relaxed);
             const bool inGame = (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame());
             const bool queued = (g_Game->GetMatQueueMode() != 0);
+            // ReShade injects work outside the transactions known to the VR bridge, so
+            // it retains the conservative all-call lock. Normal queued Source rendering
+            // uses the activity gate plus scoped exclusive plugin/Present transactions.
+            g_l4d2vrForceDeviceLock.store(
+                vr->m_ReShadeVRCompat,
+                std::memory_order_release);
+            queuedSourceRenderBusy = inGame && queued && vr->IsSourceRenderQueueBusy();
             const uint32_t renderThreadId = vr->m_RenderThreadId.load(std::memory_order_acquire);
             const bool queuedReShadeCompat = inGame && queued && vr->m_ReShadeVRCompat;
             const bool reShadeQueuedRiskWindow = VrIsReShadeQueuedRiskWindow(vr, inGame, queued);
@@ -5199,16 +5240,14 @@ namespace dxvk {
                 // rendering normally must not resolve or mirror here: those StretchRect/backbuffer
                 // writes can overlap Source's water/shadow RTT work and corrupt the frame.
                 //
-                // If ShadowTweaksEnabled is active and desktop mirror is actually enabled, the
-                // problematic shadow RTT path is disabled by the cvar profile, so allow the
-                // original queued desktop mirror path.
+                // Shadow tweaks use the original queued desktop path. The eye source is
+                // now an immutable submit snapshot, while the existing helper retains the
+                // desktop-specific native HUD composition that must not run on the Source
+                // completion worker.
                 const bool useOriginalQueuedPresentPath =
                     inGame && queued && vr->m_ShadowTweaksEnabled && vr->m_DesktopMirrorEnabled;
                 const bool deferEyeSubmitResolve =
-                    inGame && VrHasEyeSubmitSurfaces(vr) &&
-                    (useOriginalQueuedPresentPath
-                        ? VrIsReShadeQueuedRiskWindow(vr, inGame, queued)
-                        : queued);
+                    inGame && queued && VrHasEyeSubmitSurfaces(vr);
 
                 if (!inGame) {
                     vr->ClearD3DAimLineOverlay();
@@ -5223,13 +5262,37 @@ namespace dxvk {
                     postPresentResolveEyeSubmit = true;
                 }
                 else {
-                    VrResolveEyeSurfacesToSubmit(this, vr);
+                    if (!(inGame && queued))
+                        VrResolveEyeSurfacesToSubmit(this, vr);
                 }
 
-                if (!(inGame && queued) || useOriginalQueuedPresentPath)
+                if (!(inGame && queued))
                     VrMirrorEyeToDesktopBackBuffer(this, vr, pDestRect, hDestWindowOverride);
+                else if (useOriginalQueuedPresentPath)
+                {
+                    // Never wait behind the completion worker here: that worker may be
+                    // flushing the just-finished snapshot. A missed desktop copy for one
+                    // Present is preferable to recreating the VR CPU-frame-time spike.
+                    std::unique_lock<TextureStateMutex> desktopSnapshotLock(
+                        vr->m_TextureMutex,
+                        std::try_to_lock);
+                    if (desktopSnapshotLock.owns_lock() &&
+                        vr->m_QueuedEyeSubmitIsolationReady.load(std::memory_order_acquire))
+                    {
+                        VrMirrorEyeToDesktopBackBuffer(this, vr, pDestRect, hDestWindowOverride);
+                    }
+                    else
+                    {
+                        VrCompositeNativeHudToDesktopBackBuffer(this, vr);
+                    }
+                }
                 else if (vr->m_DesktopMirrorEnabled)
+                {
                     VrCompositeNativeHudToDesktopBackBuffer(this, vr);
+                }
+
+                if (inGame && queued && !postPresentVR)
+                    postPresentVR = vr;
             }
 
             // Do not wait the DXVK device idle before Present here.
@@ -5243,6 +5306,15 @@ namespace dxvk {
 
         HRESULT result = D3D_OK;
         if (!suspendInactiveQueuedReShadePresent) {
+            D3D9DeviceLock queuedPresentLock;
+            if (g_Game && g_Game->m_VR &&
+                g_Game->GetMatQueueMode() != 0 &&
+                !g_Game->m_VR->m_ReShadeVRCompat) {
+                // Swapchain Present is outside Source's material call queue. Drain
+                // already-active Source calls and isolate only this transaction rather
+                // than making every draw in the rendered frame contend on one spinlock.
+                queuedPresentLock = LockDeviceExclusive();
+            }
             result = m_implicitSwapchain->Present(
                 pSourceRect,
                 pDestRect,
@@ -5304,39 +5376,59 @@ namespace dxvk {
                 skipPostPresentVRWorkReason = "inactive-window-post";
             }
 
-            const bool deferredEyeSubmitResolve = postPresentResolveEyeSubmit && postPresentVR;
-            if (!skipPostPresentVRWork && deferredEyeSubmitResolve && postPresentVR->m_CreatedVRTextures.load(std::memory_order_acquire)) {
-                const uint32_t completedFrameId = postPresentVR->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-                const uint32_t resolvedFrameId = postPresentVR->m_ReShadeVRCompatResolvedFrameId.load(std::memory_order_acquire);
-                if (!postPresentVR->m_ReShadeVRCompat || (completedFrameId != 0 && completedFrameId != resolvedFrameId)) {
-                    // Do not idle-wait before the resolve. In Source queued rendering this is the
-                    // dangerous lock inversion point while secondary render targets are active.
-                    // Enqueue the eye->submit copy after Present, then flush before VR::Update
-                    // submits the textures to OpenVR/ALVR.
-                    VrResolveEyeSurfacesToSubmit(this, postPresentVR);
-                    VrItemModelLabelDrawOverlaysToSubmitTargets(this, postPresentVR);
-                    VrAimLineDrawOverlaysToSubmitTargets(this, postPresentVR);
-                    if (postPresentVR->m_ReShadeVRCompat)
-                        postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
-                    if (g_D3DVR9)
-                        g_D3DVR9->WaitDeviceIdle();
-                }
-            }
-            else if (!skipPostPresentVRWork && !deferredEyeSubmitResolve && g_D3DVR9) {
-                g_D3DVR9->WaitDeviceIdle();
+            // Pair Source's producer 0->1 publication with this final idle check.
+            // The gate is released explicitly before VR::Update, which may wait for poses.
+            std::unique_lock<std::recursive_mutex> sourceRenderConsumerGate;
+            if (!skipPostPresentVRWork && postPresentVR) {
+                const bool inGame = postPresentVR->m_Game && postPresentVR->m_Game->m_EngineClient &&
+                    postPresentVR->m_Game->m_EngineClient->IsInGame();
+                const bool queued = postPresentVR->m_Game && postPresentVR->m_Game->GetMatQueueMode() != 0;
+                if (queued)
+                    sourceRenderConsumerGate = std::unique_lock<std::recursive_mutex>(postPresentVR->m_SourceRenderConsumerGate);
+                queuedSourceRenderBusy = inGame && queued && postPresentVR->IsSourceRenderQueueBusy();
             }
 
-            if (!skipPostPresentVRWork && !deferredEyeSubmitResolve && g_Game && g_Game->m_VR) {
-                VR* vr = g_Game->m_VR;
-                const bool inGame = (g_Game->m_EngineClient && g_Game->m_EngineClient->IsInGame());
-                const bool queued = (g_Game->GetMatQueueMode() != 0);
-                if (inGame && queued) {
-                    VrItemModelLabelDrawOverlaysToSubmitTargets(this, vr);
-                    VrAimLineDrawOverlaysToSubmitTargets(this, vr);
-                    if (g_D3DVR9)
-                        g_D3DVR9->WaitDeviceIdle();
+            const bool deferredEyeSubmitResolve = postPresentResolveEyeSubmit && postPresentVR;
+            if (!skipPostPresentVRWork && !queuedSourceRenderBusy && postPresentVR &&
+                postPresentVR->m_CreatedVRTextures.load(std::memory_order_acquire)) {
+                // Only the short raw-D3D postwork owns texture lifecycle state. Never
+                // carry this mutex, the consumer gate or a device lock into VR::Update/pose waits.
+                std::lock_guard<TextureStateMutex> postWorkTextureLock(postPresentVR->m_TextureMutex);
+                D3D9DeviceLock postWorkDeviceLock = LockDeviceExclusive();
+                const uint32_t completedFrameId = postPresentVR->m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                const uint32_t resolvedFrameId = postPresentVR->m_ReShadeVRCompatResolvedFrameId.load(std::memory_order_acquire);
+                const bool needsResolve = deferredEyeSubmitResolve &&
+                    postPresentVR->m_ReShadeVRCompat &&
+                    completedFrameId != 0 && completedFrameId != resolvedFrameId;
+                if (needsResolve) {
+                    VrResolveEyeSurfacesToSubmit(this, postPresentVR);
+                    postPresentVR->m_ReShadeVRCompatResolvedFrameId.store(completedFrameId, std::memory_order_release);
                 }
+
+                const uint32_t overlaidFrameId = postPresentVR->m_PostPresentSubmitOverlayFrameId.load(std::memory_order_acquire);
+                // Normal queued eyes are copied and decorated in the Source completion
+                // transaction before its layout/visibility proof is published. Never
+                // write those immutable snapshots here. ReShade still resolves in this
+                // post-Present window, so its overlays remain part of that transaction.
+                const bool shouldDrawSubmitOverlays =
+                    completedFrameId != 0 &&
+                    completedFrameId != overlaidFrameId &&
+                    postPresentVR->m_ReShadeVRCompat &&
+                    needsResolve;
+                if (shouldDrawSubmitOverlays) {
+                    VrItemModelLabelDrawOverlaysToSubmitTargets(this, postPresentVR);
+                    VrAimLineDrawOverlaysToSubmitTargets(this, postPresentVR);
+                    postPresentVR->m_PostPresentSubmitOverlayFrameId.store(completedFrameId, std::memory_order_release);
+                }
+                // Normal queued rendering already mirrored the immutable eye from
+                // the Source completion callback before Present. Keep this fallback
+                // only for ReShade's post-Present resolve path.
+                if (postPresentVR->m_ReShadeVRCompat)
+                    VrMirrorEyeToDesktopBackBuffer(this, postPresentVR, pDestRect, hDestWindowOverride);
             }
+
+            if (sourceRenderConsumerGate.owns_lock())
+                sourceRenderConsumerGate.unlock();
 
             if (!skipPostPresentVRWork && g_Game && g_Game->m_VR)
                 g_Game->m_VR->Update();
@@ -5568,6 +5660,7 @@ namespace dxvk {
         if (FAILED(hr))
             return hr;
 
+        lock = D3D9DeviceLock();
         if (g_Game && g_Game->m_VR)
             g_Game->m_VR->RefreshBackBufferTexture(true);
 

@@ -238,7 +238,7 @@ namespace dxvk {
   }
 
   void STDMETHODCALLTYPE D3D9VkInteropDevice::LockDevice() {
-    m_lock = m_device->LockDevice();
+    m_lock = m_device->LockDeviceExclusive();
   }
   
   void STDMETHODCALLTYPE D3D9VkInteropDevice::UnlockDevice() {
