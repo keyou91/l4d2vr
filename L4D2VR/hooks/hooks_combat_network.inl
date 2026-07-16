@@ -1996,6 +1996,8 @@ void __fastcall Hooks::dWriteUsercmdDeltaToBuffer(void* ecx, void* edx, int a1, 
 
 int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 {
+	static int s_lastButtons = 0;
+
 	const bool localUsingMountedWeapon = m_VR &&
 		m_VR->m_IsVREnabled &&
 		!m_VR->m_ForceNonVRServerMovement &&
@@ -2011,7 +2013,7 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 		const bool magazineInteractionBlocksFire = m_VR->IsMagazineInteractionBlockingFire();
 		if (magazineInteractionBlocksFire)
 		{
-			if ((to->buttons & kMagazineInteractionInAttack) != 0)
+			if ((to->buttons & kMagazineInteractionInAttack) != 0 && (s_lastButtons & kMagazineInteractionInAttack) == 0)
 				m_VR->PlayMagazineInteractionBlockedFireEmptySound();
 			to->buttons &= ~kMagazineInteractionInAttack; // IN_ATTACK
 		}
@@ -2029,7 +2031,7 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 			m_VR->ShouldSuppressMagazineInteractionEmptyClipAutoReload(nullptr);
 		if (suppressMagazineEmptyClipAutoReload)
 		{
-			if ((to->buttons & kMagazineInteractionInAttack) != 0)
+			if ((to->buttons & kMagazineInteractionInAttack) != 0 && (s_lastButtons & kMagazineInteractionInAttack) == 0)
 				m_VR->PlayMagazineInteractionBlockedFireEmptySound();
 			to->buttons &= ~(kMagazineInteractionInAttack | kMagazineInteractionInReload);
 		}
@@ -2048,6 +2050,8 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 		// 保持标准 CUserCmd，让 dCreateMove 写入的 forwardmove/sidemove 正常生效
 		return hkWriteUsercmd.fOriginal(buf, to, from);
 	}
+
+	s_lastButtons = to->buttons;
 
 	// ======== 以下为原有“编码”逻辑，保持不变，仅包在 canEncode 分支内 ========
 	CInput* m_Input = **(CInput***)(m_Game->m_Offsets->g_pppInput.address);

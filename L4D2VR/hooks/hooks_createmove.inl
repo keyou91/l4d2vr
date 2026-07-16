@@ -1,5 +1,6 @@
 bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime, CUserCmd* cmd)
 {
+	static int s_lastButtons = 0;
 	// When returning from spectator/observer back to a live player entity ("rescued"),
 	// VR origin can be desynced. Force a recenter/reset once on that transition.
 	// Netvars (client):
@@ -1435,7 +1436,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 	const bool magazineInteractionBlocksFire = m_VR->IsMagazineInteractionBlockingFire();
 	if (!localUsingMountedWeapon && magazineInteractionBlocksFire)
 	{
-		if ((cmd->buttons & kMagazineInteractionInAttack) != 0)
+		if ((cmd->buttons & kMagazineInteractionInAttack) != 0 && (s_lastButtons & kMagazineInteractionInAttack) == 0)
 			m_VR->PlayMagazineInteractionBlockedFireEmptySound();
 		cmd->buttons &= ~kMagazineInteractionInAttack; // IN_ATTACK
 	}
@@ -1455,7 +1456,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 		m_VR->ShouldSuppressMagazineInteractionEmptyClipAutoReload(nullptr);
 	if (!localUsingMountedWeapon && suppressMagazineEmptyClipAutoReload)
 	{
-		if ((cmd->buttons & kMagazineInteractionInAttack) != 0)
+		if ((cmd->buttons & kMagazineInteractionInAttack) != 0 && (s_lastButtons & kMagazineInteractionInAttack) == 0)
 			m_VR->PlayMagazineInteractionBlockedFireEmptySound();
 		cmd->buttons &= ~(kMagazineInteractionInAttack | kMagazineInteractionInReload);
 	}
@@ -1552,6 +1553,8 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 		m_VR->ApplyRoomscale1To1Move(cmd, flInputSampleTime, controlLocomotionActive);
 		m_VR->ApplyMovementLedgeGuard(cmd, m_VR->m_ScopeFovAdjustSuppressWalk || m_VR->m_TeleportTargetingActive);
 	}
+
+	s_lastButtons = cmd->buttons;
 	return result;
 }
 
