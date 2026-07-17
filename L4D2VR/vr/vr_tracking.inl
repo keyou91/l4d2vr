@@ -156,15 +156,18 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
     if (minDistance > 0.01f * scale && handDistance < minDistance)
         distanceWeight = std::clamp(handDistance / minDistance, 0.0f, 1.0f);
 
-    const float twoHandStrength =
+    float twoHandStrength =
         std::clamp(m_VrHandsTwoHandedAimStrength, 0.0f, 1.0f) * distanceWeight;
+    if (!m_VrHandsVirtualStockHoldingLong)
+        twoHandStrength *= 0.3f;
+
     Vector resolvedForward = VrHandsAimNormalizedLerp(
         baseForward,
         twoHandForward,
         twoHandStrength,
         baseForward);
 
-    if (m_VrHandsVirtualStockEnabled)
+    if (m_VrHandsVirtualStockEnabled && !m_Game->m_IsMeleeWeaponActive)
     {
         const Vector worldUp(0.0f, 0.0f, 1.0f);
         Vector bodyForward = hmdForward;
@@ -204,7 +207,7 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
     }
 
     Vector referenceUp = baseUp;
-    if (m_VrHandsVirtualStockEnabled && !hmdUp.IsZero())
+    if (m_VrHandsVirtualStockEnabled && !m_Game->m_IsMeleeWeaponActive && !hmdUp.IsZero())
         referenceUp = VrHandsAimNormalizedLerp(baseUp, hmdUp, 0.15f, baseUp);
 
     return VrHandsAimBuildBasis(
