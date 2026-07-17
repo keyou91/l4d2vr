@@ -3350,6 +3350,8 @@ public:
 		C_BasePlayer* localPlayer,
 		bool leftGripDown,
 		bool leftGripJustPressed,
+		bool leftSupportHandDown,
+    	bool leftSupportHandJustPressed,
 		bool allowGameplayInputOnTwoHandedGripRelease);
 	void MarkMagazineInteractionReloadCommandIssued();
 	bool IsMagazineInteractionReloadCommandActive() const;

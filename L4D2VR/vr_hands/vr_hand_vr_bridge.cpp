@@ -4401,6 +4401,8 @@ bool VR::UpdateMagazineInteraction(
     C_BasePlayer* localPlayer,
     bool leftGripDown,
     bool leftGripJustPressed,
+    bool leftSupportHandDown,
+    bool leftSupportHandJustPressed,
     bool allowGameplayInputOnTwoHandedGripRelease)
 {
     const auto now = std::chrono::steady_clock::now();
@@ -5562,7 +5564,7 @@ bool VR::UpdateMagazineInteraction(
             return false;
         }
 
-        if (leftGripJustPressed &&
+        if (leftHandguardJustPressed &&
             twoHandedGripRuntimeAllowed &&
             (!IsMagazineInteractionManualActive() || activeWeaponUsesShotgunShells) &&
             !m_MagazineInteractionLeftHandHolding &&
