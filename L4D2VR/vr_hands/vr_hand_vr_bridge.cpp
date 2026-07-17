@@ -6250,7 +6250,9 @@ bool VR::UpdateMagazineInteraction(
                 false);
         else // One in the chamber
         {
-            if (activeClip == 0 || m_MagazineInteractionServerClipReserveHoldReserve == 0) // Chamber was loaded, but the clip just went empty.
+            const int heldAmmoType = m_MagazineInteractionServerClipReserveHoldAmmoType;
+            const int heldReserve = m_MagazineInteractionServerClipReserveHoldReserve;
+            if (activeClip == 0 || (heldAmmoType > 2 && heldReserve == 0)) // Chamber was loaded, but the clip just went empty.
                 m_MagazineInteractionChamberEmpty = true;
             else if (activeClip != 1) // Anti-spam call to block +attack when there is still ammo
                 applyServerHookClipSettlement(
@@ -7126,8 +7128,11 @@ bool VR::UpdateMagazineInteraction(
                 m_MagazineInteractionReloadCommandIssued = false;
                 m_MagazineInteractionReloadCommandHoldUntil = {};
                 m_MagazineInteractionChamberEmpty = activeClip == 0;
+
+                const int heldAmmoType = m_MagazineInteractionServerClipReserveHoldAmmoType;
+                const int heldReserve = m_MagazineInteractionServerClipReserveHoldReserve;
                 applyServerHookClipSettlement(
-                    (m_MagazineInteractionChamberEmpty || m_MagazineInteractionServerClipReserveHoldReserve == 0) ? 0 : 1,
+                    (m_MagazineInteractionChamberEmpty || (heldAmmoType > 2 && heldReserve == 0)) ? 0 : 1,
                     -1,
                     -1,
                     -1,
