@@ -474,7 +474,9 @@ void VR::ProcessInput()
     const bool magazineButtonGripInput =
         vrHandsGripInputEnabled &&
         (!magazineInteractionInputEnabled || m_MagazineInteractionUseButtonGripInput);
-    const bool magazineFingerCurlInput = magazineInteractionInputEnabled;
+    const bool magazineFingerCurlInput =
+        magazineInteractionInputEnabled &&
+        (!m_MagazineInteractionUseButtonGripInput || m_MagazineInteractionSeparateButtonInput);
     std::array<float, 5> magazineInteractionFingerCurls{};
     const bool magazineInteractionFingerCurlsValid =
         magazineFingerCurlInput &&

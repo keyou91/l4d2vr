@@ -1437,6 +1437,7 @@ public:
 	bool m_MagazineInteractionQuickReloadMode = false;
 	bool m_MagazineInteractionUseButtonGripInput = true;
 	bool m_MagazineInteractionUseButtonDisbleReloadCommand = false;
+	bool m_MagazineInteractionSeparateButtonInput = false;
 	bool m_MagazineInteractionSuppressEmptyClipAutoReload = false;
 	int m_MagazineInteractionShotgunShellsPerInsert = 1;
 	float m_MagazineInteractionThumbIndexCurlStart = 0.62f;
