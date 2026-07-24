@@ -2149,7 +2149,7 @@ namespace
             MagazineInteractionWeaponUsesShotgunShells(weaponId);
     }
 
-    bool VrHandsWeaponSupportsTwoHandedGrip(C_WeaponCSBase::WeaponID weaponId)
+    bool VrHandsLongWeapon(C_WeaponCSBase::WeaponID weaponId)
     {
         switch (weaponId)
         {
@@ -5415,10 +5415,10 @@ bool VR::UpdateMagazineInteraction(
         (IsMagazineInteractionServerHookActive(static_cast<int>(activeWeaponId)) ||
             IsMagazineInteractionAnyServerHookActive());
 
-    const bool twoHandedGripRuntimeAllowed =
-        VrHandsWeaponSupportsTwoHandedGrip(activeWeaponId);
+    m_VrHandsVirtualStockHeldPistol = !VrHandsLongWeapon(activeWeaponId);
+
     if (m_VrHandsTwoHandedGripActive &&
-        (!twoHandedGripRuntimeAllowed || m_VrHandsTwoHandedGripWeaponId != activeWeaponIdInt))
+        (m_VrHandsTwoHandedGripWeaponId != activeWeaponIdInt))
     {
         if (m_VrHandsDebugLog)
         {
@@ -5574,7 +5574,7 @@ bool VR::UpdateMagazineInteraction(
         }
     };
 
-    if (!twoHandedGripRuntimeAllowed || manualReloadOwnsOffhandInput)
+    if (manualReloadOwnsOffhandInput)
         clearMountFriendlyGripContact();
 
     if (m_VrHandsTwoHandedAimMountFriendly && manualReloadOwnsOffhandInput)
@@ -5582,7 +5582,7 @@ bool VR::UpdateMagazineInteraction(
         if (m_VrHandsTwoHandedGripActive)
             releaseMountFriendlyGrip("manual-reload", false);
     }
-    else if (m_VrHandsTwoHandedAimMountFriendly && twoHandedGripRuntimeAllowed)
+    else if (m_VrHandsTwoHandedAimMountFriendly)
     {
         if (m_VrHandsTwoHandedGripActive)
         {
@@ -5652,7 +5652,6 @@ bool VR::UpdateMagazineInteraction(
                 (!isSeparateInput && (m_VrHandsTwoHandedGripHeldMode ? !leftGripDown : leftGripJustPressed)) ||
                 (isSeparateInput && (m_VrHandsTwoHandedGripHeldMode ? !leftSupportHandDown : leftSupportHandJustPressed))
             ) &&
-            twoHandedGripRuntimeAllowed &&
             m_VrHandsTwoHandedGripActive)
         {
             m_VrHandsTwoHandedGripActive = false;
@@ -5673,7 +5672,6 @@ bool VR::UpdateMagazineInteraction(
                 (!isSeparateInput && leftGripJustPressed) ||
                 (isSeparateInput && leftSupportHandJustPressed)
             ) &&
-            twoHandedGripRuntimeAllowed &&
             (!IsMagazineInteractionManualActive() || activeWeaponUsesShotgunShells) &&
             !m_MagazineInteractionLeftHandHolding &&
             (!leftHandTouchesMagazineForGripExclusion() || isSeparateInput))

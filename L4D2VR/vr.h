@@ -1404,6 +1404,7 @@ public:
 	bool m_VrHandsRealBulletSpreadEnabled = false;
 	bool m_VrHandsTwoHandedAimMountFriendly = false;
 	bool m_VrHandsVirtualStockEnabled = false;
+	bool m_VrHandsVirtualStockHeldPistol = false;
 	float m_VrHandsTwoHandedAimStrength = 1.0f;
 	float m_VrHandsTwoHandedAimSmoothingSeconds = 0.025f;
 	float m_VrHandsTwoHandedAimMinHandDistanceMeters = 0.12f;
