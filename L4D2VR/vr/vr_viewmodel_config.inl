@@ -1293,6 +1293,14 @@ void VR::ParseConfigFile()
                 m_ThirdPersonFrontViewOverlayAngleOffset.z });
         m_ThirdPersonFrontViewOverlayAngleOffset = QAngle{ tmp.x, tmp.y, tmp.z };
     }
+    m_FirstPersonBodyEnabled = getBool("FirstPersonBodyEnabled", m_FirstPersonBodyEnabled);
+    m_FirstPersonBodyHeadCutBelowEyesUnits = std::clamp(
+        getFloat("FirstPersonBodyHeadCutBelowEyesUnits", m_FirstPersonBodyHeadCutBelowEyesUnits),
+        0.0f,
+        24.0f);
+    m_FirstPersonBodyHideWorldWeapon = getBool(
+        "FirstPersonBodyHideWorldWeapon",
+        m_FirstPersonBodyHideWorldWeapon);
     m_HideArms = getBool("HideArms", m_HideArms);
     m_NativeViewmodelHandsOnly = getBool("NativeViewmodelHandsOnly", m_NativeViewmodelHandsOnly);
     m_NativeViewmodelHandsOnlyWristKeepFraction = std::clamp(

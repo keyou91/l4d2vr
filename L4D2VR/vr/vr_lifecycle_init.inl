@@ -981,6 +981,8 @@ VR::VR(Game* game)
     const uint32_t recommendedRenderHeight = m_RenderHeight;
     m_EyeRenderTargetMatchProjectionAspect =
         ReadEarlyConfigBool("EyeRenderTargetMatchProjectionAspect", m_EyeRenderTargetMatchProjectionAspect);
+    m_FirstPersonBodyEnabled =
+        ReadEarlyConfigBool("FirstPersonBodyEnabled", m_FirstPersonBodyEnabled);
 
     const float recommendedAspect = (recommendedRenderHeight > 0)
         ? static_cast<float>(recommendedRenderWidth) / static_cast<float>(recommendedRenderHeight)

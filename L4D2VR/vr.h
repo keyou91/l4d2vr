@@ -1331,6 +1331,12 @@ public:
 	// Built-in config overlay placement. Parsed by ParseConfigFile() so config hot-reload can update it.
 	float m_ConfigOverlayDistanceMeters = 1.35f;
 	float m_ConfigOverlaySizeMeters = 2.05f;
+	// Draw the local CTerrorPlayer world model during the two first-person VR eye scenes.
+	// Visibility and native model submission use exact local-renderable
+	// ShouldDraw/GetModel/DrawModel hooks.
+	bool m_FirstPersonBodyEnabled = true;
+	float m_FirstPersonBodyHeadCutBelowEyesUnits = 7.0f;
+	bool m_FirstPersonBodyHideWorldWeapon = true;
 	bool m_HideArms = false;
 	bool m_NativeViewmodelHandsOnly = false;
 	float m_NativeViewmodelHandsOnlyWristKeepFraction = 0.0f;

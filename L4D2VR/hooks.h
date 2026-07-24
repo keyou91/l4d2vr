@@ -103,6 +103,9 @@ typedef Server_BaseEntity* (__thiscall* tFindUseEntity)(void* thisptr, float rad
 typedef C_BaseEntity* (__thiscall* tClientFindUseEntity)(void* thisptr, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra);
 typedef void(__thiscall* tPlayerUse)(void* thisptr, void* useEntity);
 typedef void(__thiscall* tDrawModelExecute)(void* thisptr, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld);
+typedef bool(__thiscall* tFirstPersonBodyRenderableShouldDraw)(void* thisptr);
+typedef void* (__thiscall* tFirstPersonBodyRenderableGetModel)(void* thisptr);
+typedef int(__thiscall* tFirstPersonBodyRenderableDrawModel)(void* thisptr, int flags, const void* instance);
 typedef void(__thiscall* tPushRenderTargetAndViewport)(void* thisptr, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 typedef void(__thiscall* tPopRenderTargetAndViewport)(void* thisptr);
 typedef void(__thiscall* tVgui_Paint)(void* thisptr, int mode);
@@ -165,6 +168,9 @@ public:
 	static inline Hook<tClientFindUseEntity> hkClientFindUseEntity;
 	static inline Hook<tPlayerUse> hkPlayerUse;
 	static inline Hook<tDrawModelExecute> hkDrawModelExecute;
+	static inline Hook<tFirstPersonBodyRenderableShouldDraw> hkFirstPersonBodyRenderableShouldDraw;
+	static inline Hook<tFirstPersonBodyRenderableGetModel> hkFirstPersonBodyRenderableGetModel;
+	static inline Hook<tFirstPersonBodyRenderableDrawModel> hkFirstPersonBodyRenderableDrawModel;
 	static inline Hook<tPushRenderTargetAndViewport> hkPushRenderTargetAndViewport;
 	static inline Hook<tPopRenderTargetAndViewport> hkPopRenderTargetAndViewport;
 	static inline Hook<tVgui_Paint> hkVgui_Paint;
@@ -237,6 +243,9 @@ public:
 	static C_BaseEntity* __fastcall dClientFindUseEntity(void* ecx, void* edx, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra);
 	static void __fastcall dPlayerUse(void* ecx, void* edx, void* useEntity);
 	static void __fastcall dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld);
+	static bool __fastcall dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx);
+	static void* __fastcall dFirstPersonBodyRenderableGetModel(void* ecx, void* edx);
+	static int __fastcall dFirstPersonBodyRenderableDrawModel(void* ecx, void* edx, int flags, const void* instance);
 	static void __fastcall dPushRenderTargetAndViewport(void* ecx, void* edx, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 	static void __fastcall dPopRenderTargetAndViewport(void* ecx, void* edx);
 	static void __fastcall dVGui_Paint(void* ecx, void* edx, int mode);

@@ -14,6 +14,7 @@ Hooks::Hooks(Game* game)
 	m_PushedHud = false;
 
 	initSourceHooks();
+	Game::logMsg("[VR][FirstPersonBody] local body render path prepared");
 
 	hkGetRenderTarget.enableHook();
 	if (hkEndFrame.pTarget)

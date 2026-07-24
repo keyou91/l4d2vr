@@ -15281,6 +15281,186 @@ namespace
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
     };
 
+    inline bool HooksFirstPersonBodyWorldPlaneToClipPlane(
+        const HooksFirstPersonBodyEyeSceneState* bodyState,
+        const float worldPlane[4],
+        float outClipPlane[4])
+    {
+        if (!bodyState || !worldPlane || !outClipPlane)
+            return false;
+
+        const CViewSetup& view = bodyState->view;
+        const float fov = view.fov;
+        const float aspect = HooksNativeViewmodelHandsOnlyResolveViewmodelAspect(view);
+        const float zNear = view.zNear;
+        const float zFar = view.zFar;
+        if (!(fov > 0.001f) || !(aspect > 0.001f) ||
+            !(zNear > 0.0001f) || !(zFar > zNear))
+        {
+            return false;
+        }
+
+        const VrHandMatrix4 viewMatrix =
+            VrHandMath::BuildSourceView(view.origin, view.angles);
+        const VrHandMatrix4 projection =
+            VrHandMath::BuildPerspective(fov, aspect, zNear, zFar);
+        const VrHandMatrix4 worldToClip =
+            VrHandMath::Multiply(projection, viewMatrix);
+
+        VrHandMatrix4 clipToWorld{};
+        if (!VrHandMath::Invert4x4(worldToClip, clipToWorld))
+            return false;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            outClipPlane[i] =
+                VrHandMath::Get(clipToWorld, 0, i) * worldPlane[0] +
+                VrHandMath::Get(clipToWorld, 1, i) * worldPlane[1] +
+                VrHandMath::Get(clipToWorld, 2, i) * worldPlane[2] +
+                VrHandMath::Get(clipToWorld, 3, i) * worldPlane[3];
+        }
+
+        return HooksNativeViewmodelHandsOnlyNormalizePlane(outClipPlane) &&
+            HooksNativeViewmodelHandsOnlyPlaneFinite(outClipPlane);
+    }
+
+    inline bool HooksFirstPersonBodyFindBone(
+        const std::vector<std::string>& boneNames,
+        const std::vector<const char*>& preferredSuffixes,
+        int& outBone)
+    {
+        outBone = -1;
+        for (const char* suffix : preferredSuffixes)
+        {
+            if (!suffix || !*suffix)
+                continue;
+
+            for (int bone = 0; bone < static_cast<int>(boneNames.size()); ++bone)
+            {
+                const std::string lowerName =
+                    vr_vm_stabilize::ToLowerAscii(boneNames[static_cast<size_t>(bone)]);
+                const size_t suffixLength = std::strlen(suffix);
+                if (lowerName.size() >= suffixLength &&
+                    lowerName.compare(
+                        lowerName.size() - suffixLength,
+                        suffixLength,
+                        suffix) == 0)
+                {
+                    outBone = bone;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    inline bool HooksFirstPersonBodyBuildClipSet(
+        VR* vr,
+        const HooksFirstPersonBodyEyeSceneState* bodyState,
+        void* drawState,
+        const void* pCustomBoneToWorld,
+        HooksNativeViewmodelHandsOnlyClipSet& outSet)
+    {
+        outSet = HooksNativeViewmodelHandsOnlyClipSet{};
+        if (!vr || !bodyState || !vr->m_FirstPersonBodyEnabled)
+            return false;
+
+        Vector cutPoint = bodyState->fallbackEyePosition;
+        Vector keepNormal(0.0f, 0.0f, -1.0f);
+        bool usedHeadBones = false;
+
+        const vr_vm_stabilize::Mat3x4* bodyBones =
+            reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
+        constexpr int kMaxStudioBones = 512;
+
+        if (drawState && bodyBones)
+        {
+            std::vector<std::string> boneNames;
+            std::vector<int> boneParents;
+            int numBones = 0;
+            int boneIndex = 0;
+            int stride = 0;
+            int numBonesOffset = 0;
+            if (vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
+                    drawState,
+                    boneNames,
+                    boneParents,
+                    numBones,
+                    boneIndex,
+                    stride,
+                    numBonesOffset) &&
+                numBones > 0 &&
+                numBones <= kMaxStudioBones &&
+                static_cast<int>(boneNames.size()) >= numBones)
+            {
+                const std::vector<const char*> headSuffixes = {
+                    "bip01_head1", "bip01_head", "head1", "head",
+                };
+                const std::vector<const char*> neckSuffixes = {
+                    "bip01_neck1", "bip01_neck", "neck1", "neck",
+                };
+                int headBone = -1;
+                int neckBone = -1;
+                if (HooksFirstPersonBodyFindBone(
+                        boneNames, headSuffixes, headBone) &&
+                    HooksFirstPersonBodyFindBone(
+                        boneNames, neckSuffixes, neckBone) &&
+                    headBone >= 0 && headBone < numBones &&
+                    neckBone >= 0 && neckBone < numBones)
+                {
+                    vr_vm_stabilize::Mat3x4 headMatrix{};
+                    vr_vm_stabilize::Mat3x4 neckMatrix{};
+                    if (vr_vm_stabilize::SafeRead(bodyBones + headBone, headMatrix) &&
+                        vr_vm_stabilize::SafeRead(bodyBones + neckBone, neckMatrix))
+                    {
+                        const Vector headPosition =
+                            vr_vm_stabilize::GetOrigin(headMatrix);
+                        const Vector neckPosition =
+                            vr_vm_stabilize::GetOrigin(neckMatrix);
+                        Vector neckToHead = headPosition - neckPosition;
+                        const float neckToHeadLength = neckToHead.Length();
+                        if (std::isfinite(neckToHeadLength) &&
+                            neckToHeadLength > 0.25f)
+                        {
+                            neckToHead *= 1.0f / neckToHeadLength;
+                            cutPoint = headPosition -
+                                neckToHead * vr->m_FirstPersonBodyHeadCutBelowEyesUnits;
+                            keepNormal = neckToHead * -1.0f;
+                            usedHeadBones = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!usedHeadBones)
+        {
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(cutPoint))
+                return false;
+            cutPoint.z -= vr->m_FirstPersonBodyHeadCutBelowEyesUnits;
+        }
+
+        float worldPlane[4]{};
+        if (!HooksNativeViewmodelHandsOnlyBuildWorldPlaneFromPointNormal(
+                cutPoint,
+                keepNormal,
+                worldPlane))
+        {
+            return false;
+        }
+
+        if (!HooksFirstPersonBodyWorldPlaneToClipPlane(
+                bodyState,
+                worldPlane,
+                outSet.planes[0]))
+        {
+            return false;
+        }
+
+        outSet.planeCount = 1;
+        return true;
+    }
+
     inline void ApplyMagazineInteractionViewmodelOverride(
         VR* vr,
         void* drawState,
@@ -16045,6 +16225,106 @@ C_BaseEntity* Hooks::dClientFindUseEntity(void* ecx, void* edx, float radius, fl
 
 void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld)
 {
+	constexpr int kStudioShadowDepthTexture = 0x40000000;
+	HooksFirstPersonBodyEyeSceneState* const firstPersonBodyState =
+		g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
+	const bool firstPersonBodyEyeActive =
+		firstPersonBodyState != nullptr &&
+		InterlockedCompareExchange(
+			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
+
+	if (firstPersonBodyEyeActive &&
+		m_VR &&
+		m_Game &&
+		m_VR->m_FirstPersonBodyEnabled)
+	{
+		if (m_VR->m_FirstPersonBodyHideWorldWeapon &&
+			(info.flags & kStudioShadowDepthTexture) == 0 &&
+			firstPersonBodyState->activeWeaponRenderable &&
+			info.pRenderable == firstPersonBodyState->activeWeaponRenderable)
+		{
+			return;
+		}
+
+		const bool isLocalPlayerDraw =
+			(firstPersonBodyState->localPlayerIndex > 0 &&
+				info.entity_index == firstPersonBodyState->localPlayerIndex) ||
+			(firstPersonBodyState->localPlayerRenderable &&
+				info.pRenderable == firstPersonBodyState->localPlayerRenderable);
+		if (isLocalPlayerDraw)
+		{
+			// Preserve Source's own shadow submission. The head cut is only for the
+			// per-eye color draw around the HMD camera.
+			if ((info.flags & kStudioShadowDepthTexture) != 0)
+			{
+				hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+				return;
+			}
+
+			HooksNativeViewmodelHandsOnlyClipSet bodyClipSet{};
+			if (!HooksFirstPersonBodyBuildClipSet(
+				m_VR,
+				firstPersonBodyState,
+				state,
+				pCustomBoneToWorld,
+				bodyClipSet))
+			{
+				static std::atomic<bool> s_loggedBodyClipFailure{ false };
+				if (!s_loggedBodyClipFailure.exchange(true, std::memory_order_acq_rel))
+				{
+					Game::logMsg(
+						"[VR][FirstPersonBody] local body reached DrawModelExecute but head clip setup failed entity=%d state=%p bones=%p",
+						info.entity_index,
+						state,
+						pCustomBoneToWorld);
+				}
+				// Never render the local head around the HMD if the cut plane is invalid.
+				return;
+			}
+
+			const int bodyQueueMode = m_Game->GetMatQueueMode();
+			static std::atomic<bool> s_loggedBodyDrawReached{ false };
+			if (!s_loggedBodyDrawReached.exchange(true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][FirstPersonBody] native local body draw reached entity=%d queueMode=%d state=%p bones=%p",
+					info.entity_index,
+					bodyQueueMode,
+					state,
+					pCustomBoneToWorld);
+			}
+
+			if (bodyQueueMode == 0)
+			{
+				ScopedNativeViewmodelHandsOnlyClipPlane bodyClip(m_VR, bodyClipSet);
+				if (!bodyClip.Active())
+					return;
+				hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+				return;
+			}
+
+			IMatRenderContext* renderContext =
+				m_Game->m_MaterialSystem
+					? m_Game->m_MaterialSystem->GetRenderContext()
+					: nullptr;
+			ICallQueue* callQueue =
+				HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(renderContext);
+			if (!callQueue)
+				return;
+
+			// Reuse the same clip-state and functor classes already used by the
+			// stable NativeViewmodelHandsOnly path. No new callback ABI is introduced.
+			HooksQueuedNativeViewmodelHandsOnlyClipState* queuedClip =
+				new HooksQueuedNativeViewmodelHandsOnlyClipState(m_VR, bodyClipSet);
+			callQueue->QueueFunctor(
+				new HooksQueuedNativeViewmodelHandsOnlyClipBeginFunctor(queuedClip));
+			hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+			callQueue->QueueFunctor(
+				new HooksQueuedNativeViewmodelHandsOnlyClipEndFunctor(queuedClip));
+			return;
+		}
+	}
+
 	if (m_Game->m_SwitchedWeapons)
 		m_Game->m_CachedArmsModel = false;
 
