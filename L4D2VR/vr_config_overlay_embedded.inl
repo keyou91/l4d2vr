@@ -3064,11 +3064,24 @@ namespace
         }
     }
 
+    static SIZE CfgGdiGetTextSize(CfgGdiSurface& g, const std::wstring& text, HFONT font)
+    {
+        SIZE size = { 0, 0 };
+        if (text.empty())
+            return size;
+        HFONT oldFont = (HFONT)SelectObject(g.dc, font);
+        GetTextExtentPoint32W(g.dc, text.c_str(), (int)text.length(), &size);
+        SelectObject(g.dc, oldFont);
+        return size;
+    }
+
     static void CfgDrawGroupHeader(CfgGdiSurface& g, int y, const char* groupUtf8)
     {
         CfgGdiFill(g, kCfgRowsX, y + 15, 22, 4, { 70, 74, 86 });
-        CfgGdiText(g, kCfgRowsX + 30, y, 260, kCfgOverlayGroupH, groupUtf8, g.headerFont, { 206, 210, 220 });
-        CfgGdiFill(g, kCfgRowsX + 300, y + 15, kCfgRowsW - 300, 4, { 70, 74, 86 });
+        CfgGdiText(g, kCfgRowsX + 30, y, 260, kCfgOverlayGroupH, groupUtf8, g.headerFont, { 180, 214, 188 });
+        SIZE textSize = CfgGdiGetTextSize(g, CfgUtf8ToWide(groupUtf8), g.headerFont);
+        int lineStartX = kCfgRowsX + 30 + textSize.cx + 10;
+        CfgGdiFill(g, lineStartX, y + 15, kCfgRowsW - (lineStartX - kCfgRowsX), 4, { 70, 74, 86 });
     }
 
     static void CfgDrawCheckbox(CfgGdiSurface& g, int x, int y, bool checked, bool selected)
