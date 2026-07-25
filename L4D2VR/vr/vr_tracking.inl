@@ -151,21 +151,20 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
         handDistance = maxDistance;
     }
 
-    const float minDistance = std::max(0.0f, m_VrHandsTwoHandedAimMinHandDistanceMeters) * scale;
-    float distanceWeight = 1.0f;
-    if (!m_VrHandsVirtualStockHeldPistol &&
-        minDistance > 0.01f * scale && handDistance < minDistance)
+    float twoHandStrength = 0.0f;
+    float virtualStockStrength = 0.0f;
+    if (!m_VrHandsTwoHandedGripPistol)
     {
-        distanceWeight = std::clamp(handDistance / minDistance, 0.0f, 1.0f);
-    }
+        const float minDistance = std::max(0.0f, m_VrHandsTwoHandedAimMinHandDistanceMeters) * scale;
+        float distanceWeight = 1.0f;
+        if (!m_VrHandsTwoHandedGripPistol &&
+            minDistance > 0.01f * scale && handDistance < minDistance)
+        {
+            distanceWeight = std::clamp(handDistance / minDistance, 0.0f, 1.0f);
+        }
 
-    float twoHandStrength = std::clamp(m_VrHandsTwoHandedAimStrength, 0.0f, 1.0f) * distanceWeight;
-    float virtualStockStrength = std::clamp(m_VrHandsVirtualStockStrength, 0.0f, 1.0f);
-
-    if (m_VrHandsVirtualStockHeldPistol)
-    {
-        twoHandStrength *= 0.25f;
-        virtualStockStrength *= 0.25f;
+        twoHandStrength = std::clamp(m_VrHandsTwoHandedAimStrength, 0.0f, 1.0f) * distanceWeight;
+        virtualStockStrength = std::clamp(m_VrHandsVirtualStockStrength, 0.0f, 1.0f);
     }
 
     Vector resolvedForward = VrHandsAimNormalizedLerp(
@@ -174,7 +173,8 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
         twoHandStrength,
         baseForward);
 
-    if (m_VrHandsVirtualStockEnabled && !m_Game->m_IsMeleeWeaponActive)
+    if (m_VrHandsVirtualStockEnabled &&
+        !m_VrHandsTwoHandedGripPistol && !m_Game->m_IsMeleeWeaponActive)
     {
         const Vector worldUp(0.0f, 0.0f, 1.0f);
         Vector bodyForward = hmdForward;
@@ -214,8 +214,12 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
     }
 
     Vector referenceUp = baseUp;
-    if (m_VrHandsVirtualStockEnabled && !m_Game->m_IsMeleeWeaponActive && !hmdUp.IsZero())
-        referenceUp = VrHandsAimNormalizedLerp(baseUp, hmdUp, 0.15f, baseUp);
+    if (m_VrHandsVirtualStockEnabled &&
+        !m_VrHandsTwoHandedGripPistol && !m_Game->m_IsMeleeWeaponActive
+        && !hmdUp.IsZero())
+        {
+            referenceUp = VrHandsAimNormalizedLerp(baseUp, hmdUp, 0.15f, baseUp);
+        }
 
     return VrHandsAimBuildBasis(
         resolvedForward,
