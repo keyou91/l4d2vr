@@ -1335,7 +1335,22 @@ public:
 	// Visibility and native model submission use exact local-renderable
 	// ShouldDraw/GetModel/DrawModel hooks.
 	bool m_FirstPersonBodyEnabled = true;
-	float m_FirstPersonBodyHeadCutBelowEyesUnits = 7.0f;
+	bool m_FirstPersonBodyHideHead = true;
+	bool m_FirstPersonBodyHideArms = true;
+	// Visible upper-arm length retained below each shoulder before the rest is collapsed.
+	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
+	// HMD-yaw-local meters: X=forward, Y=right, Z=up.
+	Vector m_FirstPersonBodyAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
+	// HMD-yaw-local pitch/yaw/roll applied around the anchored head position.
+	Vector m_FirstPersonBodyAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
+	// Camera position relative to the body anchor. Positive X places the camera farther forward.
+	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.08f, 0.0f, 0.0f };
+	// Forward movement compensation at about 250 game units per second.
+	float m_FirstPersonBodyMovementCameraCompensationMeters = 0.03f;
+	// Backward movement compensation at about 250 game units per second.
+	float m_FirstPersonBodyBackwardMovementCameraCompensationMeters = 0.03f;
+	// Additional forward/back compensation while FL_DUCKING is active.
+	float m_FirstPersonBodyCrouchCameraCompensationMeters = 0.0f;
 	bool m_FirstPersonBodyHideWorldWeapon = true;
 	bool m_HideArms = false;
 	bool m_NativeViewmodelHandsOnly = false;

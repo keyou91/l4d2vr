@@ -57,7 +57,9 @@ namespace
     struct HooksFirstPersonBodyEyeSceneState
     {
         CViewSetup view{};
-        Vector fallbackEyePosition{ 0.0f, 0.0f, 0.0f };
+        Vector centerEyePosition{ 0.0f, 0.0f, 0.0f };
+        float forwardMovementFraction = 0.0f;
+        bool crouched = false;
         int localPlayerIndex = -1;
         void* localPlayerRenderable = nullptr;
         void* activeWeaponRenderable = nullptr;
@@ -164,6 +166,73 @@ namespace
             *outEffects = 0x20;
             *outLifeState = 2;
             *outModelIndex = 0;
+            return false;
+        }
+    }
+
+    bool HooksFirstPersonBodyReadForwardMovementFractionSafe(
+        C_BasePlayer* player,
+        float forwardX,
+        float forwardY,
+        float* outFraction)
+    {
+        if (!player || !outFraction ||
+            !std::isfinite(forwardX) || !std::isfinite(forwardY))
+        {
+            return false;
+        }
+
+        __try
+        {
+            constexpr std::ptrdiff_t kVelocityXOffset = 0x100;
+            constexpr std::ptrdiff_t kVelocityYOffset = 0x104;
+            const std::uint8_t* const playerBytes =
+                reinterpret_cast<const std::uint8_t*>(player);
+            const float velocityX = *reinterpret_cast<const float*>(
+                playerBytes + kVelocityXOffset);
+            const float velocityY = *reinterpret_cast<const float*>(
+                playerBytes + kVelocityYOffset);
+            if (!std::isfinite(velocityX) || !std::isfinite(velocityY))
+                return false;
+
+            float fraction =
+                (velocityX * forwardX + velocityY * forwardY) / 250.0f;
+            if (fraction > 1.0f)
+                fraction = 1.0f;
+            else if (fraction < -1.0f)
+                fraction = -1.0f;
+
+            *outFraction = fraction;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *outFraction = 0.0f;
+            return false;
+        }
+    }
+
+    bool HooksFirstPersonBodyReadCrouchedSafe(
+        C_BasePlayer* player,
+        bool* outCrouched)
+    {
+        if (!player || !outCrouched)
+            return false;
+
+        __try
+        {
+            constexpr std::ptrdiff_t kFlagsOffset = 0xF0;
+            constexpr int kDuckingFlag = 0x2; // FL_DUCKING
+            const std::uint8_t* const playerBytes =
+                reinterpret_cast<const std::uint8_t*>(player);
+            const int flags = *reinterpret_cast<const int*>(
+                playerBytes + kFlagsOffset);
+            *outCrouched = (flags & kDuckingFlag) != 0;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *outCrouched = false;
             return false;
         }
     }

@@ -2745,7 +2745,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 				FirstPersonBodyEyeSceneScope(
 					VR* owner,
-					const CViewSetup& view)
+					const CViewSetup& view,
+					const Vector& centerEyePosition)
 				{
 					previousOverride = InterlockedExchange(
 						&g_FirstPersonBodyEyeSceneActive, 0);
@@ -2768,7 +2769,32 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 					g_FirstPersonBodyProducerState = HooksFirstPersonBodyEyeSceneState{};
 					g_FirstPersonBodyProducerState.view = view;
-					g_FirstPersonBodyProducerState.fallbackEyePosition = view.origin;
+					g_FirstPersonBodyProducerState.centerEyePosition = centerEyePosition;
+					C_BasePlayer* const localPlayer =
+						g_FirstPersonBodyLocalPlayer.load(std::memory_order_acquire);
+					QAngle movementYaw(0.0f, view.angles.y, 0.0f);
+					Vector movementForward{};
+					QAngle::AngleVectors(
+						movementYaw,
+						&movementForward,
+						nullptr,
+						nullptr);
+					float forwardMovementFraction = 0.0f;
+					bool crouched = false;
+					if (localPlayer)
+					{
+						HooksFirstPersonBodyReadForwardMovementFractionSafe(
+							localPlayer,
+							movementForward.x,
+							movementForward.y,
+							&forwardMovementFraction);
+						HooksFirstPersonBodyReadCrouchedSafe(
+							localPlayer,
+							&crouched);
+					}
+					g_FirstPersonBodyProducerState.forwardMovementFraction =
+						forwardMovementFraction;
+					g_FirstPersonBodyProducerState.crouched = crouched;
 					g_FirstPersonBodyProducerState.localPlayerIndex =
 						g_FirstPersonBodyLocalPlayerIndex.load(std::memory_order_acquire);
 					g_FirstPersonBodyProducerState.localPlayerRenderable = localRenderable;
@@ -2794,7 +2820,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 			{
 				FirstPersonBodyEyeSceneScope firstPersonBodyScope(
-					m_VR, eyeView);
+					m_VR, eyeView, sharedCenterOrigin);
 				callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
 			}
 

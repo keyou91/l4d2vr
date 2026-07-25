@@ -22,6 +22,7 @@
 #include "sdk/ivdebugoverlay.h"
 
 static std::mutex logMutex;
+static std::once_flag logResetOnce;
 using tCreateInterface = void* (__cdecl*)(const char* name, int* returnCode);
 
 void L4D2VRConfigOverlay_StartWorker();
@@ -572,6 +573,12 @@ void Game::logMsg(const char* fmt, ...)
     }
 
     std::lock_guard<std::mutex> lock(logMutex);
+    std::call_once(logResetOnce, []()
+        {
+            FILE* file = fopen("vrmod_log.txt", "w");
+            if (file)
+                fclose(file);
+        });
 
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);

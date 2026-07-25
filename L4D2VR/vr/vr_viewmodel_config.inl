@@ -1294,10 +1294,54 @@ void VR::ParseConfigFile()
         m_ThirdPersonFrontViewOverlayAngleOffset = QAngle{ tmp.x, tmp.y, tmp.z };
     }
     m_FirstPersonBodyEnabled = getBool("FirstPersonBodyEnabled", m_FirstPersonBodyEnabled);
-    m_FirstPersonBodyHeadCutBelowEyesUnits = std::clamp(
-        getFloat("FirstPersonBodyHeadCutBelowEyesUnits", m_FirstPersonBodyHeadCutBelowEyesUnits),
+    m_FirstPersonBodyHideHead = getBool(
+        "FirstPersonBodyHideHead",
+        m_FirstPersonBodyHideHead);
+    m_FirstPersonBodyHideArms = getBool(
+        "FirstPersonBodyHideArms",
+        m_FirstPersonBodyHideArms);
+    m_FirstPersonBodyVisibleUpperArmLengthMeters = std::clamp(
+        getFloat(
+            "FirstPersonBodyVisibleUpperArmLengthMeters",
+            m_FirstPersonBodyVisibleUpperArmLengthMeters),
         0.0f,
-        24.0f);
+        0.40f);
+    m_FirstPersonBodyAnchorOffsetMeters = getVector3(
+        "FirstPersonBodyAnchorOffsetMeters",
+        m_FirstPersonBodyAnchorOffsetMeters);
+    m_FirstPersonBodyAnchorOffsetMeters.x = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.x, -0.5f, 0.5f);
+    m_FirstPersonBodyAnchorOffsetMeters.y = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.y, -0.5f, 0.5f);
+    m_FirstPersonBodyAnchorOffsetMeters.z = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.z, -0.5f, 0.5f);
+    m_FirstPersonBodyAnchorRotationOffsetDeg = getVector3(
+        "FirstPersonBodyAnchorRotationOffsetDeg",
+        m_FirstPersonBodyAnchorRotationOffsetDeg);
+    m_FirstPersonBodyAnchorRotationOffsetDeg.x = std::clamp(m_FirstPersonBodyAnchorRotationOffsetDeg.x, -180.0f, 180.0f);
+    m_FirstPersonBodyAnchorRotationOffsetDeg.y = std::clamp(m_FirstPersonBodyAnchorRotationOffsetDeg.y, -180.0f, 180.0f);
+    m_FirstPersonBodyAnchorRotationOffsetDeg.z = std::clamp(m_FirstPersonBodyAnchorRotationOffsetDeg.z, -180.0f, 180.0f);
+    m_FirstPersonBodyCameraOffsetMeters = getVector3(
+        "FirstPersonBodyCameraOffsetMeters",
+        m_FirstPersonBodyCameraOffsetMeters);
+    m_FirstPersonBodyCameraOffsetMeters.x = std::clamp(m_FirstPersonBodyCameraOffsetMeters.x, -0.5f, 0.5f);
+    m_FirstPersonBodyCameraOffsetMeters.y = std::clamp(m_FirstPersonBodyCameraOffsetMeters.y, -0.5f, 0.5f);
+    m_FirstPersonBodyCameraOffsetMeters.z = std::clamp(m_FirstPersonBodyCameraOffsetMeters.z, -0.5f, 0.5f);
+    m_FirstPersonBodyMovementCameraCompensationMeters = std::clamp(
+        getFloat(
+            "FirstPersonBodyMovementCameraCompensationMeters",
+            m_FirstPersonBodyMovementCameraCompensationMeters),
+        -0.25f,
+        0.25f);
+    m_FirstPersonBodyBackwardMovementCameraCompensationMeters = std::clamp(
+        getFloat(
+            "FirstPersonBodyBackwardMovementCameraCompensationMeters",
+            m_FirstPersonBodyBackwardMovementCameraCompensationMeters),
+        -0.25f,
+        0.25f);
+    m_FirstPersonBodyCrouchCameraCompensationMeters = std::clamp(
+        getFloat(
+            "FirstPersonBodyCrouchCameraCompensationMeters",
+            m_FirstPersonBodyCrouchCameraCompensationMeters),
+        -0.25f,
+        0.25f);
     m_FirstPersonBodyHideWorldWeapon = getBool(
         "FirstPersonBodyHideWorldWeapon",
         m_FirstPersonBodyHideWorldWeapon);

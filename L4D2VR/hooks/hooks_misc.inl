@@ -15281,49 +15281,6 @@ namespace
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
     };
 
-    inline bool HooksFirstPersonBodyWorldPlaneToClipPlane(
-        const HooksFirstPersonBodyEyeSceneState* bodyState,
-        const float worldPlane[4],
-        float outClipPlane[4])
-    {
-        if (!bodyState || !worldPlane || !outClipPlane)
-            return false;
-
-        const CViewSetup& view = bodyState->view;
-        const float fov = view.fov;
-        const float aspect = HooksNativeViewmodelHandsOnlyResolveViewmodelAspect(view);
-        const float zNear = view.zNear;
-        const float zFar = view.zFar;
-        if (!(fov > 0.001f) || !(aspect > 0.001f) ||
-            !(zNear > 0.0001f) || !(zFar > zNear))
-        {
-            return false;
-        }
-
-        const VrHandMatrix4 viewMatrix =
-            VrHandMath::BuildSourceView(view.origin, view.angles);
-        const VrHandMatrix4 projection =
-            VrHandMath::BuildPerspective(fov, aspect, zNear, zFar);
-        const VrHandMatrix4 worldToClip =
-            VrHandMath::Multiply(projection, viewMatrix);
-
-        VrHandMatrix4 clipToWorld{};
-        if (!VrHandMath::Invert4x4(worldToClip, clipToWorld))
-            return false;
-
-        for (int i = 0; i < 4; ++i)
-        {
-            outClipPlane[i] =
-                VrHandMath::Get(clipToWorld, 0, i) * worldPlane[0] +
-                VrHandMath::Get(clipToWorld, 1, i) * worldPlane[1] +
-                VrHandMath::Get(clipToWorld, 2, i) * worldPlane[2] +
-                VrHandMath::Get(clipToWorld, 3, i) * worldPlane[3];
-        }
-
-        return HooksNativeViewmodelHandsOnlyNormalizePlane(outClipPlane) &&
-            HooksNativeViewmodelHandsOnlyPlaneFinite(outClipPlane);
-    }
-
     inline bool HooksFirstPersonBodyFindBone(
         const std::vector<std::string>& boneNames,
         const std::vector<const char*>& preferredSuffixes,
@@ -15354,110 +15311,620 @@ namespace
         return false;
     }
 
-    inline bool HooksFirstPersonBodyBuildClipSet(
+    struct HooksFirstPersonBodyBoneLayout
+    {
+        const uint8_t* studioHdr = nullptr;
+        bool attempted = false;
+        bool valid = false;
+        bool frozenPoseCaptured = false;
+        int numBones = 0;
+        int headBone = -1;
+        int neckBone = -1;
+        int leftClavicleBone = -1;
+        int rightClavicleBone = -1;
+        int leftUpperArmBone = -1;
+        int rightUpperArmBone = -1;
+        int leftForearmBone = -1;
+        int rightForearmBone = -1;
+        std::vector<int> boneParents;
+        std::vector<uint8_t> hideHeadMask;
+        std::vector<uint8_t> hideLeftArmMask;
+        std::vector<uint8_t> hideRightArmMask;
+        std::vector<uint8_t> freezeLeftArmMask;
+        std::vector<uint8_t> freezeRightArmMask;
+        std::vector<vr_vm_stabilize::Mat3x4> frozenLocalPose;
+    };
+
+    inline bool HooksFirstPersonBodyBuildBoneLayout(
+        void* drawState,
+        HooksFirstPersonBodyBoneLayout& layout)
+    {
+        const uint8_t* studioHdr = nullptr;
+        if (!vr_vm_stabilize::TryGetStudioHdrFromDrawState(drawState, studioHdr) || !studioHdr)
+            return false;
+
+        if (layout.studioHdr == studioHdr && layout.attempted)
+            return layout.valid;
+
+        layout = HooksFirstPersonBodyBoneLayout{};
+        layout.studioHdr = studioHdr;
+        layout.attempted = true;
+
+        std::vector<std::string> boneNames;
+        int boneIndex = 0;
+        int stride = 0;
+        int numBonesOffset = 0;
+        if (!vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
+                drawState,
+                boneNames,
+                layout.boneParents,
+                layout.numBones,
+                boneIndex,
+                stride,
+                numBonesOffset) ||
+            layout.numBones <= 0 ||
+            layout.numBones > 512 ||
+            static_cast<int>(boneNames.size()) < layout.numBones ||
+            static_cast<int>(layout.boneParents.size()) < layout.numBones)
+        {
+            return false;
+        }
+
+        const std::vector<const char*> headSuffixes = {
+            "bip01_head1", "bip01_head", "head1", "head",
+        };
+        const std::vector<const char*> neckSuffixes = {
+            "bip01_neck1", "bip01_neck", "neck1", "neck",
+        };
+        HooksFirstPersonBodyFindBone(boneNames, headSuffixes, layout.headBone);
+        HooksFirstPersonBodyFindBone(boneNames, neckSuffixes, layout.neckBone);
+
+        if (layout.headBone < 0 || layout.headBone >= layout.numBones)
+            return false;
+
+        if (layout.neckBone < 0 || layout.neckBone >= layout.numBones)
+        {
+            const int parent = layout.boneParents[static_cast<size_t>(layout.headBone)];
+            if (parent >= 0 && parent < layout.numBones)
+                layout.neckBone = parent;
+            else
+                layout.neckBone = layout.headBone;
+        }
+
+        const std::vector<const char*> clavicleNeedles = {
+            "clavicle", "collarbone", "collar",
+        };
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            clavicleNeedles,
+            -1,
+            layout.leftClavicleBone);
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            clavicleNeedles,
+            1,
+            layout.rightClavicleBone);
+
+        const std::vector<const char*> upperArmNeedles = {
+            "upperarm", "upper_arm", "upper arm",
+        };
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            upperArmNeedles,
+            -1,
+            layout.leftUpperArmBone);
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            upperArmNeedles,
+            1,
+            layout.rightUpperArmBone);
+
+        const std::vector<const char*> forearmNeedles = {
+            "forearm", "lowerarm", "lower_arm", "lower arm",
+        };
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            forearmNeedles,
+            -1,
+            layout.leftForearmBone);
+        HooksNativeViewmodelHandsOnlyFindNamedBone(
+            boneNames,
+            forearmNeedles,
+            1,
+            layout.rightForearmBone);
+
+        const size_t boneCount = static_cast<size_t>(layout.numBones);
+        layout.hideHeadMask.assign(boneCount, 0u);
+        layout.hideLeftArmMask.assign(boneCount, 0u);
+        layout.hideRightArmMask.assign(boneCount, 0u);
+        layout.freezeLeftArmMask.assign(boneCount, 0u);
+        layout.freezeRightArmMask.assign(boneCount, 0u);
+
+        int hiddenHeadBones = 0;
+        int hiddenLeftArmBones = 0;
+        int hiddenRightArmBones = 0;
+        int frozenLeftArmBones = 0;
+        int frozenRightArmBones = 0;
+        const int leftShoulderFreezeRoot =
+            (layout.leftClavicleBone >= 0 &&
+             layout.leftClavicleBone < layout.numBones)
+                ? layout.leftClavicleBone
+                : layout.leftUpperArmBone;
+        const int rightShoulderFreezeRoot =
+            (layout.rightClavicleBone >= 0 &&
+             layout.rightClavicleBone < layout.numBones)
+                ? layout.rightClavicleBone
+                : layout.rightUpperArmBone;
+        for (int bone = 0; bone < layout.numBones; ++bone)
+        {
+            if (HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.boneParents,
+                    bone,
+                    layout.headBone,
+                    layout.numBones))
+            {
+                layout.hideHeadMask[static_cast<size_t>(bone)] = 1u;
+                ++hiddenHeadBones;
+            }
+
+            if (layout.leftForearmBone >= 0 &&
+                HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.boneParents,
+                    bone,
+                    layout.leftForearmBone,
+                    layout.numBones))
+            {
+                layout.hideLeftArmMask[static_cast<size_t>(bone)] = 1u;
+                ++hiddenLeftArmBones;
+            }
+
+            if (layout.rightForearmBone >= 0 &&
+                HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.boneParents,
+                    bone,
+                    layout.rightForearmBone,
+                    layout.numBones))
+            {
+                layout.hideRightArmMask[static_cast<size_t>(bone)] = 1u;
+                ++hiddenRightArmBones;
+            }
+
+            if (leftShoulderFreezeRoot >= 0 &&
+                HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.boneParents,
+                    bone,
+                    leftShoulderFreezeRoot,
+                    layout.numBones))
+            {
+                layout.freezeLeftArmMask[static_cast<size_t>(bone)] = 1u;
+                ++frozenLeftArmBones;
+            }
+
+            if (rightShoulderFreezeRoot >= 0 &&
+                HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.boneParents,
+                    bone,
+                    rightShoulderFreezeRoot,
+                    layout.numBones))
+            {
+                layout.freezeRightArmMask[static_cast<size_t>(bone)] = 1u;
+                ++frozenRightArmBones;
+            }
+        }
+
+        layout.valid = hiddenHeadBones > 0;
+        if (layout.valid)
+        {
+            Game::logMsg(
+                "[VR][FirstPersonBody] bone layout ready bones=%d head=%d neck=%d leftClavicle=%d rightClavicle=%d leftUpperArm=%d rightUpperArm=%d leftForearm=%d rightForearm=%d hiddenHead=%d hiddenLeftForearm=%d hiddenRightForearm=%d frozenLeftShoulder=%d frozenRightShoulder=%d",
+                layout.numBones,
+                layout.headBone,
+                layout.neckBone,
+                layout.leftClavicleBone,
+                layout.rightClavicleBone,
+                layout.leftUpperArmBone,
+                layout.rightUpperArmBone,
+                layout.leftForearmBone,
+                layout.rightForearmBone,
+                hiddenHeadBones,
+                hiddenLeftArmBones,
+                hiddenRightArmBones,
+                frozenLeftArmBones,
+                frozenRightArmBones);
+        }
+        return layout.valid;
+    }
+
+    inline bool HooksFirstPersonBodyCaptureFrozenLocalPose(
+        HooksFirstPersonBodyBoneLayout& layout,
+        const vr_vm_stabilize::Mat3x4* sourceBones)
+    {
+        if (!sourceBones || layout.numBones <= 0)
+            return false;
+
+        if (layout.frozenPoseCaptured &&
+            static_cast<int>(layout.frozenLocalPose.size()) == layout.numBones)
+        {
+            return true;
+        }
+
+        std::vector<vr_vm_stabilize::Mat3x4> frozenLocalPose(
+            static_cast<size_t>(layout.numBones),
+            vr_vm_stabilize::Identity());
+
+        for (int bone = 0; bone < layout.numBones; ++bone)
+        {
+            const size_t index = static_cast<size_t>(bone);
+            const bool freezeBone =
+                layout.hideHeadMask[index] != 0u ||
+                layout.freezeLeftArmMask[index] != 0u ||
+                layout.freezeRightArmMask[index] != 0u;
+            if (!freezeBone)
+                continue;
+
+            vr_vm_stabilize::Mat3x4 boneWorld{};
+            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, boneWorld) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(boneWorld))
+            {
+                return false;
+            }
+
+            const int parent = layout.boneParents[index];
+            if (parent < 0 || parent >= layout.numBones)
+            {
+                frozenLocalPose[index] = boneWorld;
+                continue;
+            }
+
+            vr_vm_stabilize::Mat3x4 parentWorld{};
+            if (!vr_vm_stabilize::SafeRead(sourceBones + parent, parentWorld) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(parentWorld))
+            {
+                return false;
+            }
+
+            vr_vm_stabilize::Mat3x4 inverseParent{};
+            vr_vm_stabilize::Mat3x4 boneLocal{};
+            vr_vm_stabilize::InvertTR(parentWorld, inverseParent);
+            vr_vm_stabilize::Mul(inverseParent, boneWorld, boneLocal);
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(boneLocal))
+                return false;
+            frozenLocalPose[index] = boneLocal;
+        }
+
+        layout.frozenLocalPose = std::move(frozenLocalPose);
+        layout.frozenPoseCaptured = true;
+        return true;
+    }
+
+    inline bool HooksFirstPersonBodyApplyFrozenBranch(
+        const HooksFirstPersonBodyBoneLayout& layout,
+        const std::vector<uint8_t>& mask,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!bones ||
+            static_cast<int>(mask.size()) < layout.numBones ||
+            static_cast<int>(layout.frozenLocalPose.size()) < layout.numBones)
+        {
+            return false;
+        }
+
+        for (int bone = 0; bone < layout.numBones; ++bone)
+        {
+            const size_t index = static_cast<size_t>(bone);
+            if (!mask[index])
+                continue;
+
+            const int parent = layout.boneParents[index];
+            if (parent < 0 || parent >= layout.numBones)
+                continue;
+
+            vr_vm_stabilize::Mat3x4 frozenWorld{};
+            vr_vm_stabilize::Mul(
+                bones[parent],
+                layout.frozenLocalPose[index],
+                frozenWorld);
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(frozenWorld))
+                return false;
+            bones[bone] = frozenWorld;
+        }
+        return true;
+    }
+
+    inline bool HooksFirstPersonBodyBuildAnchoredBones(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
         void* drawState,
         const void* pCustomBoneToWorld,
-        HooksNativeViewmodelHandsOnlyClipSet& outSet)
+        vr_vm_stabilize::Mat3x4*& outBones)
     {
-        outSet = HooksNativeViewmodelHandsOnlyClipSet{};
-        if (!vr || !bodyState || !vr->m_FirstPersonBodyEnabled)
+        outBones = nullptr;
+        if (!vr || !bodyState || !drawState || !pCustomBoneToWorld ||
+            !vr->m_FirstPersonBodyEnabled ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyState->centerEyePosition))
+        {
+            return false;
+        }
+
+        static thread_local HooksFirstPersonBodyBoneLayout s_layout{};
+        if (!HooksFirstPersonBodyBuildBoneLayout(drawState, s_layout))
             return false;
 
-        Vector cutPoint = bodyState->fallbackEyePosition;
-        Vector keepNormal(0.0f, 0.0f, -1.0f);
-        bool usedHeadBones = false;
-
-        const vr_vm_stabilize::Mat3x4* bodyBones =
+        const auto* sourceBones =
             reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
-        constexpr int kMaxStudioBones = 512;
 
-        if (drawState && bodyBones)
+        uint32_t seqEven = vr->m_RenderFrameSeq.load(std::memory_order_acquire);
+        seqEven &= ~1u;
+        if (seqEven == 0)
+            seqEven = 2;
+
+        vr_vm_stabilize::Mat3x4* anchoredBones =
+            vr_vm_stabilize::AllocStableBones(s_layout.numBones, seqEven);
+        if (!anchoredBones)
+            return false;
+
+        for (int bone = 0; bone < s_layout.numBones; ++bone)
         {
-            std::vector<std::string> boneNames;
-            std::vector<int> boneParents;
-            int numBones = 0;
-            int boneIndex = 0;
-            int stride = 0;
-            int numBonesOffset = 0;
-            if (vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
-                    drawState,
-                    boneNames,
-                    boneParents,
-                    numBones,
-                    boneIndex,
-                    stride,
-                    numBonesOffset) &&
-                numBones > 0 &&
-                numBones <= kMaxStudioBones &&
-                static_cast<int>(boneNames.size()) >= numBones)
+            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, anchoredBones[bone]) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(anchoredBones[bone]))
             {
-                const std::vector<const char*> headSuffixes = {
-                    "bip01_head1", "bip01_head", "head1", "head",
-                };
-                const std::vector<const char*> neckSuffixes = {
-                    "bip01_neck1", "bip01_neck", "neck1", "neck",
-                };
-                int headBone = -1;
-                int neckBone = -1;
-                if (HooksFirstPersonBodyFindBone(
-                        boneNames, headSuffixes, headBone) &&
-                    HooksFirstPersonBodyFindBone(
-                        boneNames, neckSuffixes, neckBone) &&
-                    headBone >= 0 && headBone < numBones &&
-                    neckBone >= 0 && neckBone < numBones)
-                {
-                    vr_vm_stabilize::Mat3x4 headMatrix{};
-                    vr_vm_stabilize::Mat3x4 neckMatrix{};
-                    if (vr_vm_stabilize::SafeRead(bodyBones + headBone, headMatrix) &&
-                        vr_vm_stabilize::SafeRead(bodyBones + neckBone, neckMatrix))
-                    {
-                        const Vector headPosition =
-                            vr_vm_stabilize::GetOrigin(headMatrix);
-                        const Vector neckPosition =
-                            vr_vm_stabilize::GetOrigin(neckMatrix);
-                        Vector neckToHead = headPosition - neckPosition;
-                        const float neckToHeadLength = neckToHead.Length();
-                        if (std::isfinite(neckToHeadLength) &&
-                            neckToHeadLength > 0.25f)
-                        {
-                            neckToHead *= 1.0f / neckToHeadLength;
-                            cutPoint = headPosition -
-                                neckToHead * vr->m_FirstPersonBodyHeadCutBelowEyesUnits;
-                            keepNormal = neckToHead * -1.0f;
-                            usedHeadBones = true;
-                        }
-                    }
-                }
+                return false;
             }
         }
 
-        if (!usedHeadBones)
+        if (!HooksFirstPersonBodyCaptureFrozenLocalPose(s_layout, sourceBones))
+            return false;
+
+        // Freeze hidden head and complete shoulder/arm animation in parent-local
+        // space. The head follows the neck and each clavicle branch follows the
+        // upper chest, but shoulder raises, weapon poses, reloads, and arm swings
+        // no longer move the visible shoulder/upper-arm cut.
+        if (vr->m_FirstPersonBodyHideHead &&
+            !HooksFirstPersonBodyApplyFrozenBranch(
+                s_layout,
+                s_layout.hideHeadMask,
+                anchoredBones))
         {
-            if (!HooksNativeViewmodelHandsOnlyVectorFinite(cutPoint))
+            return false;
+        }
+        if (vr->m_FirstPersonBodyHideArms)
+        {
+            if (!HooksFirstPersonBodyApplyFrozenBranch(
+                    s_layout,
+                    s_layout.freezeLeftArmMask,
+                    anchoredBones) ||
+                !HooksFirstPersonBodyApplyFrozenBranch(
+                    s_layout,
+                    s_layout.freezeRightArmMask,
+                    anchoredBones))
+            {
                 return false;
-            cutPoint.z -= vr->m_FirstPersonBodyHeadCutBelowEyesUnits;
+            }
         }
 
-        float worldPlane[4]{};
-        if (!HooksNativeViewmodelHandsOnlyBuildWorldPlaneFromPointNormal(
-                cutPoint,
-                keepNormal,
-                worldPlane))
+        vr_vm_stabilize::Mat3x4 frozenHead{};
+        if (!vr_vm_stabilize::SafeRead(
+                anchoredBones + s_layout.headBone,
+                frozenHead) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(frozenHead))
         {
             return false;
         }
 
-        if (!HooksFirstPersonBodyWorldPlaneToClipPlane(
-                bodyState,
-                worldPlane,
-                outSet.planes[0]))
+        QAngle anchorYaw(0.0f, bodyState->view.angles.y, 0.0f);
+        Vector forward{};
+        Vector right{};
+        Vector up{};
+        QAngle::AngleVectors(anchorYaw, &forward, &right, &up);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(forward) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(right) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(up))
         {
             return false;
         }
 
-        outSet.planeCount = 1;
+        const float unitsPerMeter =
+            (std::isfinite(vr->m_VRScale) && std::fabs(vr->m_VRScale) > 0.001f)
+                ? std::fabs(vr->m_VRScale)
+                : 43.2f;
+        const Vector& bodyOffsetMeters = vr->m_FirstPersonBodyAnchorOffsetMeters;
+        const Vector& anchorRotationOffsetDeg = vr->m_FirstPersonBodyAnchorRotationOffsetDeg;
+        const Vector& cameraOffsetMeters = vr->m_FirstPersonBodyCameraOffsetMeters;
+        const float movementFraction = std::clamp(
+            bodyState->forwardMovementFraction,
+            -1.0f,
+            1.0f);
+        const float forwardMovementFraction = std::max(movementFraction, 0.0f);
+        const float backwardMovementFraction = std::max(-movementFraction, 0.0f);
+        const float movementCameraOffsetMeters =
+            vr->m_FirstPersonBodyMovementCameraCompensationMeters *
+                forwardMovementFraction -
+            vr->m_FirstPersonBodyBackwardMovementCameraCompensationMeters *
+                backwardMovementFraction;
+        const float crouchCameraOffsetMeters = bodyState->crouched
+            ? vr->m_FirstPersonBodyCrouchCameraCompensationMeters
+            : 0.0f;
+
+        Vector desiredHeadPosition = bodyState->centerEyePosition;
+        // Camera offset is expressed relative to the body. Positive X means the
+        // camera sits farther forward, so the static model anchor moves backward.
+        desiredHeadPosition -= forward * (cameraOffsetMeters.x * unitsPerMeter);
+        // The animated survivor body lags opposite the movement direction.
+        // Forward and backward movement use independent magnitudes; positive
+        // values move the body along the corresponding movement direction.
+        desiredHeadPosition += forward *
+            (movementCameraOffsetMeters * unitsPerMeter);
+        // Crouch compensation is independent and additive. Positive values move
+        // the body forward while FL_DUCKING is active.
+        desiredHeadPosition += forward *
+            (crouchCameraOffsetMeters * unitsPerMeter);
+        desiredHeadPosition -= right * (cameraOffsetMeters.y * unitsPerMeter);
+        desiredHeadPosition -= up * (cameraOffsetMeters.z * unitsPerMeter);
+        desiredHeadPosition += forward * (bodyOffsetMeters.x * unitsPerMeter);
+        desiredHeadPosition += right * (bodyOffsetMeters.y * unitsPerMeter);
+        desiredHeadPosition += up * (bodyOffsetMeters.z * unitsPerMeter);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(desiredHeadPosition))
+            return false;
+
+        const Vector currentHeadPosition = vr_vm_stabilize::GetOrigin(frozenHead);
+        const Vector translation = desiredHeadPosition - currentHeadPosition;
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(translation))
+            return false;
+
+        vr_vm_stabilize::Mat3x4 translationDelta = vr_vm_stabilize::Identity();
+        translationDelta.m[0][3] = translation.x;
+        translationDelta.m[1][3] = translation.y;
+        translationDelta.m[2][3] = translation.z;
+        vr_vm_stabilize::ApplyDelta(
+            translationDelta,
+            anchoredBones,
+            s_layout.numBones);
+
+        // Apply the configured pitch/yaw/roll around the anchored head point in
+        // HMD-yaw-local space, after translation has placed the head at its target.
+        const QAngle rotatedAnchorAngles(
+            anchorYaw.x + anchorRotationOffsetDeg.x,
+            anchorYaw.y + anchorRotationOffsetDeg.y,
+            anchorYaw.z + anchorRotationOffsetDeg.z);
+        vr_vm_stabilize::Mat3x4 baseAnchorTransform{};
+        vr_vm_stabilize::Mat3x4 rotatedAnchorTransform{};
+        vr_vm_stabilize::Mat3x4 baseAnchorInverse{};
+        vr_vm_stabilize::Mat3x4 anchorRotationDelta{};
+        vr_vm_stabilize::BuildFromOrgAngles(
+            desiredHeadPosition,
+            anchorYaw,
+            baseAnchorTransform);
+        vr_vm_stabilize::BuildFromOrgAngles(
+            desiredHeadPosition,
+            rotatedAnchorAngles,
+            rotatedAnchorTransform);
+        vr_vm_stabilize::InvertTR(baseAnchorTransform, baseAnchorInverse);
+        vr_vm_stabilize::Mul(
+            rotatedAnchorTransform,
+            baseAnchorInverse,
+            anchorRotationDelta);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(anchorRotationDelta))
+            return false;
+        vr_vm_stabilize::ApplyDelta(
+            anchorRotationDelta,
+            anchoredBones,
+            s_layout.numBones);
+
+        auto collapseOriginForRoot = [&](int rootBone) -> Vector
+            {
+                if (rootBone < 0 || rootBone >= s_layout.numBones)
+                    return desiredHeadPosition;
+
+                int collapseBone = rootBone;
+                const int parent = s_layout.boneParents[static_cast<size_t>(rootBone)];
+                if (parent >= 0 && parent < s_layout.numBones)
+                    collapseBone = parent;
+
+                const Vector origin = vr_vm_stabilize::GetOrigin(anchoredBones[collapseBone]);
+                return HooksNativeViewmodelHandsOnlyVectorFinite(origin)
+                    ? origin
+                    : desiredHeadPosition;
+            };
+
+        const Vector headCollapseOrigin =
+            collapseOriginForRoot(s_layout.headBone);
+        const vr_vm_stabilize::Mat3x4 collapsedHead =
+            HooksNativeViewmodelHandsOnlyCollapsedBoneAt(headCollapseOrigin);
+
+        for (int bone = 0; bone < s_layout.numBones; ++bone)
+        {
+            const size_t index = static_cast<size_t>(bone);
+            if (vr->m_FirstPersonBodyHideHead && s_layout.hideHeadMask[index])
+                anchoredBones[bone] = collapsedHead;
+        }
+
+        auto trimArmBelowShoulder = [&](
+            int upperArmBone,
+            int forearmBone,
+            const std::vector<uint8_t>& hideForearmMask)
+            {
+                if (!vr->m_FirstPersonBodyHideArms ||
+                    upperArmBone < 0 || upperArmBone >= s_layout.numBones ||
+                    forearmBone < 0 || forearmBone >= s_layout.numBones ||
+                    static_cast<int>(hideForearmMask.size()) < s_layout.numBones)
+                {
+                    return;
+                }
+
+                const Vector shoulderOrigin =
+                    vr_vm_stabilize::GetOrigin(anchoredBones[upperArmBone]);
+                const Vector elbowOrigin =
+                    vr_vm_stabilize::GetOrigin(anchoredBones[forearmBone]);
+                Vector shoulderToElbow = elbowOrigin - shoulderOrigin;
+                const float armLength = std::sqrt(
+                    shoulderToElbow.x * shoulderToElbow.x +
+                    shoulderToElbow.y * shoulderToElbow.y +
+                    shoulderToElbow.z * shoulderToElbow.z);
+                if (!std::isfinite(armLength) || armLength <= 0.001f)
+                    return;
+
+                shoulderToElbow *= (1.0f / armLength);
+                const float configuredVisibleMeters = std::clamp(
+                    vr->m_FirstPersonBodyVisibleUpperArmLengthMeters,
+                    0.0f,
+                    0.40f);
+                const float visibleLength = (std::min)(
+                    armLength,
+                    configuredVisibleMeters * unitsPerMeter);
+                const float lengthScale = visibleLength / armLength;
+
+                // ValveBiped normally uses local X along the limb, but replacement
+                // models are not guaranteed to do so. Scale the matrix basis column
+                // most closely aligned with the shoulder-to-elbow direction.
+                int limbAxis = 0;
+                float bestAlignment = -1.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    Vector basis(
+                        anchoredBones[upperArmBone].m[0][axis],
+                        anchoredBones[upperArmBone].m[1][axis],
+                        anchoredBones[upperArmBone].m[2][axis]);
+                    const float basisLength = std::sqrt(
+                        basis.x * basis.x + basis.y * basis.y + basis.z * basis.z);
+                    if (!std::isfinite(basisLength) || basisLength <= 0.001f)
+                        continue;
+
+                    basis *= (1.0f / basisLength);
+                    const float alignment = std::fabs(
+                        basis.x * shoulderToElbow.x +
+                        basis.y * shoulderToElbow.y +
+                        basis.z * shoulderToElbow.z);
+                    if (alignment > bestAlignment)
+                    {
+                        bestAlignment = alignment;
+                        limbAxis = axis;
+                    }
+                }
+
+                for (int row = 0; row < 3; ++row)
+                    anchoredBones[upperArmBone].m[row][limbAxis] *= lengthScale;
+
+                const Vector cutOrigin =
+                    shoulderOrigin + shoulderToElbow * visibleLength;
+                const vr_vm_stabilize::Mat3x4 collapsedAtCut =
+                    HooksNativeViewmodelHandsOnlyCollapsedBoneAt(cutOrigin);
+                for (int bone = 0; bone < s_layout.numBones; ++bone)
+                {
+                    if (hideForearmMask[static_cast<size_t>(bone)])
+                        anchoredBones[bone] = collapsedAtCut;
+                }
+            };
+
+        trimArmBelowShoulder(
+            s_layout.leftUpperArmBone,
+            s_layout.leftForearmBone,
+            s_layout.hideLeftArmMask);
+        trimArmBelowShoulder(
+            s_layout.rightUpperArmBone,
+            s_layout.rightForearmBone,
+            s_layout.hideRightArmMask);
+
+        outBones = anchoredBones;
         return true;
     }
 
@@ -16253,74 +16720,49 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 				info.pRenderable == firstPersonBodyState->localPlayerRenderable);
 		if (isLocalPlayerDraw)
 		{
-			// Preserve Source's own shadow submission. The head cut is only for the
-			// per-eye color draw around the HMD camera.
+			// Preserve Source's original shadow submission. HMD anchoring and bone
+			// masking apply only to the per-eye color draw.
 			if ((info.flags & kStudioShadowDepthTexture) != 0)
 			{
 				hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
 				return;
 			}
 
-			HooksNativeViewmodelHandsOnlyClipSet bodyClipSet{};
-			if (!HooksFirstPersonBodyBuildClipSet(
+			vr_vm_stabilize::Mat3x4* anchoredBodyBones = nullptr;
+			if (!HooksFirstPersonBodyBuildAnchoredBones(
 				m_VR,
 				firstPersonBodyState,
 				state,
 				pCustomBoneToWorld,
-				bodyClipSet))
+				anchoredBodyBones))
 			{
-				static std::atomic<bool> s_loggedBodyClipFailure{ false };
-				if (!s_loggedBodyClipFailure.exchange(true, std::memory_order_acq_rel))
+				static std::atomic<bool> s_loggedBodyBoneFailure{ false };
+				if (!s_loggedBodyBoneFailure.exchange(true, std::memory_order_acq_rel))
 				{
 					Game::logMsg(
-						"[VR][FirstPersonBody] local body reached DrawModelExecute but head clip setup failed entity=%d state=%p bones=%p",
+						"[VR][FirstPersonBody] failed to build HMD-anchored masked body bones entity=%d state=%p bones=%p",
 						info.entity_index,
 						state,
 						pCustomBoneToWorld);
 				}
-				// Never render the local head around the HMD if the cut plane is invalid.
 				return;
 			}
 
-			const int bodyQueueMode = m_Game->GetMatQueueMode();
 			static std::atomic<bool> s_loggedBodyDrawReached{ false };
 			if (!s_loggedBodyDrawReached.exchange(true, std::memory_order_acq_rel))
 			{
 				Game::logMsg(
-					"[VR][FirstPersonBody] native local body draw reached entity=%d queueMode=%d state=%p bones=%p",
+					"[VR][FirstPersonBody] HMD-anchored masked local body draw reached entity=%d bones=%p->%p",
 					info.entity_index,
-					bodyQueueMode,
-					state,
-					pCustomBoneToWorld);
+					pCustomBoneToWorld,
+					anchoredBodyBones);
 			}
 
-			if (bodyQueueMode == 0)
-			{
-				ScopedNativeViewmodelHandsOnlyClipPlane bodyClip(m_VR, bodyClipSet);
-				if (!bodyClip.Active())
-					return;
-				hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
-				return;
-			}
-
-			IMatRenderContext* renderContext =
-				m_Game->m_MaterialSystem
-					? m_Game->m_MaterialSystem->GetRenderContext()
-					: nullptr;
-			ICallQueue* callQueue =
-				HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(renderContext);
-			if (!callQueue)
-				return;
-
-			// Reuse the same clip-state and functor classes already used by the
-			// stable NativeViewmodelHandsOnly path. No new callback ABI is introduced.
-			HooksQueuedNativeViewmodelHandsOnlyClipState* queuedClip =
-				new HooksQueuedNativeViewmodelHandsOnlyClipState(m_VR, bodyClipSet);
-			callQueue->QueueFunctor(
-				new HooksQueuedNativeViewmodelHandsOnlyClipBeginFunctor(queuedClip));
-			hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
-			callQueue->QueueFunctor(
-				new HooksQueuedNativeViewmodelHandsOnlyClipEndFunctor(queuedClip));
+			hkDrawModelExecute.fOriginal(
+				ecx,
+				state,
+				info,
+				anchoredBodyBones);
 			return;
 		}
 	}
