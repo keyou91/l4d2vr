@@ -1944,6 +1944,7 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 		move->viewangles.z = 0;
 		move->upmove = 0;
 
+		constexpr int kIN_USE = (1 << 5);
 		const uint8_t objectPullCommand = move->impulse;
 		if (objectPullCommand >= VR::kObjectPullWireBegin &&
 			objectPullCommand <= VR::kObjectPullWireCancel)
@@ -1971,6 +1972,17 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 					objectPullCommand,
 					move->tick_count,
 					objectPullEntityIndex);
+				if (objectPullCommand ==
+						VR::kObjectPullWireCatch &&
+					ObjectPullPrepareNativePickupUsercmd(
+						i,
+						objectPullEntityIndex))
+				{
+					// Let the game process the catch as an ordinary +use frame.
+					// FindUseEntity is overridden only for this pending pull
+					// target, so normal weapon swapping/ammo transfer runs.
+					move->buttons |= kIN_USE;
+				}
 			}
 		}
 
@@ -1978,7 +1990,6 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 			? &m_Game->m_PlayersVRInfo[static_cast<size_t>(i)]
 			: nullptr;
 		constexpr int kIN_ATTACK = (1 << 0);
-		constexpr int kIN_USE = (1 << 5);
 		constexpr int kIN_RELOAD = (1 << 13);
 		if (vrPlayerState)
 		{

@@ -16614,14 +16614,35 @@ void Hooks::dPlayerUse(void* ecx, void* edx, void* useEntity)
 		}
 		ScopedServerUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
 		hkPlayerUse.fOriginal(ecx, useEntity);
+		ObjectPullCompleteNativePickupUsercmd(
+			ecx,
+			useEntity);
 		return;
 	}
 
 	hkPlayerUse.fOriginal(ecx, useEntity);
+	ObjectPullCompleteNativePickupUsercmd(
+		ecx,
+		useEntity);
 }
 
 Server_BaseEntity* Hooks::dFindUseEntity(void* ecx, void* edx, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra)
 {
+	if (void* objectPullTarget =
+			ObjectPullSelectPendingNativePickupTarget(ecx))
+	{
+		if (m_VR &&
+			m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] FindUseEntity returning exact pull target player=%d entity=%p",
+				m_Game ? m_Game->m_CurrentUsercmdID : -1,
+				objectPullTarget);
+		}
+		return reinterpret_cast<Server_BaseEntity*>(
+			objectPullTarget);
+	}
+
 	const bool useAimActive = IsServerUseControllerAimWindowActive();
 	if (useAimActive)
 	{

@@ -70,6 +70,8 @@ struct ObjectPullServerState
     bool catchRequested = false;
     bool holdAsPhysicsProp = false;
     bool held = false;
+    bool nativePickupPending = false;
+    bool nativePickupTargetSelected = false;
     bool nativePickupIssued = false;
     int launchTick = 0;
     int lastCommandTick = 0;

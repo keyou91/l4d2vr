@@ -2786,78 +2786,6 @@ namespace
 		return true;
 	}
 
-	static bool ObjectPullInvokeNativePickup(
-		void* serverPlayer,
-		void* entity)
-	{
-		if (!serverPlayer ||
-			!entity ||
-			!Hooks::hkPlayerUse.fOriginal)
-		{
-			return false;
-		}
-
-		// CTerrorPlayer::PlayerUse(entity) still gates its exact-entity use path
-		// on the native IN_USE state. Object Pull Catch is bound to Grip through
-		// Reload/Jump/Crouch/InventoryQuickSwitch, so passing the entity alone
-		// enters PlayerUse but performs no pickup. Temporarily synthesize one
-		// native Use press for this exact call, then restore all button state so
-		// doors and other unrelated interactions remain untouched.
-		constexpr ptrdiff_t kButtonPressedOffset = 0x1CB4;
-		constexpr ptrdiff_t kButtonsDownOffset = 0x1CB8;
-		constexpr ptrdiff_t kButtonReleasedOffset = 0x1CBC;
-		constexpr uint32_t kInUse = (1u << 5);
-		unsigned char* const playerBytes =
-			reinterpret_cast<unsigned char*>(serverPlayer);
-		uint32_t* const buttonPressed =
-			reinterpret_cast<uint32_t*>(
-				playerBytes + kButtonPressedOffset);
-		uint32_t* const buttonsDown =
-			reinterpret_cast<uint32_t*>(
-				playerBytes + kButtonsDownOffset);
-		uint32_t* const buttonReleased =
-			reinterpret_cast<uint32_t*>(
-				playerBytes + kButtonReleasedOffset);
-		uint32_t savedButtonPressed = 0;
-		uint32_t savedButtonsDown = 0;
-		uint32_t savedButtonReleased = 0;
-		bool stateCaptured = false;
-
-#ifdef _MSC_VER
-		__try
-		{
-#endif
-			savedButtonPressed = *buttonPressed;
-			savedButtonsDown = *buttonsDown;
-			savedButtonReleased = *buttonReleased;
-			stateCaptured = true;
-			*buttonPressed = savedButtonPressed | kInUse;
-			*buttonsDown = savedButtonsDown | kInUse;
-			*buttonReleased = savedButtonReleased & ~kInUse;
-
-			Hooks::hkPlayerUse.fOriginal(
-				serverPlayer,
-				entity);
-
-			*buttonPressed = savedButtonPressed;
-			*buttonsDown = savedButtonsDown;
-			*buttonReleased = savedButtonReleased;
-#ifdef _MSC_VER
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			if (stateCaptured)
-			{
-				*buttonPressed = savedButtonPressed;
-				*buttonsDown = savedButtonsDown;
-				*buttonReleased = savedButtonReleased;
-			}
-			return false;
-		}
-#endif
-		return true;
-	}
-
 	static void ObjectPullDecodeServerCommand(
 		int playerIndex,
 		uint8_t command,
@@ -2992,6 +2920,171 @@ namespace
 			player.objectPull.catchRequested = true;
 	}
 
+	static bool ObjectPullPrepareNativePickupUsercmd(
+		int playerIndex,
+		int targetEntityIndex)
+	{
+		if (!Hooks::m_Game ||
+			!Hooks::m_VR ||
+			!Hooks::m_Game->IsValidPlayerIndex(playerIndex))
+		{
+			return false;
+		}
+
+		Player& player =
+			Hooks::m_Game->m_PlayersVRInfo[
+				static_cast<size_t>(playerIndex)];
+		ObjectPullServerState& pull = player.objectPull;
+		if (!pull.active ||
+			!pull.launched ||
+			!pull.catchRequested ||
+			pull.holdAsPhysicsProp ||
+			pull.held ||
+			pull.nativePickupIssued ||
+			!pull.entity ||
+			pull.entityIndex != targetEntityIndex ||
+			ManualThrowReadEntityVtable(pull.entity) !=
+				pull.entityVtable)
+		{
+			return false;
+		}
+
+		Vector origin{};
+		if (!ManualCarryImpactReadOrigin(pull.entity, origin))
+			return false;
+
+		Vector forward{};
+		Vector right{};
+		Vector up{};
+		QAngle::AngleVectors(
+			player.controllerAngle,
+			&forward,
+			&right,
+			&up);
+		if (VectorNormalize(forward) <= 0.0001f ||
+			VectorNormalize(right) <= 0.0001f ||
+			VectorNormalize(up) <= 0.0001f)
+		{
+			return false;
+		}
+
+		const float scale =
+			std::max(1.0f, Hooks::m_VR->m_VRScale);
+		const Vector offset =
+			Hooks::m_VR->m_ObjectPullCatchOffsetMeters *
+			scale;
+		const Vector catchPoint =
+			player.controllerPos +
+			forward * offset.x +
+			right * offset.y +
+			up * offset.z;
+		const float distance =
+			(catchPoint - origin).Length();
+		const float catchDistance =
+			std::max(
+				0.05f,
+				Hooks::m_VR->
+					m_ObjectPullCatchDistanceMeters) *
+			scale;
+		if (!std::isfinite(distance) ||
+			distance > catchDistance)
+		{
+			return false;
+		}
+
+		const bool firstRequest =
+			!pull.nativePickupPending;
+		pull.nativePickupPending = true;
+		pull.nativePickupTargetSelected = false;
+		if (firstRequest &&
+			Hooks::m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] injecting native IN_USE usercmd player=%d entity=%p index=%d distance=%.1f",
+				playerIndex,
+				pull.entity,
+				pull.entityIndex,
+				distance);
+		}
+		return true;
+	}
+
+	static void* ObjectPullSelectPendingNativePickupTarget(
+		void* serverPlayer)
+	{
+		if (!serverPlayer ||
+			!Hooks::m_Game ||
+			Hooks::m_Game->m_CurrentUsercmdPlayer !=
+				serverPlayer ||
+			!Hooks::m_Game->IsValidPlayerIndex(
+				Hooks::m_Game->m_CurrentUsercmdID))
+		{
+			return nullptr;
+		}
+
+		Player& player =
+			Hooks::m_Game->m_PlayersVRInfo[
+				static_cast<size_t>(
+					Hooks::m_Game->m_CurrentUsercmdID)];
+		ObjectPullServerState& pull = player.objectPull;
+		if (!pull.active ||
+			!pull.nativePickupPending ||
+			pull.nativePickupIssued ||
+			!pull.entity ||
+			ManualThrowReadEntityVtable(pull.entity) !=
+				pull.entityVtable)
+		{
+			return nullptr;
+		}
+
+		pull.nativePickupTargetSelected = true;
+		return pull.entity;
+	}
+
+	static void ObjectPullCompleteNativePickupUsercmd(
+		void* serverPlayer,
+		void* useEntity)
+	{
+		if (!serverPlayer ||
+			!Hooks::m_Game ||
+			Hooks::m_Game->m_CurrentUsercmdPlayer !=
+				serverPlayer ||
+			!Hooks::m_Game->IsValidPlayerIndex(
+				Hooks::m_Game->m_CurrentUsercmdID))
+		{
+			return;
+		}
+
+		Player& player =
+			Hooks::m_Game->m_PlayersVRInfo[
+				static_cast<size_t>(
+					Hooks::m_Game->m_CurrentUsercmdID)];
+		ObjectPullServerState& pull = player.objectPull;
+		if (!pull.active ||
+			!pull.nativePickupPending ||
+			pull.nativePickupIssued ||
+			!pull.entity ||
+			(!pull.nativePickupTargetSelected &&
+				useEntity != pull.entity))
+		{
+			return;
+		}
+
+		pull.nativePickupPending = false;
+		pull.nativePickupTargetSelected = false;
+		pull.nativePickupIssued = true;
+		pull.catchRequested = false;
+		if (Hooks::m_VR &&
+			Hooks::m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] native pickup completed inside ProcessUsercmds player=%d entity=%p index=%d",
+				Hooks::m_Game->m_CurrentUsercmdID,
+				pull.entity,
+				pull.entityIndex);
+		}
+	}
+
 	static void ObjectPullUpdateServer(
 		int playerIndex,
 		void* serverPlayer)
@@ -3015,6 +3108,15 @@ namespace
 
 		if (pull.nativePickupIssued)
 			return;
+
+		// A pending request should be consumed by the native PlayerUse call
+		// inside ProcessUsercmds. If that call was skipped by a game-state gate,
+		// clear only the transient override and let a later Catch usercmd retry.
+		if (pull.nativePickupPending)
+		{
+			pull.nativePickupPending = false;
+			pull.nativePickupTargetSelected = false;
+		}
 
 		if (!pull.entity ||
 			ManualThrowReadEntityVtable(
@@ -3127,23 +3229,10 @@ namespace
 							distance);
 					}
 				}
-				else if (ObjectPullInvokeNativePickup(
-					serverPlayer,
-					pull.entity))
-				{
-					pull.nativePickupIssued = true;
-					pull.catchRequested = false;
-					if (Hooks::m_VR->
-						m_ObjectPullDebugLog)
-					{
-						Game::logMsg(
-							"[VR][ObjectPull][server] native pickup issued with synthetic IN_USE player=%d entity=%p distance=%.1f",
-							playerIndex,
-							pull.entity,
-							distance);
-					}
-					return;
-				}
+				// Inventory items are picked up only through the synthetic
+				// IN_USE usercmd prepared before ProcessUsercmds. Reaching this
+				// post-process update means the native path did not consume the
+				// request, so keep normal free flight and allow a later retry.
 			}
 		}
 
