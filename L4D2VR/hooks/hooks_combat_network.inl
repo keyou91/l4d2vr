@@ -1950,37 +1950,51 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 			objectPullCommand <= VR::kObjectPullWireCancel)
 		{
 			// weaponselect is serialized with MAX_EDICT_BITS and carries the
-			// exact client/server network entity index for Object Pull.
-			// Do not use weaponsubtype as a magic marker: Source serializes it
-			// with only WEAPON_SUBTYPE_BITS (6 bits).
+			// exact client/server network entity index for Object Pull. Once the
+			// impulse has identified this packet as Object Pull, weaponsubtype's
+			// six serialized bits safely carry the narrow map-prop model hint.
 			const int objectPullEntityIndex = move->weaponselect;
+			const int rawObjectPullTargetHint =
+				move->weaponsubtype;
+			const uint8_t objectPullTargetHint =
+				rawObjectPullTargetHint >= 0 &&
+				rawObjectPullTargetHint <=
+					static_cast<int>(
+						VR::ObjectPullTargetHint::ColaBottles)
+				? static_cast<uint8_t>(
+					rawObjectPullTargetHint)
+				: static_cast<uint8_t>(
+					VR::ObjectPullTargetHint::None);
 			if (m_VR->m_ObjectPullDebugLog)
 			{
 				Game::logMsg(
-					"[VR][ObjectPull][server] incoming wire command=%u entityIndex=%d player=%d tick=%d",
+					"[VR][ObjectPull][server] incoming wire command=%u entityIndex=%d targetHint=%u player=%d tick=%d",
 					static_cast<unsigned int>(objectPullCommand),
 					objectPullEntityIndex,
+					static_cast<unsigned int>(objectPullTargetHint),
 					i,
 					move->tick_count);
 			}
 			move->impulse = 0;
 			move->weaponselect = 0;
+			move->weaponsubtype = 0;
 			if (hasValidPlayer)
 			{
 				ObjectPullDecodeServerCommand(
 					i,
 					objectPullCommand,
 					move->tick_count,
-					objectPullEntityIndex);
+					objectPullEntityIndex,
+					objectPullTargetHint);
 				if (objectPullCommand ==
 						VR::kObjectPullWireCatch &&
 					ObjectPullPrepareNativePickupUsercmd(
 						i,
 						objectPullEntityIndex))
 				{
-					// Let the game process the catch as an ordinary +use frame.
-					// FindUseEntity is overridden only for this pending pull
-					// target, so normal weapon swapping/ammo transfer runs.
+					// Feed one ordinary +use edge into this exact server
+					// command so the stock pickup transaction owns inventory
+					// replacement and same-type ammo transfer.
 					move->buttons |= kIN_USE;
 				}
 			}
@@ -2288,13 +2302,16 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 	QAngle objectPullAngles{};
 	bool objectPullOverridePose = false;
 	int objectPullTargetEntityIndex = 0;
+	VR::ObjectPullTargetHint objectPullTargetHint =
+		VR::ObjectPullTargetHint::None;
 	const bool hasObjectPullCommand = m_VR->GetObjectPullUsercmdData(
 		originalCommandNum,
 		objectPullCommand,
 		objectPullPosition,
 		objectPullAngles,
 		objectPullOverridePose,
-		objectPullTargetEntityIndex);
+		objectPullTargetEntityIndex,
+		objectPullTargetHint);
 
 	Vector controllerPos{};
 	QAngle controllerAngles{};
@@ -2317,20 +2334,25 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 		return hkWriteUsercmd.fOriginal(buf, to, from);
 	}
 	const int originalWeaponSelect = to->weaponselect;
+	const int originalWeaponSubtype = to->weaponsubtype;
 	if (hasObjectPullCommand)
 	{
 		to->impulse = objectPullCommand;
 		to->weaponselect = objectPullTargetEntityIndex;
+		to->weaponsubtype = static_cast<int>(objectPullTargetHint);
 		const uint32_t objectPullLogPayload =
 			static_cast<uint32_t>(objectPullCommand) |
-			(static_cast<uint32_t>(std::clamp(objectPullTargetEntityIndex, 0, 2047)) << 8);
+			(static_cast<uint32_t>(
+				std::clamp(objectPullTargetEntityIndex, 0, 2047)) << 8) |
+			(static_cast<uint32_t>(objectPullTargetHint) << 19);
 		if (m_VR->m_ObjectPullDebugLog &&
 			s_lastObjectPullLoggedWirePayload != objectPullLogPayload)
 		{
 			Game::logMsg(
-				"[VR][ObjectPull][client] outgoing wire command=%u entityIndex=%d usercmd=%d",
+				"[VR][ObjectPull][client] outgoing wire command=%u entityIndex=%d targetHint=%u usercmd=%d",
 				static_cast<unsigned int>(objectPullCommand),
 				objectPullTargetEntityIndex,
+				static_cast<unsigned int>(objectPullTargetHint),
 				originalCommandNum);
 			s_lastObjectPullLoggedWirePayload = objectPullLogPayload;
 		}
@@ -2386,6 +2408,7 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 	to->command_number = originalCommandNum;
 	to->impulse = originalImpulse;
 	to->weaponselect = originalWeaponSelect;
+	to->weaponsubtype = originalWeaponSubtype;
 
 	// 重算校验，否则多人下枪声会异常
 	pVerified->m_cmd = *to;

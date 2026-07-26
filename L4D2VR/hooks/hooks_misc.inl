@@ -16574,6 +16574,22 @@ const QAngle* Hooks::dServerPlayerEyeAngles(void* ecx, void* edx)
 
 void Hooks::dPlayerUse(void* ecx, void* edx, void* useEntity)
 {
+	if (void* objectPullTarget =
+			ObjectPullSelectPendingNativePickupTarget(ecx))
+	{
+		// This invocation came from the real ProcessUsercmds pass for our one
+		// injected +use edge. Use the exact entity that reached the controller
+		// instead of letting a nearby item win the ordinary aim lookup.
+		useEntity = objectPullTarget;
+		if (m_VR && m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] PlayerUse native usercmd target override player=%d entity=%p",
+				m_Game ? m_Game->m_CurrentUsercmdID : -1,
+				objectPullTarget);
+		}
+	}
+
 	const bool useAimActive = IsServerUseControllerAimWindowActive();
 	if (useAimActive)
 	{
@@ -16631,14 +16647,6 @@ Server_BaseEntity* Hooks::dFindUseEntity(void* ecx, void* edx, float radius, flo
 	if (void* objectPullTarget =
 			ObjectPullSelectPendingNativePickupTarget(ecx))
 	{
-		if (m_VR &&
-			m_VR->m_ObjectPullDebugLog)
-		{
-			Game::logMsg(
-				"[VR][ObjectPull][server] FindUseEntity returning exact pull target player=%d entity=%p",
-				m_Game ? m_Game->m_CurrentUsercmdID : -1,
-				objectPullTarget);
-		}
 		return reinterpret_cast<Server_BaseEntity*>(
 			objectPullTarget);
 	}
@@ -16687,8 +16695,72 @@ Server_BaseEntity* Hooks::dFindUseEntity(void* ecx, void* edx, float radius, flo
 	return hkFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
 }
 
+static C_BaseEntity* ObjectPullGetClientNativeHighlightTarget(
+	Game* game,
+	VR* vr)
+{
+	if (!game ||
+		!vr ||
+		!game->m_ClientEntityList ||
+		!vr->m_ObjectPullVisualsEnabled ||
+		(vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Targeting &&
+			vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Armed))
+	{
+		return nullptr;
+	}
+
+	C_BaseEntity* pullTarget = vr->m_ObjectPullClientTarget;
+	const int pullTargetIndex =
+		vr->m_ObjectPullClientTargetEntityIndex;
+	void* expectedVtable =
+		vr->m_ObjectPullClientTargetVtable;
+	if (!pullTarget ||
+		!expectedVtable ||
+		pullTargetIndex <= 0 ||
+		pullTargetIndex > 2047)
+	{
+		return nullptr;
+	}
+
+#ifdef _MSC_VER
+	__try
+	{
+		C_BaseEntity* current = static_cast<C_BaseEntity*>(
+			game->m_ClientEntityList->GetClientEntity(
+				pullTargetIndex));
+		if (current == pullTarget &&
+			*reinterpret_cast<void**>(current) == expectedVtable)
+		{
+			return current;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+#else
+	C_BaseEntity* current = static_cast<C_BaseEntity*>(
+		game->m_ClientEntityList->GetClientEntity(
+			pullTargetIndex));
+	if (current == pullTarget &&
+		*reinterpret_cast<void**>(current) == expectedVtable)
+	{
+		return current;
+	}
+#endif
+	return nullptr;
+}
+
 C_BaseEntity* Hooks::dClientFindUseEntity(void* ecx, void* edx, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra)
 {
+	if (C_BaseEntity* pullTarget =
+			ObjectPullGetClientNativeHighlightTarget(m_Game, m_VR))
+	{
+		// This is the same target feed used by L4D2's native item-outline
+		// system. Returning the exact selected entity gives Object Pull the
+		// original game outline without drawing a second ray/marker effect.
+		return pullTarget;
+	}
+
 	Vector controllerOrigin;
 	QAngle controllerAngles;
 	if (TryBuildClientUseControllerPose(ecx, controllerOrigin, controllerAngles))

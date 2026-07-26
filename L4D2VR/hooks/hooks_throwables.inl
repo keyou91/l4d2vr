@@ -2310,7 +2310,8 @@ namespace
 
 		static const char* const rejectedTokens[] =
 		{
-			"projectile", "player", "infected", "witch", "door", "button", "world"
+			"projectile", "player", "infected", "witch", "door", "button",
+			"world", "ammospawn", "ammostack", "ammopile"
 		};
 		for (const char* token : rejectedTokens)
 		{
@@ -2344,14 +2345,440 @@ namespace
 			ObjectPullServerContainsNormalizedToken(className, "breakableprop");
 	}
 
+	static bool ObjectPullServerClassIsWeaponSpawn(const char* className)
+	{
+		return ObjectPullServerContainsNormalizedToken(className, "weapon") &&
+			ObjectPullServerContainsNormalizedToken(className, "spawn");
+	}
+
+	static int ObjectPullTargetHintWeaponId(uint8_t targetHint)
+	{
+		using H = VR::ObjectPullTargetHint;
+		using W = C_WeaponCSBase::WeaponID;
+		switch (static_cast<H>(targetHint))
+		{
+		case H::GasCan: return static_cast<int>(W::GASCAN);
+		case H::PropaneTank: return static_cast<int>(W::PROPANE_TANK);
+		case H::OxygenTank: return static_cast<int>(W::OXYGEN_TANK);
+		case H::FireworksBox: return static_cast<int>(W::FIREWORKS_BOX);
+		case H::Gnome: return static_cast<int>(W::GNOME_CHOMPSKI);
+		case H::ColaBottles: return static_cast<int>(W::COLA_BOTTLES);
+		default: return static_cast<int>(W::NONE);
+		}
+	}
+
+	static bool ObjectPullServerClassIsHintedMapProp(
+		const char* className,
+		uint8_t targetHint)
+	{
+		return
+			ObjectPullTargetHintWeaponId(targetHint) !=
+				static_cast<int>(C_WeaponCSBase::WeaponID::NONE) &&
+			ObjectPullServerContainsNormalizedToken(
+				className,
+				"propdynamic");
+	}
+
+	struct ObjectPullWeaponSpawnSnapshot
+	{
+		int itemCount = 0;
+		int weaponSkin = -1;
+		int weaponId = 0;
+		int meleeSelection = 0;
+	};
+
+	static bool ObjectPullReadWeaponSpawnSnapshot(
+		void* sourceEntity,
+		ObjectPullWeaponSpawnSnapshot& snapshot)
+	{
+		if (!sourceEntity)
+			return false;
+
+		// CWeaponSpawn data-map offsets in the current x86 server build:
+		// m_itemCount, m_nWeaponSkin, m_weaponID and the generic/melee
+		// selection string. A count of zero is the engine's infinite source;
+		// positive values are the remaining finite copies.
+		constexpr size_t kItemCountOffset = 0x1444;
+		constexpr size_t kWeaponSkinOffset = 0x1448;
+		constexpr size_t kWeaponIdOffset = 0x1450;
+		constexpr size_t kWeaponSelectionOffset = 0x1460;
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			const auto* bytes =
+				reinterpret_cast<const unsigned char*>(sourceEntity);
+			snapshot.itemCount =
+				*reinterpret_cast<const int*>(bytes + kItemCountOffset);
+			snapshot.weaponSkin =
+				*reinterpret_cast<const int*>(bytes + kWeaponSkinOffset);
+			snapshot.weaponId =
+				*reinterpret_cast<const int*>(bytes + kWeaponIdOffset);
+			snapshot.meleeSelection =
+				*reinterpret_cast<const int*>(bytes + kWeaponSelectionOffset);
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			snapshot = {};
+			return false;
+		}
+#endif
+		return snapshot.weaponId >
+				static_cast<int>(C_WeaponCSBase::WeaponID::NONE) &&
+			snapshot.weaponId <=
+				static_cast<int>(C_WeaponCSBase::WeaponID::M60);
+	}
+
+	static const char* ObjectPullWeaponEntityClassName(int weaponId)
+	{
+		using W = C_WeaponCSBase::WeaponID;
+		switch (static_cast<W>(weaponId))
+		{
+		case W::PISTOL: return "weapon_pistol";
+		case W::UZI: return "weapon_smg";
+		case W::PUMPSHOTGUN: return "weapon_pumpshotgun";
+		case W::AUTOSHOTGUN: return "weapon_autoshotgun";
+		case W::M16A1: return "weapon_rifle";
+		case W::HUNTING_RIFLE: return "weapon_hunting_rifle";
+		case W::MAC10: return "weapon_smg_silenced";
+		case W::SHOTGUN_CHROME: return "weapon_shotgun_chrome";
+		case W::SCAR: return "weapon_rifle_desert";
+		case W::SNIPER_MILITARY: return "weapon_sniper_military";
+		case W::SPAS: return "weapon_shotgun_spas";
+		case W::FIRST_AID_KIT: return "weapon_first_aid_kit";
+		case W::MOLOTOV: return "weapon_molotov";
+		case W::PIPE_BOMB: return "weapon_pipe_bomb";
+		case W::PAIN_PILLS: return "weapon_pain_pills";
+		case W::GASCAN: return "weapon_gascan";
+		case W::PROPANE_TANK: return "weapon_propanetank";
+		case W::OXYGEN_TANK: return "weapon_oxygentank";
+		case W::MELEE: return "weapon_melee";
+		case W::CHAINSAW: return "weapon_chainsaw";
+		case W::GRENADE_LAUNCHER: return "weapon_grenade_launcher";
+		case W::AMMO_PACK: return "weapon_ammo_pack";
+		case W::ADRENALINE: return "weapon_adrenaline";
+		case W::DEFIBRILLATOR: return "weapon_defibrillator";
+		case W::VOMITJAR: return "weapon_vomitjar";
+		case W::AK47: return "weapon_rifle_ak47";
+		case W::GNOME_CHOMPSKI: return "weapon_gnome";
+		case W::COLA_BOTTLES: return "weapon_cola_bottles";
+		case W::FIREWORKS_BOX: return "weapon_fireworkcrate";
+		case W::INCENDIARY_AMMO: return "weapon_upgradepack_incendiary";
+		case W::FRAG_AMMO: return "weapon_upgradepack_explosive";
+		case W::MAGNUM: return "weapon_pistol_magnum";
+		case W::MP5: return "weapon_smg_mp5";
+		case W::SG552: return "weapon_rifle_sg552";
+		case W::AWP: return "weapon_sniper_awp";
+		case W::SCOUT: return "weapon_sniper_scout";
+		case W::M60: return "weapon_rifle_m60";
+		default: return nullptr;
+		}
+	}
+
+	static void ObjectPullRemoveServerEntity(void* entity)
+	{
+		if (!entity || !Hooks::m_Game || !Hooks::m_Game->m_Offsets ||
+			!Hooks::m_Game->m_Offsets->ManualEmptyHandsUtilRemove.valid)
+		{
+			return;
+		}
+
+		using UtilRemoveFn = void(__cdecl*)(void*);
+		auto utilRemove = reinterpret_cast<UtilRemoveFn>(
+			Hooks::m_Game->m_Offsets->ManualEmptyHandsUtilRemove.address);
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			utilRemove(entity);
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] UTIL_Remove exception entity=%p",
+				entity);
+		}
+#endif
+	}
+
+	static bool ObjectPullCreatePhysicalWeaponFromSpawn(
+		const ObjectPullServerState& pull,
+		const Vector& origin,
+		void*& outEntity,
+		void*& outVtable,
+		int& outEntityIndex,
+		ObjectPullWeaponSpawnSnapshot& outSnapshot,
+		const char*& outWeaponClass)
+	{
+		outEntity = nullptr;
+		outVtable = nullptr;
+		outEntityIndex = 0;
+		outSnapshot = {};
+		outWeaponClass = nullptr;
+		if (!pull.sourceIsWeaponSpawn ||
+			!pull.sourceEntity ||
+			!Hooks::m_Game ||
+			!Hooks::m_Game->m_Offsets ||
+			!Hooks::hkManualCarryCreateEntityByName.fOriginal ||
+			!Hooks::m_Game->m_Offsets->CBaseEntity_SetAbsOrigin_Server.valid ||
+			!Hooks::m_Game->m_Offsets->DispatchSpawn_Server.valid ||
+			!ObjectPullReadWeaponSpawnSnapshot(
+				pull.sourceEntity,
+				outSnapshot))
+		{
+			return false;
+		}
+
+		outWeaponClass =
+			ObjectPullWeaponEntityClassName(outSnapshot.weaponId);
+		if (!outWeaponClass || !*outWeaponClass)
+			return false;
+
+		void* created = nullptr;
+		using SetAbsOriginFn =
+			void(__thiscall*)(void*, const Vector*);
+		using DispatchSpawnFn =
+			int(__cdecl*)(void*, bool);
+		auto setAbsOrigin = reinterpret_cast<SetAbsOriginFn>(
+			Hooks::m_Game->m_Offsets->
+				CBaseEntity_SetAbsOrigin_Server.address);
+		auto dispatchSpawn = reinterpret_cast<DispatchSpawnFn>(
+			Hooks::m_Game->m_Offsets->DispatchSpawn_Server.address);
+
+		constexpr size_t kWeaponSkinOffset = 0x444;
+		constexpr size_t kExtraPrimaryAmmoOffset = 0x14F4;
+		constexpr size_t kMeleeScriptNameOffset = 0x17E0;
+		// A map gun gives the survivor its normal full reserve. A loose world
+		// weapon transfers m_iExtraPrimaryAmmo instead, so use a safely bounded
+		// high value and let the stock pickup code clamp it to the weapon's
+		// native maximum. Non-ammo items ignore this field.
+		constexpr int kMapSpawnReserveAmmo = 9999;
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			created =
+				Hooks::hkManualCarryCreateEntityByName.fOriginal(
+					outWeaponClass,
+					-1,
+					true);
+			if (!created)
+				return false;
+
+			setAbsOrigin(created, &origin);
+			auto* createdBytes =
+				reinterpret_cast<unsigned char*>(created);
+			if (outSnapshot.weaponSkin >= 0)
+			{
+				*reinterpret_cast<int*>(
+					createdBytes + kWeaponSkinOffset) =
+					outSnapshot.weaponSkin;
+			}
+			*reinterpret_cast<int*>(
+				createdBytes + kExtraPrimaryAmmoOffset) =
+				kMapSpawnReserveAmmo;
+			if (outSnapshot.weaponId ==
+				static_cast<int>(
+					C_WeaponCSBase::WeaponID::MELEE))
+			{
+				// Both fields are pooled string handles. Seeding this before
+				// DispatchSpawn makes weapon_melee initialize the exact axe,
+				// katana, etc. selected by weapon_melee_spawn.
+				*reinterpret_cast<int*>(
+					createdBytes + kMeleeScriptNameOffset) =
+					outSnapshot.meleeSelection;
+			}
+
+			dispatchSpawn(created, true);
+			if (outSnapshot.weaponSkin >= 0)
+			{
+				*reinterpret_cast<int*>(
+					createdBytes + kWeaponSkinOffset) =
+					outSnapshot.weaponSkin;
+			}
+			*reinterpret_cast<int*>(
+				createdBytes + kExtraPrimaryAmmoOffset) =
+				kMapSpawnReserveAmmo;
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] map spawn materialization exception source=%p class=%s weaponId=%d created=%p",
+				pull.sourceEntity,
+				pull.sourceClassName,
+				outSnapshot.weaponId,
+				created);
+			ObjectPullRemoveServerEntity(created);
+			return false;
+		}
+#endif
+
+		void* createdVtable =
+			ManualThrowReadEntityVtable(created);
+		const int createdIndex =
+			ObjectPullReadServerEntityIndex(created);
+		if (!createdVtable ||
+			createdIndex <= 0 ||
+			createdIndex >= 2048)
+		{
+			ObjectPullRemoveServerEntity(created);
+			return false;
+		}
+
+		outEntity = created;
+		outVtable = createdVtable;
+		outEntityIndex = createdIndex;
+		return true;
+	}
+
+	static bool ObjectPullCreatePhysicalWeaponFromMapProp(
+		const ObjectPullServerState& pull,
+		const Vector& origin,
+		void*& outEntity,
+		void*& outVtable,
+		int& outEntityIndex,
+		const char*& outWeaponClass)
+	{
+		outEntity = nullptr;
+		outVtable = nullptr;
+		outEntityIndex = 0;
+		outWeaponClass = nullptr;
+		const int weaponId =
+			ObjectPullTargetHintWeaponId(
+				pull.sourceMapPropHint);
+		if (!pull.sourceEntity ||
+			weaponId ==
+				static_cast<int>(
+					C_WeaponCSBase::WeaponID::NONE) ||
+			!Hooks::m_Game ||
+			!Hooks::m_Game->m_Offsets ||
+			!Hooks::hkManualCarryCreateEntityByName.fOriginal ||
+			!Hooks::m_Game->m_Offsets->
+				CBaseEntity_SetAbsOrigin_Server.valid ||
+			!Hooks::m_Game->m_Offsets->
+				DispatchSpawn_Server.valid)
+		{
+			return false;
+		}
+
+		outWeaponClass =
+			ObjectPullWeaponEntityClassName(weaponId);
+		if (!outWeaponClass || !*outWeaponClass)
+			return false;
+
+		void* created = nullptr;
+		using SetAbsOriginFn =
+			void(__thiscall*)(void*, const Vector*);
+		using DispatchSpawnFn =
+			int(__cdecl*)(void*, bool);
+		auto setAbsOrigin =
+			reinterpret_cast<SetAbsOriginFn>(
+				Hooks::m_Game->m_Offsets->
+					CBaseEntity_SetAbsOrigin_Server.address);
+		auto dispatchSpawn =
+			reinterpret_cast<DispatchSpawnFn>(
+				Hooks::m_Game->m_Offsets->
+					DispatchSpawn_Server.address);
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			created =
+				Hooks::hkManualCarryCreateEntityByName.fOriginal(
+					outWeaponClass,
+					-1,
+					true);
+			if (!created)
+				return false;
+			setAbsOrigin(created, &origin);
+			dispatchSpawn(created, true);
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] map prop materialization exception source=%p class=%s targetHint=%u weaponId=%d created=%p",
+				pull.sourceEntity,
+				pull.sourceClassName,
+				static_cast<unsigned int>(
+					pull.sourceMapPropHint),
+				weaponId,
+				created);
+			ObjectPullRemoveServerEntity(created);
+			return false;
+		}
+#endif
+
+		void* createdVtable =
+			ManualThrowReadEntityVtable(created);
+		const int createdIndex =
+			ObjectPullReadServerEntityIndex(created);
+		if (!createdVtable ||
+			createdIndex <= 0 ||
+			createdIndex >= 2048)
+		{
+			ObjectPullRemoveServerEntity(created);
+			return false;
+		}
+
+		outEntity = created;
+		outVtable = createdVtable;
+		outEntityIndex = createdIndex;
+		return true;
+	}
+
+	static bool ObjectPullCommitWeaponSpawnConsumption(
+		const ObjectPullServerState& pull,
+		const ObjectPullWeaponSpawnSnapshot& snapshot)
+	{
+		if (!pull.sourceEntity)
+			return false;
+
+		if (snapshot.itemCount == 1)
+		{
+			ObjectPullRemoveServerEntity(pull.sourceEntity);
+			return true;
+		}
+		if (snapshot.itemCount <= 0)
+		{
+			// Zero is an infinite map source.
+			return true;
+		}
+
+		constexpr size_t kItemCountOffset = 0x1444;
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			auto* sourceBytes =
+				reinterpret_cast<unsigned char*>(
+					pull.sourceEntity);
+			*reinterpret_cast<int*>(
+				sourceBytes + kItemCountOffset) =
+				snapshot.itemCount - 1;
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#endif
+		return true;
+	}
+
 	static bool ObjectPullResolveServerTargetByIndex(
 		void* serverPlayer,
 		int entityIndex,
 		const Vector& controllerPosition,
 		const QAngle& controllerAngles,
+		uint8_t targetHint,
 		void*& outEntity,
 		void*& outVtable,
 		bool& outHoldAsPhysicsProp,
+		uint8_t& outMapPropHint,
 		char* outClassName,
 		size_t outClassNameCapacity,
 		float minimumAlignment)
@@ -2359,6 +2786,8 @@ namespace
 		outEntity = nullptr;
 		outVtable = nullptr;
 		outHoldAsPhysicsProp = false;
+		outMapPropHint = static_cast<uint8_t>(
+			VR::ObjectPullTargetHint::None);
 		if (outClassName && outClassNameCapacity > 0)
 			outClassName[0] = '\0';
 		if (!serverPlayer || !Hooks::m_Game || !Hooks::m_VR ||
@@ -2486,8 +2915,21 @@ namespace
 			return false;
 
 		char className[128]{};
-		if (!ManualCarryImpactReadServerClassName(entity, className, sizeof(className)) ||
-			!ObjectPullServerClassIsSupported(className))
+		const bool classNameRead =
+			ManualCarryImpactReadServerClassName(
+				entity,
+				className,
+				sizeof(className));
+		const bool classSupported =
+			classNameRead &&
+			ObjectPullServerClassIsSupported(className);
+		const bool hintedMapProp =
+			classNameRead &&
+			!classSupported &&
+			ObjectPullServerClassIsHintedMapProp(
+				className,
+				targetHint);
+		if (!classSupported && !hintedMapProp)
 		{
 			if (Hooks::m_VR->m_ObjectPullDebugLog)
 			{
@@ -2575,6 +3017,10 @@ namespace
 		outEntity = entity;
 		outVtable = vtable;
 		outHoldAsPhysicsProp = ObjectPullServerClassIsPhysicsProp(className);
+		outMapPropHint = hintedMapProp
+			? targetHint
+			: static_cast<uint8_t>(
+				VR::ObjectPullTargetHint::None);
 		if (outClassName && outClassNameCapacity > 0)
 		{
 			std::strncpy(outClassName, className, outClassNameCapacity - 1);
@@ -2596,21 +3042,26 @@ namespace
 		Player& player,
 		int tick,
 		int targetEntityIndex,
+		uint8_t targetHint,
 		float minimumAlignment,
 		const char* source)
 	{
 		void* entity = nullptr;
 		void* vtable = nullptr;
 		bool holdAsPhysicsProp = false;
+		uint8_t mapPropHint = static_cast<uint8_t>(
+			VR::ObjectPullTargetHint::None);
 		char className[128]{};
 		if (!ObjectPullResolveServerTargetByIndex(
 			Hooks::m_Game->m_CurrentUsercmdPlayer,
 			targetEntityIndex,
 			player.controllerPos,
 			player.controllerAngle,
+			targetHint,
 			entity,
 			vtable,
 			holdAsPhysicsProp,
+			mapPropHint,
 			className,
 			sizeof(className),
 			minimumAlignment))
@@ -2627,7 +3078,9 @@ namespace
 
 			const ObjectPullServerState& otherPull =
 				Hooks::m_Game->m_PlayersVRInfo[otherIndex].objectPull;
-			if (otherPull.active && otherPull.entity == entity)
+			if (otherPull.active &&
+				(otherPull.entity == entity ||
+					otherPull.sourceEntity == entity))
 				return false;
 		}
 
@@ -2635,20 +3088,35 @@ namespace
 		player.objectPull.active = true;
 		player.objectPull.launched = false;
 		player.objectPull.lastCommandTick = tick;
+		player.objectPull.targetEntityIndex = targetEntityIndex;
 		player.objectPull.entity = entity;
 		player.objectPull.entityVtable = vtable;
 		player.objectPull.entityIndex = targetEntityIndex;
+		player.objectPull.sourceEntity = entity;
+		player.objectPull.sourceEntityVtable = vtable;
+		player.objectPull.sourceEntityIndex = targetEntityIndex;
+		player.objectPull.sourceIsWeaponSpawn =
+			ObjectPullServerClassIsWeaponSpawn(className);
+		player.objectPull.sourceMapPropHint = mapPropHint;
+		strncpy_s(
+			player.objectPull.sourceClassName,
+			sizeof(player.objectPull.sourceClassName),
+			className,
+			_TRUNCATE);
 		player.objectPull.holdAsPhysicsProp = holdAsPhysicsProp;
 
 		if (Hooks::m_VR->m_ObjectPullDebugLog)
 		{
 			Game::logMsg(
-				"[VR][ObjectPull][server] armed player=%d entity=%p index=%d class=%s physicsHold=%d tick=%d source=%s",
+				"[VR][ObjectPull][server] armed player=%d entity=%p index=%d class=%s physicsHold=%d weaponSpawn=%d mapPropHint=%u tick=%d source=%s",
 				playerIndex,
 				entity,
 				targetEntityIndex,
 				className,
 				holdAsPhysicsProp ? 1 : 0,
+				player.objectPull.sourceIsWeaponSpawn ? 1 : 0,
+				static_cast<unsigned int>(
+					player.objectPull.sourceMapPropHint),
 				tick,
 				source ? source : "unknown");
 		}
@@ -2758,11 +3226,108 @@ namespace
 		ManualThrowPending launch{};
 		launch.origin = origin;
 		launch.velocity = launchVelocity;
+
+		void* launchedEntity = pull.entity;
+		void* launchedVtable = pull.entityVtable;
+		int launchedEntityIndex = pull.entityIndex;
+		bool materializedWeaponSpawn = false;
+		bool materializedMapProp = false;
+		ObjectPullWeaponSpawnSnapshot spawnSnapshot{};
+		const char* materializedWeaponClass = nullptr;
+		if (pull.sourceIsWeaponSpawn)
+		{
+			if (!pull.sourceEntity ||
+				ManualThrowReadEntityVtable(
+					pull.sourceEntity) !=
+					pull.sourceEntityVtable ||
+				!ObjectPullCreatePhysicalWeaponFromSpawn(
+					pull,
+					origin,
+					launchedEntity,
+					launchedVtable,
+					launchedEntityIndex,
+					spawnSnapshot,
+					materializedWeaponClass))
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] map spawn materialization failed player=%d source=%p index=%d class=%s",
+						playerIndex,
+						pull.sourceEntity,
+						pull.sourceEntityIndex,
+						pull.sourceClassName);
+				}
+				return false;
+			}
+			materializedWeaponSpawn = true;
+		}
+		else if (pull.sourceMapPropHint !=
+			static_cast<uint8_t>(
+				VR::ObjectPullTargetHint::None))
+		{
+			if (!pull.sourceEntity ||
+				ManualThrowReadEntityVtable(
+					pull.sourceEntity) !=
+					pull.sourceEntityVtable ||
+				!ObjectPullCreatePhysicalWeaponFromMapProp(
+					pull,
+					origin,
+					launchedEntity,
+					launchedVtable,
+					launchedEntityIndex,
+					materializedWeaponClass))
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] map prop materialization failed player=%d source=%p index=%d class=%s targetHint=%u",
+						playerIndex,
+						pull.sourceEntity,
+						pull.sourceEntityIndex,
+						pull.sourceClassName,
+						static_cast<unsigned int>(
+							pull.sourceMapPropHint));
+				}
+				return false;
+			}
+			materializedMapProp = true;
+		}
+
 		if (!ManualCarryThrowTeleportDroppedEntity(
-			pull.entity,
+			launchedEntity,
 			launch))
 		{
+			if (materializedWeaponSpawn ||
+				materializedMapProp)
+			{
+				ObjectPullRemoveServerEntity(launchedEntity);
+			}
 			return false;
+		}
+
+		if (materializedWeaponSpawn)
+		{
+			if (!ObjectPullCommitWeaponSpawnConsumption(
+				pull,
+				spawnSnapshot))
+			{
+				ObjectPullRemoveServerEntity(launchedEntity);
+				return false;
+			}
+			pull.entity = launchedEntity;
+			pull.entityVtable = launchedVtable;
+			pull.entityIndex = launchedEntityIndex;
+		}
+		else if (materializedMapProp)
+		{
+			// These prop_dynamic instances are the map's one-off visual form,
+			// not an infinite weapon spawn. Consume the original only after its
+			// real carry-weapon replacement has spawned and accepted velocity.
+			ObjectPullRemoveServerEntity(pull.sourceEntity);
+			pull.entity = launchedEntity;
+			pull.entityVtable = launchedVtable;
+			pull.entityIndex = launchedEntityIndex;
 		}
 
 		pull.launched = true;
@@ -2772,9 +3337,23 @@ namespace
 		if (Hooks::m_VR->m_ObjectPullDebugLog)
 		{
 			Game::logMsg(
-				"[VR][ObjectPull][server] physical launch player=%d entity=%p distance=%.2fm travel=%.3fs baseSpeed=%.2fm/s flick=%.2fm/s velocity=(%.1f %.1f %.1f)",
+				"[VR][ObjectPull][server] physical launch player=%d entity=%p index=%d source=%p sourceIndex=%d materialized=%d mapPropHint=%u weaponClass=%s sourceCount=%d distance=%.2fm travel=%.3fs baseSpeed=%.2fm/s flick=%.2fm/s velocity=(%.1f %.1f %.1f)",
 				playerIndex,
 				pull.entity,
+				pull.entityIndex,
+				pull.sourceEntity,
+				pull.sourceEntityIndex,
+				materializedWeaponSpawn
+					? 1
+					: (materializedMapProp ? 2 : 0),
+				static_cast<unsigned int>(
+					pull.sourceMapPropHint),
+				materializedWeaponClass
+					? materializedWeaponClass
+					: "<direct>",
+				materializedWeaponSpawn
+					? spawnSnapshot.itemCount
+					: -1,
 				distance / scale,
 				travelSeconds,
 				configuredSpeedMetersPerSecond,
@@ -2790,7 +3369,8 @@ namespace
 		int playerIndex,
 		uint8_t command,
 		int tick,
-		int targetEntityIndex)
+		int targetEntityIndex,
+		uint8_t targetHint)
 	{
 		if (!Hooks::m_Game ||
 			!Hooks::m_VR ||
@@ -2806,6 +3386,32 @@ namespace
 			ObjectPullResetServerState(player);
 			return;
 		}
+
+		// A repeated level-triggered Catch may arrive after the client's Cancel
+		// packet has already reset the active pull. Do not bootstrap the entity
+		// that native PlayerUse just consumed into another physical launch.
+		const int ticksSinceLastPickup =
+			tick - player.objectPullLastPickupTick;
+		if (targetEntityIndex > 0 &&
+			targetEntityIndex ==
+				player.objectPullLastPickedUpEntityIndex &&
+			ticksSinceLastPickup >= 0 &&
+			ticksSinceLastPickup <= 30 &&
+			(command == VR::kObjectPullWireContinue ||
+				command == VR::kObjectPullWireCatch))
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] ignored stale post-pickup command=%u player=%d entityIndex=%d ageTicks=%d",
+					static_cast<unsigned int>(command),
+					playerIndex,
+					targetEntityIndex,
+					ticksSinceLastPickup);
+			}
+			return;
+		}
+
 		if (player.objectPull.active &&
 			tick <= player.objectPull.lastCommandTick)
 		{
@@ -2821,7 +3427,7 @@ namespace
 		if (command == VR::kObjectPullWireBegin)
 		{
 			if (player.objectPull.active &&
-				player.objectPull.entityIndex == targetEntityIndex &&
+				player.objectPull.targetEntityIndex == targetEntityIndex &&
 				!player.objectPull.launched)
 			{
 				// A backup Begin for the currently armed object must not reset it.
@@ -2834,7 +3440,7 @@ namespace
 			if (player.objectPull.active)
 			{
 				if (Hooks::m_VR->m_ObjectPullDebugLog &&
-					player.objectPull.entityIndex == targetEntityIndex &&
+					player.objectPull.targetEntityIndex == targetEntityIndex &&
 					player.objectPull.launched)
 				{
 					Game::logMsg(
@@ -2852,6 +3458,7 @@ namespace
 				player,
 				tick,
 				targetEntityIndex,
+				targetHint,
 				-1.0f,
 				"begin"))
 			{
@@ -2868,7 +3475,7 @@ namespace
 
 		if (player.objectPull.active &&
 			player.objectPull.nativePickupIssued &&
-			player.objectPull.entityIndex == targetEntityIndex)
+			player.objectPull.targetEntityIndex == targetEntityIndex)
 		{
 			// Grip is level-triggered and Catch is repeated while held. Once the
 			// native pickup has been issued, retain a tombstone until Cancel or
@@ -2881,7 +3488,7 @@ namespace
 		// batches. Continue and Catch carry the same exact entity index, so either
 		// command can bootstrap the server state instead of being silently dropped.
 		if (!player.objectPull.active ||
-			player.objectPull.entityIndex != targetEntityIndex)
+			player.objectPull.targetEntityIndex != targetEntityIndex)
 		{
 			if (player.objectPull.active)
 				ObjectPullResetServerState(player);
@@ -2891,6 +3498,7 @@ namespace
 				player,
 				tick,
 				targetEntityIndex,
+				targetHint,
 				-1.0f,
 				command == VR::kObjectPullWireCatch
 					? "catch-bootstrap"
@@ -2942,7 +3550,7 @@ namespace
 			pull.held ||
 			pull.nativePickupIssued ||
 			!pull.entity ||
-			pull.entityIndex != targetEntityIndex ||
+			pull.targetEntityIndex != targetEntityIndex ||
 			ManualThrowReadEntityVtable(pull.entity) !=
 				pull.entityVtable)
 		{
@@ -3000,13 +3608,16 @@ namespace
 			Hooks::m_VR->m_ObjectPullDebugLog)
 		{
 			Game::logMsg(
-				"[VR][ObjectPull][server] injecting native IN_USE usercmd player=%d entity=%p index=%d distance=%.1f",
+				"[VR][ObjectPull][server] injecting native IN_USE usercmd player=%d entity=%p index=%d sourceIndex=%d distance=%.1f",
 				playerIndex,
 				pull.entity,
 				pull.entityIndex,
+				pull.targetEntityIndex,
 				distance);
 		}
-		return true;
+		// A normal pickup is driven by a single IN_USE rising edge. Repeated
+		// level-triggered Catch packets must not turn it into a held button.
+		return firstRequest;
 	}
 
 	static void* ObjectPullSelectPendingNativePickupTarget(
@@ -3074,17 +3685,21 @@ namespace
 		pull.nativePickupTargetSelected = false;
 		pull.nativePickupIssued = true;
 		pull.catchRequested = false;
+		player.objectPullLastPickedUpEntityIndex =
+			pull.targetEntityIndex;
+		player.objectPullLastPickupTick =
+			player.manualThrowLastTick;
 		if (Hooks::m_VR &&
 			Hooks::m_VR->m_ObjectPullDebugLog)
 		{
 			Game::logMsg(
-				"[VR][ObjectPull][server] native pickup completed inside ProcessUsercmds player=%d entity=%p index=%d",
+				"[VR][ObjectPull][server] native pickup completed inside ProcessUsercmds player=%d entity=%p index=%d sourceIndex=%d",
 				Hooks::m_Game->m_CurrentUsercmdID,
 				pull.entity,
-				pull.entityIndex);
+				pull.entityIndex,
+				pull.targetEntityIndex);
 		}
 	}
-
 	static void ObjectPullUpdateServer(
 		int playerIndex,
 		void* serverPlayer)
@@ -3109,13 +3724,23 @@ namespace
 		if (pull.nativePickupIssued)
 			return;
 
-		// A pending request should be consumed by the native PlayerUse call
-		// inside ProcessUsercmds. If that call was skipped by a game-state gate,
-		// clear only the transient override and let a later Catch usercmd retry.
+		// Inventory pickup must be consumed by the game's normal PlayerUse call
+		// while it is processing the injected usercmd. If that call was gated,
+		// retry with a fresh IN_USE edge on a later Catch packet instead of
+		// invoking PlayerUse out of band after ProcessUsercmds.
 		if (pull.nativePickupPending)
 		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] native pickup usercmd not consumed; retrying player=%d entity=%p index=%d",
+					playerIndex,
+					pull.entity,
+					pull.entityIndex);
+			}
 			pull.nativePickupPending = false;
 			pull.nativePickupTargetSelected = false;
+			return;
 		}
 
 		if (!pull.entity ||
@@ -3229,10 +3854,10 @@ namespace
 							distance);
 					}
 				}
-				// Inventory items are picked up only through the synthetic
-				// IN_USE usercmd prepared before ProcessUsercmds. Reaching this
-				// post-process update means the native path did not consume the
-				// request, so keep normal free flight and allow a later retry.
+				// Inventory entities are intentionally not picked up in this
+				// post-process update. The injected usercmd runs through the
+				// stock pickup transaction, including old-weapon drop and
+				// same-type ammo transfer.
 			}
 		}
 

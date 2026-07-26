@@ -75,9 +75,18 @@ struct ObjectPullServerState
     bool nativePickupIssued = false;
     int launchTick = 0;
     int lastCommandTick = 0;
+    // The client keeps transmitting the highlighted map entity index even
+    // after a repeatable weapon spawn has produced a separate world weapon.
+    int targetEntityIndex = 0;
     void* entity = nullptr;
     void* entityVtable = nullptr;
     int entityIndex = 0;
+    void* sourceEntity = nullptr;
+    void* sourceEntityVtable = nullptr;
+    int sourceEntityIndex = 0;
+    bool sourceIsWeaponSpawn = false;
+    uint8_t sourceMapPropHint = 0;
+    char sourceClassName[128]{};
 };
 
 struct Player
@@ -108,6 +117,10 @@ struct Player
     void* manualEmptyHandsDummyPistolVtable = nullptr;
     ManualThrowPending manualThrowPending{};
     ObjectPullServerState objectPull{};
+    // This survives active-state reset so a delayed repeated Catch packet
+    // cannot relaunch the entity immediately after native pickup.
+    int objectPullLastPickedUpEntityIndex = 0;
+    int objectPullLastPickupTick = 0;
 };
 
 // === Main Game System ===

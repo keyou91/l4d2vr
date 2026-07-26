@@ -942,7 +942,16 @@ static int FindRecvPropOffsetSafe(void* baseClientDll, const char* networkName, 
         auto* clientClass = reinterpret_cast<SourceClientClass*>(clientDll->GetAllClasses());
         while (clientClass)
         {
-            if (clientClass->m_pNetworkName && std::strcmp(clientClass->m_pNetworkName, networkName) == 0)
+            const bool networkNameMatches =
+                clientClass->m_pNetworkName &&
+                std::strcmp(clientClass->m_pNetworkName, networkName) == 0;
+            const bool recvTableNameMatches =
+                clientClass->m_pRecvTable &&
+                clientClass->m_pRecvTable->m_pNetTableName &&
+                std::strcmp(
+                    clientClass->m_pRecvTable->m_pNetTableName,
+                    networkName) == 0;
+            if (networkNameMatches || recvTableNameMatches)
                 return FindRecvPropOffsetRecursive(clientClass->m_pRecvTable, propName, 0);
 
             clientClass = clientClass->m_pNext;

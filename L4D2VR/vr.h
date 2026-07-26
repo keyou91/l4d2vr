@@ -862,9 +862,20 @@ public:
 	static constexpr uint8_t kObjectPullWireContinue = 241;
 	static constexpr uint8_t kObjectPullWireCatch = 242;
 	static constexpr uint8_t kObjectPullWireCancel = 243;
+	enum class ObjectPullTargetHint : uint8_t
+	{
+		None = 0,
+		GasCan,
+		PropaneTank,
+		OxygenTank,
+		FireworksBox,
+		Gnome,
+		ColaBottles,
+	};
 	enum class ObjectPullClientPhase : uint8_t
 	{
 		Idle,
+		Targeting,
 		Armed,
 		Pulling,
 		Held,
@@ -879,6 +890,7 @@ public:
 		QAngle angles = { 0.0f, 0.0f, 0.0f };
 
 		int targetEntityIndex = 0;
+		ObjectPullTargetHint targetHint = ObjectPullTargetHint::None;
 	};
 	static constexpr size_t kObjectPullUsercmdSnapshotCount = 150;
 	std::array<ObjectPullUsercmdSnapshot, kObjectPullUsercmdSnapshotCount> m_ObjectPullUsercmdSnapshots{};
@@ -895,11 +907,12 @@ public:
 	ObjectPullClientPhase m_ObjectPullPhase = ObjectPullClientPhase::Idle;
 	bool m_ObjectPullActionDownPrev = false;
 	bool m_ObjectPullRequireActionRelease = false;
-	bool m_ObjectPullCatchActionDownPrev = false;
 	uint8_t m_ObjectPullCatchActionSuppressMask = 0;
 	C_BaseEntity* m_ObjectPullClientTarget = nullptr;
 	int m_ObjectPullClientTargetEntityIndex = 0;
 	int m_ObjectPullWireTargetEntityIndex = 0;
+	ObjectPullTargetHint m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+	ObjectPullTargetHint m_ObjectPullWireTargetHint = ObjectPullTargetHint::None;
 	void* m_ObjectPullClientTargetVtable = nullptr;
 	Vector m_ObjectPullClientTargetPoint = { 0.0f, 0.0f, 0.0f };
 	Vector m_ObjectPullArmPosition = { 0.0f, 0.0f, 0.0f };
@@ -1245,7 +1258,6 @@ public:
 	vr::VRActionHandle_t m_ActionBooleanTurnLeft = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionBooleanTurnRight = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionUse = vr::k_ulInvalidActionHandle;
-	vr::VRActionHandle_t m_ActionObjectPull = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionTeleport = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionNextItem = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionPrevItem = vr::k_ulInvalidActionHandle;
@@ -3547,8 +3559,8 @@ public:
 	void GetViewParameters();
 	void ProcessMenuInput();
 	void ProcessInput();
-	bool UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionDown, bool catchActionDown);
-	bool GetObjectPullUsercmdData(int commandNumber, uint8_t& wireCommand, Vector& position, QAngle& angles, bool& overridePose, int& targetEntityIndex);
+	bool UpdateObjectPullInput(C_BasePlayer* localPlayer, bool gripActionDown);
+	bool GetObjectPullUsercmdData(int commandNumber, uint8_t& wireCommand, Vector& position, QAngle& angles, bool& overridePose, int& targetEntityIndex, ObjectPullTargetHint& targetHint);
 	void ResetObjectPullInput(bool sendCancel);
 	void SendVirtualKey(WORD virtualKey);
 	void SendVirtualKeyDown(WORD virtualKey);

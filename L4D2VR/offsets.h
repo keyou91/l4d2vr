@@ -89,6 +89,13 @@ public:
         0,
         true
     };
+    // CGlowProperty::SetGlowType. Directly changing m_iGlowType bypasses
+    // registration with L4D2's native glow-object manager.
+    Offset CGlowProperty_SetGlowType_Client = { "client.dll", 0x109A20,
+        "55 8B EC 53 8B 5D 08 56 57 8B F9 39 5F 04 8D 77 04 74 0D 8B 46 FC 8B 10 8D 4E FC 56 FF D2",
+        0,
+        true
+    };
 
     Offset ServerFireTerrorBullets =     { "server.dll", 0x3C3FC0, "55 8B EC 81 EC ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 8B 45 08 8B 4D 10" };
     Offset ReadUserCmd =                 { "server.dll", 0x205100, "55 8B EC 53 8B 5D 10 56 57 8B 7D 0C 53" };
@@ -107,6 +114,19 @@ public:
     // still passes through this factory.
     Offset ManualCarryCreateEntityByName = { "server.dll", 0x001196B0,
         "55 8B EC 56 8B 75 0C 57 8B 7D 08 83 FE FF 74 27 8B 0D ? ? ? ? 8B 01 8B 50 58 56 FF D2 A3 ? ? ? ?",
+        0,
+        true
+    };
+    // World weapons materialized from repeatable map spawn points must be
+    // positioned before DispatchSpawn so their model and physics initialize at
+    // the source pickup rather than briefly existing at the world origin.
+    Offset CBaseEntity_SetAbsOrigin_Server = { "server.dll", 0x00063A90,
+        "55 8B EC 83 EC 0C 56 57 8B 7D 08 F3 0F 10 07 F3 0F 11 45 08 8B 45 08 25 00 00 80 7F",
+        0,
+        true
+    };
+    Offset DispatchSpawn_Server = { "server.dll", 0x00209580,
+        "55 8B EC 51 53 56 8B 75 08 57 85 F6 0F 84 ? ? ? ? 8B 0D ? ? ? ? 8B 01 8B 50 68",
         0,
         true
     };

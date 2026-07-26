@@ -8,7 +8,6 @@ void VR::ProcessInput()
             ResetObjectPullInput(false);
         }
         m_ObjectPullActionDownPrev = false;
-        m_ObjectPullCatchActionDownPrev = false;
         m_ObjectPullCatchActionSuppressMask = 0;
         return;
     }
@@ -261,10 +260,6 @@ void VR::ProcessInput()
     }
 
     const bool jumpGestureActive = m_MotionGesturesEnabled && currentTime < m_JumpGestureHoldUntil;
-
-    // Object pull selection uses its own SteamVR action. Catching reuses existing
-    // gameplay actions that the user may bind to the weapon-hand Grip.
-    const bool objectPullActionDown = PressedDigitalAction(m_ActionObjectPull);
 
     // While aiming teleport, Use remains reserved as a modifier that ignores
     // playerclip barriers. Normal Use behavior is otherwise unchanged.
@@ -523,7 +518,6 @@ void VR::ProcessInput()
 
     const bool objectPullCatchInputConsumed = UpdateObjectPullInput(
         localPlayer,
-        objectPullActionDown,
         objectPullCatchActionDown);
 
     static constexpr uint8_t kObjectPullCatchReloadBit = 1u << 0;

@@ -1152,12 +1152,6 @@ int VR::SetActionManifest(const char* fileName)
     m_Input->GetActionHandle("/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack);
     m_Input->GetActionHandle("/actions/main/in/Reload", &m_ActionReload);
     m_Input->GetActionHandle("/actions/main/in/Use", &m_ActionUse);
-    const vr::EVRInputError objectPullActionError =
-        m_Input->GetActionHandle("/actions/main/in/ObjectPull", &m_ActionObjectPull);
-    Game::logMsg(
-        "[VR][ObjectPull] SteamVR action registration path=/actions/main/in/ObjectPull error=%d handle=%llu",
-        static_cast<int>(objectPullActionError),
-        static_cast<unsigned long long>(m_ActionObjectPull));
     m_Input->GetActionHandle("/actions/main/in/Teleport", &m_ActionTeleport);
     m_Input->GetActionHandle("/actions/main/in/Walk", &m_ActionWalk);
     m_Input->GetActionHandle("/actions/main/in/Turn", &m_ActionTurn);

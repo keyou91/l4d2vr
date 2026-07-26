@@ -7,7 +7,6 @@ namespace
     static std::atomic<uint32_t> g_ObjectPullWireMailbox{ 0u };
     static std::chrono::steady_clock::time_point g_ObjectPullNextTargetScanAt{};
     static std::chrono::steady_clock::time_point g_ObjectPullNextBroadScanAt{};
-    static std::chrono::steady_clock::time_point g_ObjectPullNextVisualUpdateAt{};
 
     struct ObjectPullClientTraceResult
     {
@@ -19,6 +18,8 @@ namespace
         Vector entityOrigin = { 0.0f, 0.0f, 0.0f };
         float distanceMeters = 0.0f;
         int entityIndex = -1;
+        VR::ObjectPullTargetHint targetHint =
+            VR::ObjectPullTargetHint::None;
         char className[128]{};
         char modelName[260]{};
     };
@@ -189,6 +190,140 @@ namespace
         return std::isfinite(outOrigin.x) && std::isfinite(outOrigin.y) && std::isfinite(outOrigin.z);
     }
 
+    class ICollideableObjectPullProbe
+    {
+    public:
+        virtual IHandleEntity* GetEntityHandle() = 0;
+        virtual const Vector& OBBMins() const = 0;
+        virtual const Vector& OBBMaxs() const = 0;
+    };
+
+    static bool ObjectPullReadClientWorldBounds(
+        C_BaseEntity* entity,
+        Vector& outMins,
+        Vector& outMaxs)
+    {
+        outMins = {};
+        outMaxs = {};
+        if (!entity)
+            return false;
+
+        Vector localMins{};
+        Vector localMaxs{};
+        Vector origin{};
+        QAngle angles{};
+#ifdef _MSC_VER
+        __try
+        {
+            void* collideableVoid = entity->GetCollideable();
+            if (!collideableVoid)
+                return false;
+            auto* collideable =
+                reinterpret_cast<ICollideableObjectPullProbe*>(collideableVoid);
+            localMins = collideable->OBBMins();
+            localMaxs = collideable->OBBMaxs();
+            origin = entity->GetAbsOrigin();
+            angles = entity->GetAbsAngles();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        void* collideableVoid = entity->GetCollideable();
+        if (!collideableVoid)
+            return false;
+        auto* collideable =
+            reinterpret_cast<ICollideableObjectPullProbe*>(collideableVoid);
+        localMins = collideable->OBBMins();
+        localMaxs = collideable->OBBMaxs();
+        origin = entity->GetAbsOrigin();
+        angles = entity->GetAbsAngles();
+#endif
+
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (!std::isfinite(localMins[axis]) ||
+                !std::isfinite(localMaxs[axis]) ||
+                localMins[axis] > localMaxs[axis] ||
+                localMaxs[axis] - localMins[axis] > 8192.0f ||
+                !std::isfinite(origin[axis]) ||
+                !std::isfinite(angles[axis]))
+            {
+                return false;
+            }
+        }
+
+        const Vector localCenter = (localMins + localMaxs) * 0.5f;
+        const Vector localHalf = (localMaxs - localMins) * 0.5f;
+        Vector forward{};
+        Vector right{};
+        Vector up{};
+        QAngle::AngleVectors(angles, &forward, &right, &up);
+
+        // Source's local Y basis is left, while AngleVectors returns right.
+        const Vector worldCenter =
+            origin +
+            forward * localCenter.x -
+            right * localCenter.y +
+            up * localCenter.z;
+        const Vector worldHalf{
+            std::fabs(forward.x) * localHalf.x +
+                std::fabs(right.x) * localHalf.y +
+                std::fabs(up.x) * localHalf.z,
+            std::fabs(forward.y) * localHalf.x +
+                std::fabs(right.y) * localHalf.y +
+                std::fabs(up.y) * localHalf.z,
+            std::fabs(forward.z) * localHalf.x +
+                std::fabs(right.z) * localHalf.y +
+                std::fabs(up.z) * localHalf.z
+        };
+        outMins = worldCenter - worldHalf;
+        outMaxs = worldCenter + worldHalf;
+        return
+            std::isfinite(outMins.x) &&
+            std::isfinite(outMins.y) &&
+            std::isfinite(outMins.z) &&
+            std::isfinite(outMaxs.x) &&
+            std::isfinite(outMaxs.y) &&
+            std::isfinite(outMaxs.z);
+    }
+
+    static bool ObjectPullRayIntersectsWorldBounds(
+        const Vector& start,
+        const Vector& forward,
+        const Vector& mins,
+        const Vector& maxs,
+        float minimumAlong,
+        float maximumAlong,
+        float& outAlong)
+    {
+        float entry = minimumAlong;
+        float exit = maximumAlong;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const float direction = forward[axis];
+            if (std::fabs(direction) <= 0.000001f)
+            {
+                if (start[axis] < mins[axis] || start[axis] > maxs[axis])
+                    return false;
+                continue;
+            }
+
+            const float inverseDirection = 1.0f / direction;
+            float first = (mins[axis] - start[axis]) * inverseDirection;
+            float second = (maxs[axis] - start[axis]) * inverseDirection;
+            if (first > second)
+                std::swap(first, second);
+            entry = std::max(entry, first);
+            exit = std::min(exit, second);
+            if (entry > exit)
+                return false;
+        }
+        outAlong = entry;
+        return std::isfinite(outAlong);
+    }
+
     static bool ObjectPullClientClassIsSupported(const char* className)
     {
         if (!className || !*className)
@@ -196,7 +331,8 @@ namespace
 
         static const char* const rejectedTokens[] =
         {
-            "projectile", "player", "infected", "witch", "door", "button", "world"
+            "projectile", "player", "infected", "witch", "door", "button",
+            "world", "ammospawn", "ammostack", "ammopile"
         };
         for (const char* token : rejectedTokens)
         {
@@ -221,6 +357,33 @@ namespace
         return false;
     }
 
+    static VR::ObjectPullTargetHint ObjectPullTargetHintFromModelName(
+        const char* modelName)
+    {
+        if (!modelName || !*modelName)
+            return VR::ObjectPullTargetHint::None;
+
+        // These are the actual one-piece world models used by L4D2's carry
+        // objectives. Do not classify on a loose "gascan"/"gnome" substring:
+        // map scenery such as wooden_barricade_gascans is also prop_dynamic.
+        if (ObjectPullContainsNormalizedToken(modelName, "gascan001a"))
+            return VR::ObjectPullTargetHint::GasCan;
+        if (ObjectPullContainsNormalizedToken(modelName, "propanecanister001a") ||
+            ObjectPullContainsNormalizedToken(modelName, "propanecanister01a"))
+        {
+            return VR::ObjectPullTargetHint::PropaneTank;
+        }
+        if (ObjectPullContainsNormalizedToken(modelName, "oxygentank01"))
+            return VR::ObjectPullTargetHint::OxygenTank;
+        if (ObjectPullContainsNormalizedToken(modelName, "fireworkcrate"))
+            return VR::ObjectPullTargetHint::FireworksBox;
+        if (ObjectPullContainsNormalizedToken(modelName, "gnomemdl"))
+            return VR::ObjectPullTargetHint::Gnome;
+        if (ObjectPullContainsNormalizedToken(modelName, "wcolamdl"))
+            return VR::ObjectPullTargetHint::ColaBottles;
+        return VR::ObjectPullTargetHint::None;
+    }
+
     static bool ObjectPullModelNameIsSupported(const char* modelName)
     {
         if (!modelName || !*modelName)
@@ -228,7 +391,8 @@ namespace
 
         static const char* const rejectedTokens[] =
         {
-            "survivor", "infected", "witch", "door", "vehicle", "building"
+            "survivor", "infected", "witch", "door", "vehicle", "building",
+            "ammostack", "ammopile", "ammospawn"
         };
         for (const char* token : rejectedTokens)
         {
@@ -236,11 +400,16 @@ namespace
                 return false;
         }
 
+        if (ObjectPullTargetHintFromModelName(modelName) !=
+            VR::ObjectPullTargetHint::None)
+        {
+            return true;
+        }
+
         static const char* const supportedTokens[] =
         {
             "wmodelsweapons", "weaponsmelee", "weapon", "items",
-            "oildrum", "barrel", "gascan", "propanetank", "oxygentank",
-            "firework", "gnome", "cola", "ammo", "upgradepack", "firstaid",
+            "oildrum", "barrel", "upgradepack", "ammopack", "firstaid",
             "defibrillator", "painpills", "adrenaline", "molotov", "pipebomb",
             "vomitjar", "chainsaw"
         };
@@ -485,6 +654,7 @@ namespace
         if (!supported)
             return false;
 
+        out.targetHint = ObjectPullTargetHintFromModelName(out.modelName);
         if (!ObjectPullReadClientVtable(out.entity, out.vtable))
             return false;
 
@@ -608,15 +778,38 @@ namespace
             Vector origin{};
             if (!ObjectPullReadClientOrigin(entity, origin))
                 continue;
-            const Vector toEntity = origin - start;
-            const float along = toEntity.Dot(forward);
-            if (!std::isfinite(along) || along < minDistance || along > maxDistance)
-                continue;
-            const Vector closest = start + forward * along;
-            const float perpendicular = (origin - closest).Length();
-            if (!std::isfinite(perpendicular) || perpendicular > assistRadius)
+
+            Vector boundsMins{};
+            Vector boundsMaxs{};
+            if (!ObjectPullReadClientWorldBounds(
+                    entity,
+                    boundsMins,
+                    boundsMaxs))
                 continue;
 
+            const Vector assist{
+                assistRadius,
+                assistRadius,
+                assistRadius
+            };
+            float along = 0.0f;
+            if (!ObjectPullRayIntersectsWorldBounds(
+                    start,
+                    forward,
+                    boundsMins - assist,
+                    boundsMaxs + assist,
+                    minDistance,
+                    maxDistance,
+                    along))
+                continue;
+
+            const Vector rayPoint = start + forward * along;
+            const Vector aimPoint{
+                std::clamp(rayPoint.x, boundsMins.x, boundsMaxs.x),
+                std::clamp(rayPoint.y, boundsMins.y, boundsMaxs.y),
+                std::clamp(rayPoint.z, boundsMins.z, boundsMaxs.z)
+            };
+            const float perpendicular = (aimPoint - rayPoint).Length();
             const float score = perpendicular + along * 0.0025f;
             if (score >= bestScore)
                 continue;
@@ -636,11 +829,13 @@ namespace
             if (!supported)
                 continue;
 
+            const VR::ObjectPullTargetHint targetHint =
+                ObjectPullTargetHintFromModelName(modelName);
             if (vr->m_Game->m_EngineTrace)
             {
                 CTraceFilterSkipSelf filter(reinterpret_cast<IHandleEntity*>(localPlayer), 0);
                 Ray_t visibilityRay;
-                visibilityRay.Init(start, origin);
+                visibilityRay.Init(start, aimPoint);
                 CGameTrace visibilityTrace{};
                 if (VR_SafeTraceRay(
                     vr->m_Game->m_EngineTrace,
@@ -674,7 +869,7 @@ namespace
                             blockerClass,
                             blockerModel);
                     const float obstructionGap =
-                        (origin - visibilityTrace.endpos).Length();
+                        (aimPoint - visibilityTrace.endpos).Length();
                     const float embeddedTolerance =
                         std::max(assistRadius * 2.0f, 0.20f * scale);
                     if (!livingBlocker && obstructionGap > embeddedTolerance)
@@ -690,58 +885,472 @@ namespace
             best.supported = true;
             best.entity = entity;
             best.vtable = vtable;
-            best.hitPosition = origin;
+            best.hitPosition = aimPoint;
             best.entityOrigin = origin;
             best.distanceMeters = along / scale;
             best.entityIndex = entityIndex;
+            best.targetHint = targetHint;
             ObjectPullCopyClassName(className, best.className, sizeof(best.className));
             ObjectPullCopyClassName(modelName, best.modelName, sizeof(best.modelName));
         }
         return best;
     }
 
-    static void ObjectPullDrawMarker(
-        IVDebugOverlay* overlay,
-        const Vector& position,
-        float radius,
-        int r,
-        int g,
-        int b,
-        int a,
-        float duration)
+    static bool ObjectPullClientTargetStillPointedAt(
+        VR* vr,
+        C_BasePlayer* localPlayer,
+        C_BaseEntity* target,
+        const Vector& start,
+        Vector forward)
     {
-        if (!overlay || radius <= 0.0f)
-            return;
-        const Vector mins{ -radius, -radius, -radius };
-        const Vector maxs{ radius, radius, radius };
-        const QAngle angles{ 0.0f, 0.0f, 0.0f };
-        overlay->AddBoxOverlay(position, mins, maxs, angles, r, g, b, a, duration);
-        overlay->AddLineOverlay(
-            position - Vector(radius * 1.6f, 0.0f, 0.0f),
-            position + Vector(radius * 1.6f, 0.0f, 0.0f),
-            r, g, b, true, duration);
-        overlay->AddLineOverlay(
-            position - Vector(0.0f, radius * 1.6f, 0.0f),
-            position + Vector(0.0f, radius * 1.6f, 0.0f),
-            r, g, b, true, duration);
-        overlay->AddLineOverlay(
-            position - Vector(0.0f, 0.0f, radius * 1.6f),
-            position + Vector(0.0f, 0.0f, radius * 1.6f),
-            r, g, b, true, duration);
+        if (!vr ||
+            !localPlayer ||
+            !target ||
+            !vr->m_Game ||
+            !vr->m_Game->m_EngineTrace ||
+            VectorNormalize(forward) <= 0.0001f)
+        {
+            return false;
+        }
+
+        Vector boundsMins{};
+        Vector boundsMaxs{};
+        if (!ObjectPullReadClientWorldBounds(
+                target,
+                boundsMins,
+                boundsMaxs))
+        {
+            return false;
+        }
+
+        const float scale = std::max(1.0f, vr->m_VRScale);
+        const float assistRadius =
+            std::max(0.0f, vr->m_ObjectPullTargetAssistRadiusMeters) *
+            scale;
+        const Vector assist{
+            assistRadius,
+            assistRadius,
+            assistRadius
+        };
+        float along = 0.0f;
+        if (!ObjectPullRayIntersectsWorldBounds(
+                start,
+                forward,
+                boundsMins - assist,
+                boundsMaxs + assist,
+                std::max(0.0f, vr->m_ObjectPullMinimumDistanceMeters) *
+                    scale,
+                std::max(0.1f, vr->m_ObjectPullMaxDistanceMeters) *
+                    scale,
+                along))
+        {
+            return false;
+        }
+
+        const Vector rayPoint = start + forward * along;
+        const Vector aimPoint{
+            std::clamp(rayPoint.x, boundsMins.x, boundsMaxs.x),
+            std::clamp(rayPoint.y, boundsMins.y, boundsMaxs.y),
+            std::clamp(rayPoint.z, boundsMins.z, boundsMaxs.z)
+        };
+        CTraceFilterSkipSelf filter(
+            reinterpret_cast<IHandleEntity*>(localPlayer),
+            0);
+        Ray_t visibilityRay;
+        visibilityRay.Init(start, aimPoint);
+        CGameTrace visibilityTrace{};
+        if (VR_SafeTraceRay(
+                vr->m_Game->m_EngineTrace,
+                visibilityRay,
+                MASK_SHOT_HULL,
+                &filter,
+                visibilityTrace) &&
+            visibilityTrace.m_pEnt &&
+            visibilityTrace.m_pEnt != reinterpret_cast<void*>(target) &&
+            visibilityTrace.fraction < 0.97f)
+        {
+            return false;
+        }
+        return true;
     }
 
+    struct ObjectPullNativeGlowOverride
+    {
+        bool offsetsResolved = false;
+        bool active = false;
+        int glowTypeOffset = -1;
+        int glowRangeOffset = -1;
+        int glowRangeMinOffset = -1;
+        C_BaseEntity* entity = nullptr;
+        void* entityVtable = nullptr;
+        int entityIndex = 0;
+        int originalGlowType = 0;
+        int originalGlowRange = 0;
+        int originalGlowRangeMin = 0;
+    };
+
+    static ObjectPullNativeGlowOverride g_ObjectPullNativeGlow{};
+
+    static void ObjectPullResolveNativeGlowOffsets(VR* vr)
+    {
+        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
+        if (glow.offsetsResolved || !vr || !vr->m_Game)
+            return;
+
+        glow.offsetsResolved = true;
+        static const char* const tableNames[] =
+        {
+            "DT_GlowProperty",
+            "DT_BaseEntity",
+            "CBaseEntity",
+            "DT_BaseAnimating",
+            "CBaseAnimating",
+            "DT_BaseCombatWeapon",
+            "CBaseCombatWeapon"
+        };
+        for (const char* tableName : tableNames)
+        {
+            const int typeOffset = vr->m_Game->FindRecvPropOffset(
+                tableName,
+                "m_iGlowType");
+            const int rangeOffset = vr->m_Game->FindRecvPropOffset(
+                tableName,
+                "m_nGlowRange");
+            if (typeOffset < 0 || rangeOffset < 0)
+                continue;
+
+            glow.glowTypeOffset = typeOffset;
+            glow.glowRangeOffset = rangeOffset;
+            glow.glowRangeMinOffset = vr->m_Game->FindRecvPropOffset(
+                tableName,
+                "m_nGlowRangeMin");
+            break;
+        }
+
+        if (glow.glowTypeOffset < 0 ||
+            glow.glowRangeOffset < 0 ||
+            glow.glowRangeMinOffset < 0)
+        {
+            // The checked-in L4D2 netvar dump records m_Glow at 0x278 and
+            // DT_GlowProperty's type/range/rangeMin fields at +4/+8/+C.
+            // These fixed offsets avoid walking cyclic nested RecvTables at
+            // map start. Values are sanity-checked on every new target before
+            // any write occurs.
+            glow.glowTypeOffset = 0x27C;
+            glow.glowRangeOffset = 0x280;
+            glow.glowRangeMinOffset = 0x284;
+        }
+
+        if (vr->m_ObjectPullDebugLog)
+        {
+            Game::logMsg(
+                "[VR][ObjectPull][client] native glow offsets type=%d range=%d rangeMin=%d",
+                glow.glowTypeOffset,
+                glow.glowRangeOffset,
+                glow.glowRangeMinOffset);
+        }
+    }
+
+    static bool ObjectPullSafeReadNativeGlow(
+        C_BaseEntity* entity,
+        int typeOffset,
+        int rangeOffset,
+        int rangeMinOffset,
+        int& outType,
+        int& outRange,
+        int& outRangeMin)
+    {
+        if (!entity || typeOffset < 0 || rangeOffset < 0)
+            return false;
+#ifdef _MSC_VER
+        __try
+        {
+            const uint8_t* base =
+                reinterpret_cast<const uint8_t*>(entity);
+            outType = *reinterpret_cast<const int*>(base + typeOffset);
+            outRange = *reinterpret_cast<const int*>(base + rangeOffset);
+            outRangeMin = rangeMinOffset >= 0
+                ? *reinterpret_cast<const int*>(base + rangeMinOffset)
+                : 0;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        const uint8_t* base =
+            reinterpret_cast<const uint8_t*>(entity);
+        outType = *reinterpret_cast<const int*>(base + typeOffset);
+        outRange = *reinterpret_cast<const int*>(base + rangeOffset);
+        outRangeMin = rangeMinOffset >= 0
+            ? *reinterpret_cast<const int*>(base + rangeMinOffset)
+            : 0;
+        return true;
+#endif
+    }
+
+    static bool ObjectPullSafeWriteNativeGlow(
+        VR* vr,
+        C_BaseEntity* entity,
+        int typeOffset,
+        int rangeOffset,
+        int rangeMinOffset,
+        int glowType,
+        int glowRange,
+        int glowRangeMin)
+    {
+        if (!vr ||
+            !vr->m_Game ||
+            !vr->m_Game->m_Offsets ||
+            !entity ||
+            typeOffset < static_cast<int>(sizeof(void*)) ||
+            rangeOffset < 0 ||
+            !vr->m_Game->m_Offsets->
+                CGlowProperty_SetGlowType_Client.valid)
+        {
+            return false;
+        }
+#ifdef _MSC_VER
+        __try
+        {
+            uint8_t* base = reinterpret_cast<uint8_t*>(entity);
+            *reinterpret_cast<int*>(base + rangeOffset) = glowRange;
+            if (rangeMinOffset >= 0)
+            {
+                *reinterpret_cast<int*>(base + rangeMinOffset) =
+                    glowRangeMin;
+            }
+
+            // m_iGlowType sits at +4 in the embedded CGlowProperty. The native
+            // setter registers or unregisters its glow objects before storing
+            // the value, which a raw netvar write cannot do.
+            void* glowProperty = base + typeOffset - sizeof(void*);
+            if (!*reinterpret_cast<void**>(glowProperty))
+                return false;
+            using SetGlowTypeFn = void(__thiscall*)(void*, int);
+            auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
+                vr->m_Game->m_Offsets->
+                    CGlowProperty_SetGlowType_Client.address);
+            setGlowType(glowProperty, glowType);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        uint8_t* base = reinterpret_cast<uint8_t*>(entity);
+        *reinterpret_cast<int*>(base + rangeOffset) = glowRange;
+        if (rangeMinOffset >= 0)
+            *reinterpret_cast<int*>(base + rangeMinOffset) = glowRangeMin;
+        void* glowProperty = base + typeOffset - sizeof(void*);
+        if (!*reinterpret_cast<void**>(glowProperty))
+            return false;
+        using SetGlowTypeFn = void(__thiscall*)(void*, int);
+        auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
+            vr->m_Game->m_Offsets->
+                CGlowProperty_SetGlowType_Client.address);
+        setGlowType(glowProperty, glowType);
+        return true;
+#endif
+    }
+
+    static bool ObjectPullNativeGlowEntityStillValid(
+        VR* vr,
+        const ObjectPullNativeGlowOverride& glow)
+    {
+        if (!vr ||
+            !glow.entity ||
+            !glow.entityVtable ||
+            glow.entityIndex <= 0)
+        {
+            return false;
+        }
+        C_BaseEntity* current = ObjectPullSafeGetClientEntity(
+            vr,
+            glow.entityIndex);
+        void* currentVtable = nullptr;
+        return
+            current == glow.entity &&
+            ObjectPullReadClientVtable(current, currentVtable) &&
+            currentVtable == glow.entityVtable;
+    }
+
+    static void ObjectPullRestoreNativeGlow(VR* vr)
+    {
+        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
+        if (!glow.active)
+            return;
+
+        if (ObjectPullNativeGlowEntityStillValid(vr, glow))
+        {
+            ObjectPullSafeWriteNativeGlow(
+                vr,
+                glow.entity,
+                glow.glowTypeOffset,
+                glow.glowRangeOffset,
+                glow.glowRangeMinOffset,
+                glow.originalGlowType,
+                glow.originalGlowRange,
+                glow.originalGlowRangeMin);
+        }
+
+        glow.active = false;
+        glow.entity = nullptr;
+        glow.entityVtable = nullptr;
+        glow.entityIndex = 0;
+    }
+
+    static void ObjectPullApplyNativeGlow(
+        VR* vr,
+        C_BaseEntity* entity,
+        void* entityVtable,
+        int entityIndex)
+    {
+        if (!vr || !vr->m_ObjectPullVisualsEnabled || !entity)
+        {
+            ObjectPullRestoreNativeGlow(vr);
+            return;
+        }
+
+        ObjectPullResolveNativeGlowOffsets(vr);
+        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
+        if (glow.glowTypeOffset < 0 || glow.glowRangeOffset < 0)
+            return;
+
+        const bool sameTarget =
+            glow.active &&
+            glow.entity == entity &&
+            glow.entityVtable == entityVtable &&
+            glow.entityIndex == entityIndex;
+        if (!sameTarget)
+        {
+            ObjectPullRestoreNativeGlow(vr);
+
+            int originalType = 0;
+            int originalRange = 0;
+            int originalRangeMin = 0;
+            if (!ObjectPullSafeReadNativeGlow(
+                    entity,
+                    glow.glowTypeOffset,
+                    glow.glowRangeOffset,
+                    glow.glowRangeMinOffset,
+                    originalType,
+                    originalRange,
+                    originalRangeMin))
+            {
+                return;
+            }
+
+            const bool originalGlowValuesPlausible =
+                originalType >= 0 &&
+                originalType <= 3 &&
+                originalRange >= 0 &&
+                originalRange <= 100000 &&
+                originalRangeMin >= 0 &&
+                originalRangeMin <= 100000;
+            if (!originalGlowValuesPlausible)
+            {
+                if (vr->m_ObjectPullDebugLog)
+                {
+                    Game::logMsg(
+                        "[VR][ObjectPull][client] native glow refused implausible values entity=%p index=%d type=%d range=%d rangeMin=%d",
+                        entity,
+                        entityIndex,
+                        originalType,
+                        originalRange,
+                        originalRangeMin);
+                }
+                return;
+            }
+
+            glow.active = true;
+            glow.entity = entity;
+            glow.entityVtable = entityVtable;
+            glow.entityIndex = entityIndex;
+            glow.originalGlowType = originalType;
+            glow.originalGlowRange = originalRange;
+            glow.originalGlowRangeMin = originalRangeMin;
+            if (vr->m_ObjectPullDebugLog)
+            {
+                Game::logMsg(
+                    "[VR][ObjectPull][client] native glow override entity=%p index=%d originalType=%d originalRange=%d originalRangeMin=%d",
+                    entity,
+                    entityIndex,
+                    originalType,
+                    originalRange,
+                    originalRangeMin);
+            }
+        }
+
+        // Glow type 3 is Source's native constant outline. Keep its engine-unit
+        // range identical to the configured controller-ray selection distance.
+        // Only the currently visible target receives this temporary override,
+        // and its original fields are restored when aim leaves or pull launches.
+        const int glowRange = std::max(
+            1,
+            static_cast<int>(
+                std::ceil(
+                    std::max(0.1f, vr->m_ObjectPullMaxDistanceMeters) *
+                    std::max(1.0f, vr->m_VRScale))));
+        const bool glowWriteSucceeded =
+            ObjectPullSafeWriteNativeGlow(
+            vr,
+            entity,
+            glow.glowTypeOffset,
+            glow.glowRangeOffset,
+            glow.glowRangeMinOffset,
+            3,
+            glowRange,
+            0);
+        if (vr->m_ObjectPullDebugLog && !sameTarget)
+        {
+            int readbackType = -1;
+            int readbackRange = -1;
+            int readbackRangeMin = -1;
+            const bool readbackSucceeded =
+                glowWriteSucceeded &&
+                ObjectPullSafeReadNativeGlow(
+                    entity,
+                    glow.glowTypeOffset,
+                    glow.glowRangeOffset,
+                    glow.glowRangeMinOffset,
+                    readbackType,
+                    readbackRange,
+                    readbackRangeMin);
+            Game::logMsg(
+                "[VR][ObjectPull][client] native glow applied entity=%p index=%d write=%d read=%d type=%d range=%d rangeMin=%d",
+                entity,
+                entityIndex,
+                glowWriteSucceeded ? 1 : 0,
+                readbackSucceeded ? 1 : 0,
+                readbackType,
+                readbackRange,
+                readbackRangeMin);
+        }
+    }
 
 }
 
-static void ObjectPullPublishWireCommand(uint8_t wireCommand, int targetEntityIndex)
+static void ObjectPullPublishWireCommand(
+    uint8_t wireCommand,
+    int targetEntityIndex,
+    VR::ObjectPullTargetHint targetHint)
 {
     constexpr uint32_t kCommandMask = 0xFFu;
     constexpr uint32_t kEntityMask = 0x7FFu;
+    constexpr uint32_t kTargetHintMask = 0x7u;
 
     const uint32_t command = static_cast<uint32_t>(wireCommand) & kCommandMask;
     const uint32_t entity = static_cast<uint32_t>(
         std::clamp(targetEntityIndex, 0, 2047)) & kEntityMask;
-    const uint32_t payload = command | (entity << 8);
+    const uint32_t hint =
+        static_cast<uint32_t>(targetHint) & kTargetHintMask;
+    const uint32_t payload =
+        command |
+        (entity << 8) |
+        (hint << 19);
 
     // A single release-store publishes command and entity index coherently.
     // Do not suppress repeated stores here: Begin/Continue reliability windows
@@ -751,11 +1360,14 @@ static void ObjectPullPublishWireCommand(uint8_t wireCommand, int targetEntityIn
 
 void VR::ResetObjectPullInput(bool sendCancel)
 {
+    ObjectPullRestoreNativeGlow(this);
     m_ObjectPullPhase = ObjectPullClientPhase::Idle;
     m_ObjectPullClientTarget = nullptr;
     m_ObjectPullClientTargetVtable = nullptr;
     m_ObjectPullClientTargetEntityIndex = 0;
     m_ObjectPullWireTargetEntityIndex = 0;
+    m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+    m_ObjectPullWireTargetHint = ObjectPullTargetHint::None;
     m_ObjectPullClientTargetPoint = {};
     m_ObjectPullArmPosition = {};
     m_ObjectPullArmHandRelativeToHmd = {};
@@ -772,7 +1384,6 @@ void VR::ResetObjectPullInput(bool sendCancel)
     m_ObjectPullGestureSampleTime = {};
     g_ObjectPullNextTargetScanAt = {};
     g_ObjectPullNextBroadScanAt = {};
-    g_ObjectPullNextVisualUpdateAt = {};
     m_ObjectPullLastTargetDistanceMeters = 0.0f;
     m_ObjectPullGesturePeakDistanceMeters = 0.0f;
     m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
@@ -787,20 +1398,25 @@ void VR::ResetObjectPullInput(bool sendCancel)
         m_ObjectPullDesiredWireCommand = kObjectPullWireCancel;
         ObjectPullPublishWireCommand(
             m_ObjectPullDesiredWireCommand,
-            m_ObjectPullWireTargetEntityIndex);
+            m_ObjectPullWireTargetEntityIndex,
+            m_ObjectPullWireTargetHint);
     }
     else
     {
         m_ObjectPullRequireActionRelease = false;
         m_ObjectPullActionDownPrev = false;
-        m_ObjectPullCatchActionDownPrev = false;
         m_ObjectPullCancelRepeatUntil = {};
         m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
-        ObjectPullPublishWireCommand(kObjectPullWireNone, 0);
+        ObjectPullPublishWireCommand(
+            kObjectPullWireNone,
+            0,
+            ObjectPullTargetHint::None);
     }
 }
 
-bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionDown, bool catchActionDown)
+bool VR::UpdateObjectPullInput(
+    C_BasePlayer* localPlayer,
+    bool gripActionDown)
 {
     const auto now = std::chrono::steady_clock::now();
     const bool targetScanDue =
@@ -809,14 +1425,11 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
     const bool broadScanDue =
         g_ObjectPullNextBroadScanAt.time_since_epoch().count() == 0 ||
         now >= g_ObjectPullNextBroadScanAt;
-    const bool visualUpdateDue =
-        g_ObjectPullNextVisualUpdateAt.time_since_epoch().count() == 0 ||
-        now >= g_ObjectPullNextVisualUpdateAt;
     const bool actionJustPressed =
-        objectPullActionDown && !m_ObjectPullActionDownPrev;
+        gripActionDown && !m_ObjectPullActionDownPrev;
     const bool actionJustReleased =
-        !objectPullActionDown && m_ObjectPullActionDownPrev;
-    m_ObjectPullActionDownPrev = objectPullActionDown;
+        !gripActionDown && m_ObjectPullActionDownPrev;
+    m_ObjectPullActionDownPrev = gripActionDown;
     if (actionJustReleased)
         m_ObjectPullRequireActionRelease = false;
 
@@ -830,19 +1443,14 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
     m_ObjectPullCurrentControllerPosition = gunHandPosition;
     m_ObjectPullCurrentControllerAngles = gunHandAngles;
 
-    const bool holdingCatchActionDown = catchActionDown;
-    const bool catchActionJustPressed =
-        holdingCatchActionDown && !m_ObjectPullCatchActionDownPrev;
-    const bool catchActionJustReleased =
-        !holdingCatchActionDown && m_ObjectPullCatchActionDownPrev;
-    if ((catchActionJustPressed || catchActionJustReleased) && m_ObjectPullDebugLog)
+    const bool holdingCatchActionDown = gripActionDown;
+    if ((actionJustPressed || actionJustReleased) && m_ObjectPullDebugLog)
     {
         Game::logMsg(
-            "[VR][ObjectPull][client] catch action %s hand=%s",
-            catchActionJustPressed ? "pressed" : "released",
+            "[VR][ObjectPull][client] grip %s hand=%s",
+            actionJustPressed ? "pressed" : "released",
             gunHandPhysicalLeft ? "left" : "right");
     }
-    m_ObjectPullCatchActionDownPrev = holdingCatchActionDown;
 
     const bool featureAvailable =
         m_ObjectPullEnabled &&
@@ -875,43 +1483,34 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
                 m_AdjustingScope ? 1 : 0);
         }
 
-        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle)
-            ResetObjectPullInput(true);
+        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle ||
+            g_ObjectPullNativeGlow.active)
+        {
+            const bool hadServerFlight =
+                m_ObjectPullPhase == ObjectPullClientPhase::Pulling ||
+                m_ObjectPullPhase == ObjectPullClientPhase::Held;
+            ResetObjectPullInput(hadServerFlight);
+            m_ObjectPullActionDownPrev = gripActionDown;
+            m_ObjectPullRequireActionRelease = gripActionDown;
+        }
         else if (
             m_ObjectPullCancelRepeatUntil.time_since_epoch().count() == 0 ||
             now > m_ObjectPullCancelRepeatUntil)
         {
             m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
-            ObjectPullPublishWireCommand(kObjectPullWireNone, 0);
+            ObjectPullPublishWireCommand(
+                kObjectPullWireNone,
+                0,
+                ObjectPullTargetHint::None);
         }
         return false;
     }
 
-    // The flying object is not a current selection. Pressing Object Pull again
-    // abandons only its catch tracking; the old object keeps its physical velocity.
-    if (actionJustPressed &&
-        m_ObjectPullPhase == ObjectPullClientPhase::Pulling)
-    {
-        if (m_ObjectPullDebugLog)
-        {
-            Game::logMsg(
-                "[VR][ObjectPull][client] new selection started while previous object continues under physics");
-        }
-
-        ResetObjectPullInput(false);
-        m_ObjectPullActionDownPrev = true;
-        m_ObjectPullRequireActionRelease = false;
-        m_ObjectPullCatchActionDownPrev = holdingCatchActionDown;
-    }
-
     ObjectPullClientTraceResult preview{};
-    bool previewEvaluated = false;
-    if (m_ObjectPullPhase == ObjectPullClientPhase::Idle &&
-        objectPullActionDown &&
-        !m_ObjectPullRequireActionRelease &&
+    if ((m_ObjectPullPhase == ObjectPullClientPhase::Idle ||
+            m_ObjectPullPhase == ObjectPullClientPhase::Targeting) &&
         (actionJustPressed || targetScanDue))
     {
-        previewEvaluated = true;
         g_ObjectPullNextTargetScanAt = now +
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<float>(1.0f / 60.0f));
@@ -930,59 +1529,28 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
             allowBroadScan);
         if (preview.supported)
         {
-            m_ObjectPullPhase = ObjectPullClientPhase::Armed;
+            const bool targetChanged =
+                m_ObjectPullClientTarget != preview.entity ||
+                m_ObjectPullClientTargetEntityIndex != preview.entityIndex;
+            m_ObjectPullPhase = ObjectPullClientPhase::Targeting;
             m_ObjectPullClientTarget = preview.entity;
             m_ObjectPullClientTargetVtable = preview.vtable;
             m_ObjectPullClientTargetEntityIndex = preview.entityIndex;
-            m_ObjectPullClientTargetPoint = preview.entityOrigin;
-            m_ObjectPullArmPosition = gunHandPosition;
-            // Gesture detection uses only the live OpenVR tracking matrices
-            // sampled on this update. Cached game-frame poses and world-space
-            // viewmodel/controller positions are intentionally not accepted.
-            ObjectPullTrackingSample armTracking{};
-            if (!ObjectPullReadLiveTrackingSample(
-                this,
-                gunHandPhysicalLeft,
-                armTracking))
-            {
-                if (m_ObjectPullDebugLog)
-                {
-                    Game::logMsg(
-                        "[VR][ObjectPull][client] supported target found but live tracking pose is unavailable");
-                }
-                ResetObjectPullInput(false);
-                m_ObjectPullActionDownPrev = objectPullActionDown;
-                m_ObjectPullCatchActionDownPrev = holdingCatchActionDown;
-                return false;
-            }
-            m_ObjectPullArmHandRelativeToHmd =
-                armTracking.handRelativeToHmd;
-            m_ObjectPullLastHandRelativeToHmd =
-                m_ObjectPullArmHandRelativeToHmd;
-            m_ObjectPullArmTowardBodyDirection =
-                m_ObjectPullArmHandRelativeToHmd * -1.0f;
-            if (VectorNormalize(m_ObjectPullArmTowardBodyDirection) <= 0.0001f)
-                m_ObjectPullArmTowardBodyDirection = {};
-            m_ObjectPullArmForward = gunHandForward;
-            m_ObjectPullArmAngles = gunHandAngles;
+            m_ObjectPullClientTargetHint = preview.targetHint;
+            m_ObjectPullClientTargetPoint = preview.hitPosition;
             m_ObjectPullLastTargetDistanceMeters =
-                (gunHandPosition - preview.entityOrigin).Length() /
+                (gunHandPosition - preview.hitPosition).Length() /
                 std::max(1.0f, m_VRScale);
-            m_ObjectPullGestureSampleTime = now;
-            m_ObjectPullGesturePeakDistanceMeters = 0.0f;
-            m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
-            m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
-            m_ObjectPullCancelRepeatUntil = {};
-            TriggerPhysicalHandHapticPulse(
-                gunHandPhysicalLeft,
-                0.018f,
-                75.0f,
-                0.28f);
+            ObjectPullApplyNativeGlow(
+                this,
+                preview.entity,
+                preview.vtable,
+                preview.entityIndex);
 
-            if (m_ObjectPullDebugLog)
+            if (targetChanged && m_ObjectPullDebugLog)
             {
                 Game::logMsg(
-                    "[VR][ObjectPull][client] armed entity=%p index=%d class=%s model=%s distance=%.2fm assist=%.2fm hand=%s",
+                    "[VR][ObjectPull][client] pointed target entity=%p index=%d class=%s model=%s distance=%.2fm assist=%.2fm hand=%s",
                     preview.entity,
                     preview.entityIndex,
                     preview.className[0]
@@ -996,21 +1564,126 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
                     gunHandPhysicalLeft ? "left" : "right");
             }
         }
-        else if (actionJustPressed && m_ObjectPullDebugLog)
+        else
         {
-            Game::logMsg(
-                "[VR][ObjectPull][client] no supported target hit=%d index=%d class=%s model=%s distance=%.2fm min=%.2fm max=%.2fm",
-                preview.hitAnything ? 1 : 0,
-                preview.entityIndex,
-                preview.className[0]
-                    ? preview.className
-                    : "<none>",
-                preview.modelName[0]
-                    ? preview.modelName
-                    : "<none>",
-                preview.distanceMeters,
-                m_ObjectPullMinimumDistanceMeters,
-                m_ObjectPullMaxDistanceMeters);
+            const bool keepCurrentTarget =
+                m_ObjectPullPhase == ObjectPullClientPhase::Targeting &&
+                ObjectPullClientTargetStillPointedAt(
+                    this,
+                    localPlayer,
+                    m_ObjectPullClientTarget,
+                    gunHandPosition,
+                    gunHandForward);
+            if (!keepCurrentTarget)
+            {
+                ObjectPullRestoreNativeGlow(this);
+                m_ObjectPullPhase = ObjectPullClientPhase::Idle;
+                m_ObjectPullClientTarget = nullptr;
+                m_ObjectPullClientTargetVtable = nullptr;
+                m_ObjectPullClientTargetEntityIndex = 0;
+                m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+                m_ObjectPullClientTargetPoint = {};
+            }
+
+            if (actionJustPressed && m_ObjectPullDebugLog)
+            {
+                Game::logMsg(
+                    "[VR][ObjectPull][client] grip pressed without pointed pull target hit=%d index=%d class=%s model=%s distance=%.2fm min=%.2fm max=%.2fm",
+                    preview.hitAnything ? 1 : 0,
+                    preview.entityIndex,
+                    preview.className[0]
+                        ? preview.className
+                        : "<none>",
+                    preview.modelName[0]
+                        ? preview.modelName
+                        : "<none>",
+                    preview.distanceMeters,
+                    m_ObjectPullMinimumDistanceMeters,
+                    m_ObjectPullMaxDistanceMeters);
+            }
+        }
+    }
+
+    if (m_ObjectPullPhase == ObjectPullClientPhase::Targeting)
+    {
+        void* currentVtable = nullptr;
+        const bool targetValid =
+            ObjectPullReadClientVtable(
+                m_ObjectPullClientTarget,
+                currentVtable) &&
+            currentVtable == m_ObjectPullClientTargetVtable;
+        if (!targetValid)
+        {
+            ObjectPullRestoreNativeGlow(this);
+            m_ObjectPullPhase = ObjectPullClientPhase::Idle;
+            m_ObjectPullClientTarget = nullptr;
+            m_ObjectPullClientTargetVtable = nullptr;
+            m_ObjectPullClientTargetEntityIndex = 0;
+            m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+            m_ObjectPullClientTargetPoint = {};
+        }
+        else
+        {
+            ObjectPullApplyNativeGlow(
+                this,
+                m_ObjectPullClientTarget,
+                m_ObjectPullClientTargetVtable,
+                m_ObjectPullClientTargetEntityIndex);
+        }
+
+        if (m_ObjectPullPhase == ObjectPullClientPhase::Targeting &&
+            actionJustPressed &&
+            !m_ObjectPullRequireActionRelease)
+        {
+            // Pointing alone owns selection and native outline. Grip snapshots
+            // the gesture origin only when the player chooses to pull.
+            ObjectPullTrackingSample armTracking{};
+            if (ObjectPullReadLiveTrackingSample(
+                    this,
+                    gunHandPhysicalLeft,
+                    armTracking))
+            {
+                m_ObjectPullPhase = ObjectPullClientPhase::Armed;
+                m_ObjectPullArmPosition = gunHandPosition;
+                m_ObjectPullArmHandRelativeToHmd =
+                    armTracking.handRelativeToHmd;
+                m_ObjectPullLastHandRelativeToHmd =
+                    m_ObjectPullArmHandRelativeToHmd;
+                m_ObjectPullArmTowardBodyDirection =
+                    m_ObjectPullArmHandRelativeToHmd * -1.0f;
+                if (VectorNormalize(
+                        m_ObjectPullArmTowardBodyDirection) <= 0.0001f)
+                {
+                    m_ObjectPullArmTowardBodyDirection = {};
+                }
+                m_ObjectPullArmForward = gunHandForward;
+                m_ObjectPullArmAngles = gunHandAngles;
+                m_ObjectPullGestureSampleTime = now;
+                m_ObjectPullGesturePeakDistanceMeters = 0.0f;
+                m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
+                m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
+                m_ObjectPullCancelRepeatUntil = {};
+                TriggerPhysicalHandHapticPulse(
+                    gunHandPhysicalLeft,
+                    0.018f,
+                    75.0f,
+                    0.28f);
+
+                if (m_ObjectPullDebugLog)
+                {
+                    Game::logMsg(
+                        "[VR][ObjectPull][client] grip armed pointed entity=%p index=%d distance=%.2fm hand=%s",
+                        m_ObjectPullClientTarget,
+                        m_ObjectPullClientTargetEntityIndex,
+                        m_ObjectPullLastTargetDistanceMeters,
+                        gunHandPhysicalLeft ? "left" : "right");
+                }
+            }
+            else if (m_ObjectPullDebugLog)
+            {
+                Game::logMsg(
+                    "[VR][ObjectPull][client] grip pressed on pointed target but live tracking pose is unavailable");
+            }
         }
     }
 
@@ -1030,21 +1703,12 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
                 Game::logMsg(
                     "[VR][ObjectPull][client] target invalid; clearing armed selection");
             }
-            ResetObjectPullInput(true);
+            ResetObjectPullInput(false);
+            m_ObjectPullActionDownPrev = gripActionDown;
+            m_ObjectPullRequireActionRelease = gripActionDown;
         }
         else
         {
-            if (m_ObjectPullVisualsEnabled && visualUpdateDue)
-            {
-                Vector liveTargetOrigin{};
-                if (ObjectPullReadClientOrigin(
-                    m_ObjectPullClientTarget,
-                    liveTargetOrigin))
-                {
-                    m_ObjectPullClientTargetPoint = liveTargetOrigin;
-                }
-            }
-
             ObjectPullTrackingSample currentTracking{};
             if (!ObjectPullReadLiveTrackingSample(
                 this,
@@ -1058,7 +1722,15 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
                         Game::logMsg(
                             "[VR][ObjectPull][client] gesture cancelled because live tracking pose became unavailable");
                     }
-                    ResetObjectPullInput(true);
+                    m_ObjectPullPhase = ObjectPullClientPhase::Targeting;
+                    m_ObjectPullGestureSampleTime = {};
+                    m_ObjectPullGesturePeakDistanceMeters = 0.0f;
+                    m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
+                    ObjectPullApplyNativeGlow(
+                        this,
+                        m_ObjectPullClientTarget,
+                        m_ObjectPullClientTargetVtable,
+                        m_ObjectPullClientTargetEntityIndex);
                 }
                 return false;
             }
@@ -1123,14 +1795,17 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
 
             if (fullDistanceGesture || fastFlickGesture)
             {
-                // The selected entity and its outline end on the trigger frame.
+                // The native selection outline ends on the trigger frame.
                 // Begin uses the original pointing pose for server validation;
                 // Continue uses the current pose as a fixed ballistic target.
                 m_ObjectPullPhase = ObjectPullClientPhase::Pulling;
                 m_ObjectPullWireTargetEntityIndex = m_ObjectPullClientTargetEntityIndex;
+                m_ObjectPullWireTargetHint = m_ObjectPullClientTargetHint;
+                ObjectPullRestoreNativeGlow(this);
                 m_ObjectPullClientTarget = nullptr;
                 m_ObjectPullClientTargetVtable = nullptr;
                 m_ObjectPullClientTargetEntityIndex = 0;
+                m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
                 m_ObjectPullClientTargetPoint = {};
                 m_ObjectPullRequireActionRelease = true;
                 m_ObjectPullBeginRepeatUntil = now +
@@ -1170,13 +1845,22 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
                 if (m_ObjectPullDebugLog)
                 {
                     Game::logMsg(
-                        "[VR][ObjectPull][client] gesture not triggered peakDistance=%.3fm peakSpeed=%.2fm/s currentDistance=%.3fm threshold=%.3fm; armed selection released",
+                        "[VR][ObjectPull][client] grip released before pull peakDistance=%.3fm peakSpeed=%.2fm/s currentDistance=%.3fm threshold=%.3fm; returning to pointed target",
                         m_ObjectPullGesturePeakDistanceMeters,
                         m_ObjectPullGesturePeakSpeedMetersPerSecond,
                         trackingDisplacementMeters,
                         configuredDistance);
                 }
-                ResetObjectPullInput(true);
+                m_ObjectPullPhase = ObjectPullClientPhase::Targeting;
+                m_ObjectPullGestureSampleTime = {};
+                m_ObjectPullGesturePeakDistanceMeters = 0.0f;
+                m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
+                m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
+                ObjectPullApplyNativeGlow(
+                    this,
+                    m_ObjectPullClientTarget,
+                    m_ObjectPullClientTargetVtable,
+                    m_ObjectPullClientTargetEntityIndex);
             }
         }
     }
@@ -1215,7 +1899,7 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
             if (m_ObjectPullDebugLog)
             {
                 Game::logMsg(
-                    "[VR][ObjectPull][client] catch action requested");
+                    "[VR][ObjectPull][client] grip catch requested");
             }
         }
         else if (
@@ -1234,7 +1918,7 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
         if (!holdingCatchActionDown)
         {
             if (m_ObjectPullDebugLog)
-                Game::logMsg("[VR][ObjectPull][client] catch action released");
+                Game::logMsg("[VR][ObjectPull][client] grip released after catch");
             ResetObjectPullInput(true);
         }
         else
@@ -1243,161 +1927,15 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
         }
     }
 
-    if (m_ObjectPullVisualsEnabled &&
-        visualUpdateDue &&
-        m_Game &&
-        m_Game->m_DebugOverlay)
-    {
-        bool drewVisual = false;
-        IVDebugOverlay* overlay = m_Game->m_DebugOverlay;
-        const float scale = std::max(1.0f, m_VRScale);
-        const float duration = 0.030f;
-        const float targetRadius =
-            std::max(2.0f, 0.065f * scale);
-        const float handRadius =
-            std::max(1.5f, 0.035f * scale);
-
-        if (m_ObjectPullPhase == ObjectPullClientPhase::Idle &&
-            objectPullActionDown &&
-            !m_ObjectPullRequireActionRelease &&
-            previewEvaluated)
-        {
-            drewVisual = true;
-            if (preview.hitAnything)
-            {
-                const int r = 255;
-                const int g = preview.supported ? 140 : 45;
-                const int b = preview.supported ? 20 : 45;
-                overlay->AddLineOverlay(
-                    gunHandPosition,
-                    preview.hitPosition,
-                    r,
-                    g,
-                    b,
-                    true,
-                    duration);
-                ObjectPullDrawMarker(
-                    overlay,
-                    preview.hitPosition,
-                    handRadius,
-                    r,
-                    g,
-                    b,
-                    220,
-                    duration);
-                ObjectPullDrawMarker(
-                    overlay,
-                    preview.hitPosition,
-                    handRadius * 1.8f,
-                    r,
-                    g,
-                    b,
-                    120,
-                    duration);
-            }
-            else
-            {
-                const Vector aimEnd =
-                    gunHandPosition +
-                    gunHandForward *
-                        (std::max(
-                            0.1f,
-                            m_ObjectPullMaxDistanceMeters) *
-                            scale);
-                overlay->AddLineOverlay(
-                    gunHandPosition,
-                    aimEnd,
-                    180,
-                    180,
-                    180,
-                    true,
-                    duration);
-            }
-        }
-        else if (m_ObjectPullPhase == ObjectPullClientPhase::Armed)
-        {
-            drewVisual = true;
-            ObjectPullDrawMarker(
-                overlay,
-                m_ObjectPullClientTargetPoint,
-                targetRadius,
-                255,
-                195,
-                35,
-                230,
-                duration);
-            ObjectPullDrawMarker(
-                overlay,
-                m_ObjectPullClientTargetPoint,
-                targetRadius * 1.45f,
-                255,
-                195,
-                35,
-                110,
-                duration);
-            overlay->AddLineOverlay(
-                gunHandPosition,
-                m_ObjectPullClientTargetPoint,
-                255,
-                195,
-                35,
-                true,
-                duration);
-
-            Vector targetDirection =
-                m_ObjectPullArmPosition -
-                m_ObjectPullClientTargetPoint;
-            if (VectorNormalize(targetDirection) <= 0.0001f)
-                targetDirection = m_ObjectPullArmForward * -1.0f;
-            const Vector gestureEnd =
-                m_ObjectPullArmPosition +
-                targetDirection *
-                    (std::max(
-                        0.01f,
-                        m_ObjectPullGestureDistanceMeters) *
-                        scale);
-            overlay->AddLineOverlay(
-                m_ObjectPullArmPosition,
-                gestureEnd,
-                255,
-                210,
-                50,
-                true,
-                duration);
-            overlay->AddLineOverlay(
-                m_ObjectPullArmPosition,
-                gunHandPosition,
-                255,
-                245,
-                150,
-                true,
-                duration);
-            ObjectPullDrawMarker(
-                overlay,
-                gestureEnd,
-                handRadius,
-                255,
-                210,
-                50,
-                220,
-                duration);
-        }
-        // Pulling and Held intentionally draw nothing. The launched object is
-        // no longer selected and follows normal Source physics immediately.
-        if (drewVisual)
-        {
-            g_ObjectPullNextVisualUpdateAt = now +
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<float>(1.0f / 45.0f));
-        }
-    }
-
     const bool catchActionConsumed =
         holdingCatchActionDown &&
-        (m_ObjectPullPhase == ObjectPullClientPhase::Pulling ||
+        (m_ObjectPullPhase == ObjectPullClientPhase::Armed ||
+            m_ObjectPullPhase == ObjectPullClientPhase::Pulling ||
             m_ObjectPullPhase == ObjectPullClientPhase::Held);
 
-    if (m_ObjectPullPhase == ObjectPullClientPhase::Idle)
+    if (m_ObjectPullPhase == ObjectPullClientPhase::Idle ||
+        m_ObjectPullPhase == ObjectPullClientPhase::Targeting ||
+        m_ObjectPullPhase == ObjectPullClientPhase::Armed)
     {
         if (
             m_ObjectPullCancelRepeatUntil.time_since_epoch().count() != 0 &&
@@ -1413,7 +1951,8 @@ bool VR::UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionD
 
     ObjectPullPublishWireCommand(
         m_ObjectPullDesiredWireCommand,
-        m_ObjectPullWireTargetEntityIndex);
+        m_ObjectPullWireTargetEntityIndex,
+        m_ObjectPullWireTargetHint);
     return catchActionConsumed;
 }
 
@@ -1423,24 +1962,30 @@ bool VR::GetObjectPullUsercmdData(
     Vector& position,
     QAngle& angles,
     bool& overridePose,
-    int& targetEntityIndex)
+    int& targetEntityIndex,
+    ObjectPullTargetHint& targetHint)
 {
     wireCommand = kObjectPullWireNone;
     position = {};
     angles = {};
     overridePose = false;
     targetEntityIndex = 0;
+    targetHint = ObjectPullTargetHint::None;
     if (commandNumber <= 0)
         return false;
 
     constexpr uint32_t kCommandMask = 0xFFu;
     constexpr uint32_t kEntityMask = 0x7FFu;
+    constexpr uint32_t kTargetHintMask = 0x7u;
     const uint32_t mailbox =
         g_ObjectPullWireMailbox.load(std::memory_order_acquire);
     const uint8_t publishedCommand = static_cast<uint8_t>(
         mailbox & kCommandMask);
     const int publishedEntityIndex = static_cast<int>(
         (mailbox >> 8) & kEntityMask);
+    const ObjectPullTargetHint publishedTargetHint =
+        static_cast<ObjectPullTargetHint>(
+            (mailbox >> 19) & kTargetHintMask);
     const size_t index =
         static_cast<size_t>(commandNumber) %
         kObjectPullUsercmdSnapshotCount;
@@ -1454,6 +1999,7 @@ bool VR::GetObjectPullUsercmdData(
     {
         wireCommand = snapshot.wireCommand;
         targetEntityIndex = snapshot.targetEntityIndex;
+        targetHint = snapshot.targetHint;
         return wireCommand != kObjectPullWireNone;
     }
 
@@ -1465,10 +2011,12 @@ bool VR::GetObjectPullUsercmdData(
     snapshot.commandNumber = commandNumber;
     snapshot.wireCommand = publishedCommand;
     snapshot.targetEntityIndex = publishedEntityIndex;
+    snapshot.targetHint = publishedTargetHint;
 
     // The network thread supplies its own current controller pose. Object Pull
     // only crosses threads through the packed atomic command/entity mailbox.
     wireCommand = snapshot.wireCommand;
     targetEntityIndex = snapshot.targetEntityIndex;
+    targetHint = snapshot.targetHint;
     return true;
 }

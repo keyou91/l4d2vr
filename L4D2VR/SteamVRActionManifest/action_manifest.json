@@ -195,11 +195,6 @@
          "requirement": "optional"
       },
       {
-         "name": "/actions/main/in/ObjectPull",
-         "type": "boolean",
-         "requirement": "optional"
-      },
-      {
          "name": "/actions/main/in/InventoryQuickSwitch",
          "type": "boolean",
          "requirement": "optional"
@@ -254,7 +249,6 @@
          "/actions/main/in/ScopeToggle": "Toggle Scope",
          "/actions/main/in/ScopeMagnificationToggle": "Toggle Scope Magnification",
          "/actions/main/in/FriendlyFireBlockToggle": "Friendly Fire Block Toggle",
-         "/actions/main/in/ObjectPull": "Object Pull",
          "/actions/main/in/InventoryQuickSwitch": "Inventory Quick Switch"
       }
    ]
