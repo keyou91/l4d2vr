@@ -5418,8 +5418,6 @@ bool VR::UpdateMagazineInteraction(
         (IsMagazineInteractionServerHookActive(static_cast<int>(activeWeaponId)) ||
             IsMagazineInteractionAnyServerHookActive());
 
-    m_VrHandsVirtualStockHeldPistol = !VrHandsLongWeapon(activeWeaponId);
-
     if (m_VrHandsTwoHandedGripActive &&
         (m_VrHandsTwoHandedGripWeaponId != activeWeaponIdInt))
     {
@@ -5626,6 +5624,7 @@ bool VR::UpdateMagazineInteraction(
                         now - m_VrHandsTwoHandedMountFriendlyGripEnteredAt).count();
                     if (dwellSeconds >= 0.5f)
                     {
+                        m_VrHandsTwoHandedGripPistol = false;
                         m_VrHandsTwoHandedGripActive = true;
                         m_VrHandsTwoHandedGripWeaponId = activeWeaponIdInt;
                         triggerMagazineInteractionHaptic(0.020f, 95.0f, 0.32f, 2);
@@ -5682,6 +5681,7 @@ bool VR::UpdateMagazineInteraction(
             float twoHandTargetDistance = FLT_MAX;
             if (leftHandTouchesTwoHandedGripTarget(twoHandTargetDistance))
             {
+                m_VrHandsTwoHandedGripPistol = !VrHandsLongWeapon(activeWeaponId);
                 m_VrHandsTwoHandedGripActive = true;
                 m_VrHandsTwoHandedGripWeaponId = activeWeaponIdInt;
                 if (leftGripDown)
