@@ -1802,6 +1802,36 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 			std::memory_order_release);
 	}
 
+	bool manualThrowPoseRelevant = false;
+	if (m_VR && m_VR->m_IsVREnabled && m_VR->m_ManualThrowEnabled &&
+		m_VR->m_EncodeVRUsercmd && !m_VR->m_ForceNonVRServerMovement &&
+		localPlayerForAutoActions)
+	{
+		C_BaseCombatWeapon* poseBaseWeapon = reinterpret_cast<C_BaseCombatWeapon*>(
+			localPlayerForAutoActions->GetActiveWeapon());
+		C_WeaponCSBase* poseWeapon = reinterpret_cast<C_WeaponCSBase*>(poseBaseWeapon);
+		const char* poseWeaponName = poseBaseWeapon ? poseBaseWeapon->GetName() : nullptr;
+		const char* poseWeaponNetClass = poseBaseWeapon
+			? m_Game->GetNetworkClassName(reinterpret_cast<uintptr_t*>(poseBaseWeapon))
+			: nullptr;
+		const int poseWeaponId = poseWeapon
+			? static_cast<int>(poseWeapon->GetWeaponID())
+			: static_cast<int>(C_WeaponCSBase::WeaponID::NONE);
+
+		manualThrowPoseRelevant =
+			IsVRThrowableWeapon(poseWeapon, poseWeaponName, poseWeaponNetClass) ||
+			ResolveVRManualCarryThrowWeaponId(
+				poseWeapon,
+				poseWeaponName,
+				poseWeaponNetClass) != static_cast<int>(C_WeaponCSBase::WeaponID::NONE) ||
+			ManualInventoryThrowWeaponIdIsSupported(poseWeaponId);
+	}
+	CacheManualThrowUsercmdControllerPose(
+		m_VR,
+		m_Game,
+		cmd->command_number,
+		manualThrowPoseRelevant);
+
 	s_lastButtons = cmd->buttons;
 
 	return result;

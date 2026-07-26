@@ -25,6 +25,7 @@ class C_BasePlayer;
 class Server_BaseEntity;
 struct model_t;
 class IVDebugOverlay;
+struct edict_t;
 
 // === Forward Declarations for Internal Systems ===
 class Game;
@@ -62,6 +63,21 @@ struct ManualThrowPending
     Vector angularVelocity = { 0.f, 0.f, 0.f };
 };
 
+struct ObjectPullServerState
+{
+    bool active = false;
+    bool launched = false;
+    bool catchRequested = false;
+    bool holdAsPhysicsProp = false;
+    bool held = false;
+    bool nativePickupIssued = false;
+    int launchTick = 0;
+    int lastCommandTick = 0;
+    void* entity = nullptr;
+    void* entityVtable = nullptr;
+    int entityIndex = 0;
+};
+
 struct Player
 {
     C_BasePlayer* pPlayer = nullptr;
@@ -89,6 +105,7 @@ struct Player
     void* manualEmptyHandsDummyPistol = nullptr;
     void* manualEmptyHandsDummyPistolVtable = nullptr;
     ManualThrowPending manualThrowPending{};
+    ObjectPullServerState objectPull{};
 };
 
 // === Main Game System ===
@@ -128,6 +145,7 @@ public:
     bool m_PerformingMelee = false;
     int m_CurrentUsercmdID = -1;
     Server_BaseEntity* m_CurrentUsercmdPlayer = nullptr;
+    edict_t* m_CurrentUsercmdEdict = nullptr;
 
     // === Player VR State (Multiplayer) ===
     // Matches Source's MAX_PLAYERS (65) to cover the full player index range.

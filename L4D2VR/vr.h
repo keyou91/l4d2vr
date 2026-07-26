@@ -857,7 +857,81 @@ public:
 	std::array<Vector, THROW_ARC_SEGMENTS + 1> m_LastThrowArcPoints{};
 	bool m_HasThrowArc = false;
 	bool m_LastAimWasThrowable = false;
+	static constexpr uint8_t kObjectPullWireNone = 0;
+	static constexpr uint8_t kObjectPullWireBegin = 240;
+	static constexpr uint8_t kObjectPullWireContinue = 241;
+	static constexpr uint8_t kObjectPullWireCatch = 242;
+	static constexpr uint8_t kObjectPullWireCancel = 243;
+	enum class ObjectPullClientPhase : uint8_t
+	{
+		Idle,
+		Armed,
+		Pulling,
+		Held,
+	};
+	struct ObjectPullUsercmdSnapshot
+	{
+		bool valid = false;
+		int commandNumber = 0;
+		uint8_t wireCommand = kObjectPullWireNone;
+		bool overridePose = false;
+		Vector position = { 0.0f, 0.0f, 0.0f };
+		QAngle angles = { 0.0f, 0.0f, 0.0f };
+
+		int targetEntityIndex = 0;
+	};
+	static constexpr size_t kObjectPullUsercmdSnapshotCount = 150;
+	std::array<ObjectPullUsercmdSnapshot, kObjectPullUsercmdSnapshotCount> m_ObjectPullUsercmdSnapshots{};
+	bool m_ObjectPullEnabled = true;
+	bool m_ObjectPullVisualsEnabled = true;
+	float m_ObjectPullMaxDistanceMeters = 12.0f;
+	float m_ObjectPullMinimumDistanceMeters = 0.25f;
+	float m_ObjectPullTargetAssistRadiusMeters = 0.08f;
+	float m_ObjectPullGestureDistanceMeters = 0.08f;
+	float m_ObjectPullCatchDistanceMeters = 0.70f;
+	float m_ObjectPullSpeedMetersPerSecond = 12.0f;
+	Vector m_ObjectPullCatchOffsetMeters = { 0.32f, 0.0f, -0.08f };
+	bool m_ObjectPullDebugLog = true;
+	ObjectPullClientPhase m_ObjectPullPhase = ObjectPullClientPhase::Idle;
+	bool m_ObjectPullActionDownPrev = false;
+	bool m_ObjectPullRequireActionRelease = false;
+	bool m_ObjectPullCatchActionDownPrev = false;
+	uint8_t m_ObjectPullCatchActionSuppressMask = 0;
+	C_BaseEntity* m_ObjectPullClientTarget = nullptr;
+	int m_ObjectPullClientTargetEntityIndex = 0;
+	int m_ObjectPullWireTargetEntityIndex = 0;
+	void* m_ObjectPullClientTargetVtable = nullptr;
+	Vector m_ObjectPullClientTargetPoint = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullArmPosition = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullArmHandRelativeToHmd = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullArmTowardBodyDirection = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullLastHandRelativeToHmd = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullArmForward = { 0.0f, 0.0f, 0.0f };
+	QAngle m_ObjectPullArmAngles = { 0.0f, 0.0f, 0.0f };
+	Vector m_ObjectPullCurrentControllerPosition = { 0.0f, 0.0f, 0.0f };
+	QAngle m_ObjectPullCurrentControllerAngles = { 0.0f, 0.0f, 0.0f };
+	uint8_t m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
+	std::chrono::steady_clock::time_point m_ObjectPullBeginRepeatUntil{};
+	std::chrono::steady_clock::time_point m_ObjectPullLaunchRepeatUntil{};
+	std::chrono::steady_clock::time_point m_ObjectPullCatchEnableAt{};
+	std::chrono::steady_clock::time_point m_ObjectPullFlightExpireAt{};
+	std::chrono::steady_clock::time_point m_ObjectPullGestureSampleTime{};
+	float m_ObjectPullLastTargetDistanceMeters = 0.0f;
+	float m_ObjectPullGesturePeakDistanceMeters = 0.0f;
+	float m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
+	std::chrono::steady_clock::time_point m_ObjectPullCancelRepeatUntil{};
+
 	bool m_ManualThrowEnabled = false;
+	struct ManualThrowUsercmdPoseSnapshot
+	{
+		bool valid = false;
+		int commandNumber = 0;
+		Vector position = { 0.0f, 0.0f, 0.0f };
+		QAngle angles = { 0.0f, 0.0f, 0.0f };
+	};
+	static constexpr size_t kManualThrowUsercmdPoseSnapshotCount = 150;
+	std::array<ManualThrowUsercmdPoseSnapshot, kManualThrowUsercmdPoseSnapshotCount>
+		m_ManualThrowUsercmdPoseSnapshots{};
 	std::atomic<bool> m_ManualInventoryEmptyHandsActive{ false };
 	// CreateMove publishes whether the local player has a throwable equipped and
 	// whether its final IN_ATTACK state is held. DrawModelExecute consumes this
@@ -1171,6 +1245,7 @@ public:
 	vr::VRActionHandle_t m_ActionBooleanTurnLeft = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionBooleanTurnRight = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionUse = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionObjectPull = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionTeleport = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionNextItem = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionPrevItem = vr::k_ulInvalidActionHandle;
@@ -3472,6 +3547,9 @@ public:
 	void GetViewParameters();
 	void ProcessMenuInput();
 	void ProcessInput();
+	bool UpdateObjectPullInput(C_BasePlayer* localPlayer, bool objectPullActionDown, bool catchActionDown);
+	bool GetObjectPullUsercmdData(int commandNumber, uint8_t& wireCommand, Vector& position, QAngle& angles, bool& overridePose, int& targetEntityIndex);
+	void ResetObjectPullInput(bool sendCancel);
 	void SendVirtualKey(WORD virtualKey);
 	void SendVirtualKeyDown(WORD virtualKey);
 	void SendVirtualKeyUp(WORD virtualKey);

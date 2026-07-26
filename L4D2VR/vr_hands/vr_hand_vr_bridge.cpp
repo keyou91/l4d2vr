@@ -3475,9 +3475,10 @@ bool VR::IsMagazineInteractionReloadCommandActive() const
 
 bool VR::ShouldSuppressMagazineInteractionEmptyClipAutoReload(C_BasePlayer* localPlayer) const
 {
+    // m_MagazineInteractionOneInChamber is only maintained by the detachable-magazine
+    // settlement path. Shotguns never set it, so it cannot gate generic empty-clip suppression.
     if (!m_MagazineInteractionEnabled ||
         !m_IsVREnabled ||
-        !m_MagazineInteractionOneInChamber ||
         (!m_VrHandsEnabled && !m_NativeViewmodelHandsOnly))
     {
         return false;
@@ -3504,9 +3505,10 @@ bool VR::ShouldSuppressMagazineInteractionEmptyClipAutoReload(C_BasePlayer* loca
         return false;
     }
 
+    const bool usesShotgunShells =
+        MagazineInteractionWeaponUsesShotgunShells(activeWeaponId);
     const bool forceShotgunMagazineInteraction =
-        MagazineInteractionWeaponUsesShotgunShells(activeWeaponId) &&
-        m_MagazineInteractionShotgunShellMode;
+        usesShotgunShells && m_MagazineInteractionShotgunShellMode;
     if (!m_MagazineInteractionSuppressEmptyClipAutoReload &&
         !forceShotgunMagazineInteraction)
     {
@@ -3520,9 +3522,10 @@ bool VR::ShouldSuppressMagazineInteractionEmptyClipAutoReload(C_BasePlayer* loca
     {
         s_lastLog = now;
         Game::logMsg(
-            "[VR][MagazineInteraction] suppressing empty-clip automatic reload weaponId=%d clip=%d; physical magazine reload required",
+            "[VR][MagazineInteraction] suppressing empty-clip automatic reload weaponId=%d clip=%d; physical %s reload required",
             static_cast<int>(activeWeaponId),
-            activeClip);
+            activeClip,
+            usesShotgunShells ? "shell" : "magazine");
     }
     return true;
 }

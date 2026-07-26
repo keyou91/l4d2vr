@@ -671,6 +671,7 @@
     <None Include="vr\vr_lifecycle_update.inl" />
     <None Include="vr\vr_lifecycle_pose_hud.inl" />
     <None Include="vr\vr_process_input.inl" />
+    <None Include="vr\vr_object_pull.inl" />
     <None Include="vr\vr_roomscale_prediction.inl" />
     <None Include="vr\vr_tracking.inl" />
     <None Include="vr\vr_viewmodel_config.inl" />

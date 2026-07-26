@@ -528,6 +528,104 @@ static inline bool IsFiniteViewAngle(const QAngle& a)
 	return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
 }
 
+static inline bool IsFiniteControllerPosition(const Vector& value)
+{
+	return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+static bool BuildEncodedVRUsercmdControllerPose(
+	VR* vr,
+	Game* game,
+	Vector& controllerPos,
+	QAngle& controllerAngles)
+{
+	if (!vr || !vr->m_IsVREnabled || vr->m_ForceNonVRServerMovement)
+		return false;
+
+	controllerPos = vr->GetRightControllerViewmodelAbsPos();
+	if (vr->m_HasAimLine && !vr->m_HasThrowArc &&
+		IsFiniteControllerPosition(vr->m_AimLineStart))
+	{
+		controllerPos = vr->m_AimLineStart;
+	}
+
+	controllerAngles = vr->GetRightControllerAbsAngle();
+	if (game && !game->m_IsMeleeWeaponActive)
+	{
+		Vector aimDirection{};
+		bool overrideAngles = false;
+		if (vr->m_HasAimLine && !vr->m_HasThrowArc &&
+			IsFiniteControllerPosition(vr->m_AimLineEnd))
+		{
+			aimDirection = vr->m_AimLineEnd - controllerPos;
+			overrideAngles = true;
+		}
+		else if (vr->m_HasThrowArc && IsFiniteControllerPosition(vr->m_LastAimDirection))
+		{
+			aimDirection = vr->m_LastAimDirection;
+			overrideAngles = true;
+		}
+
+		if (overrideAngles && VectorNormalize(aimDirection) > 0.0001f)
+		{
+			QAngle::VectorAngles(aimDirection, controllerAngles);
+			NormalizeAndClampViewAngles(controllerAngles);
+		}
+	}
+
+	return IsFiniteControllerPosition(controllerPos) && IsFiniteViewAngle(controllerAngles);
+}
+
+static void CacheManualThrowUsercmdControllerPose(
+	VR* vr,
+	Game* game,
+	int commandNumber,
+	bool manualThrowRelevant)
+{
+	if (!vr || commandNumber <= 0)
+		return;
+
+	const size_t slotIndex = static_cast<size_t>(commandNumber) %
+		VR::kManualThrowUsercmdPoseSnapshotCount;
+	VR::ManualThrowUsercmdPoseSnapshot& snapshot =
+		vr->m_ManualThrowUsercmdPoseSnapshots[slotIndex];
+	snapshot = {};
+
+	if (!manualThrowRelevant)
+		return;
+
+	Vector controllerPos{};
+	QAngle controllerAngles{};
+	if (!BuildEncodedVRUsercmdControllerPose(vr, game, controllerPos, controllerAngles))
+		return;
+
+	snapshot.valid = true;
+	snapshot.commandNumber = commandNumber;
+	snapshot.position = controllerPos;
+	snapshot.angles = controllerAngles;
+}
+
+static bool TryGetManualThrowUsercmdControllerPose(
+	const VR* vr,
+	int commandNumber,
+	Vector& controllerPos,
+	QAngle& controllerAngles)
+{
+	if (!vr || commandNumber <= 0)
+		return false;
+
+	const size_t slotIndex = static_cast<size_t>(commandNumber) %
+		VR::kManualThrowUsercmdPoseSnapshotCount;
+	const VR::ManualThrowUsercmdPoseSnapshot& snapshot =
+		vr->m_ManualThrowUsercmdPoseSnapshots[slotIndex];
+	if (!snapshot.valid || snapshot.commandNumber != commandNumber)
+		return false;
+
+	controllerPos = snapshot.position;
+	controllerAngles = snapshot.angles;
+	return IsFiniteControllerPosition(controllerPos) && IsFiniteViewAngle(controllerAngles);
+}
+
 static inline bool StringContains(const char* text, const char* needle)
 {
 	return text && needle && *needle && std::strstr(text, needle) != nullptr;

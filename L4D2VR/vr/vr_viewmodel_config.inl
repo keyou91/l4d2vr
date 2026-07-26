@@ -2895,6 +2895,29 @@ void VR::ParseConfigFile()
     m_ManualThrowVelocityWindowTicks = std::clamp(getInt("ManualThrowVelocityWindowTicks", m_ManualThrowVelocityWindowTicks), 1, static_cast<int>(Player::kManualThrowPoseSampleCount) - 1);
     m_ManualThrowPeakVelocityBlend = std::clamp(getFloat("ManualThrowPeakVelocityBlend", m_ManualThrowPeakVelocityBlend), 0.0f, 1.0f);
     m_ManualThrowMaxVelocity = std::clamp(getFloat("ManualThrowMaxVelocity", m_ManualThrowMaxVelocity), 0.0f, 5000.0f);
+    m_ObjectPullEnabled = getBool("ObjectPullEnabled", m_ObjectPullEnabled);
+    m_ObjectPullVisualsEnabled = getBool("ObjectPullVisualsEnabled", m_ObjectPullVisualsEnabled);
+    m_ObjectPullMaxDistanceMeters = std::clamp(getFloat("ObjectPullMaxDistanceMeters", m_ObjectPullMaxDistanceMeters), 0.1f, 30.0f);
+    m_ObjectPullMinimumDistanceMeters = std::clamp(getFloat("ObjectPullMinimumDistanceMeters", m_ObjectPullMinimumDistanceMeters), 0.0f, 5.0f);
+    m_ObjectPullTargetAssistRadiusMeters = std::clamp(getFloat("ObjectPullTargetAssistRadiusMeters", m_ObjectPullTargetAssistRadiusMeters), 0.0f, 0.5f);
+    m_ObjectPullGestureDistanceMeters = std::clamp(getFloat("ObjectPullGestureDistanceMeters", m_ObjectPullGestureDistanceMeters), 0.01f, 1.0f);
+    m_ObjectPullCatchDistanceMeters = std::clamp(getFloat("ObjectPullCatchDistanceMeters", m_ObjectPullCatchDistanceMeters), 0.05f, 2.0f);
+    m_ObjectPullSpeedMetersPerSecond = std::clamp(getFloat("ObjectPullSpeedMetersPerSecond", m_ObjectPullSpeedMetersPerSecond), 0.1f, 30.0f);
+    m_ObjectPullCatchOffsetMeters = getVector3("ObjectPullCatchOffsetMeters", m_ObjectPullCatchOffsetMeters);
+    m_ObjectPullCatchOffsetMeters.x = std::clamp(m_ObjectPullCatchOffsetMeters.x, -2.0f, 2.0f);
+    m_ObjectPullCatchOffsetMeters.y = std::clamp(m_ObjectPullCatchOffsetMeters.y, -2.0f, 2.0f);
+    m_ObjectPullCatchOffsetMeters.z = std::clamp(m_ObjectPullCatchOffsetMeters.z, -2.0f, 2.0f);
+    m_ObjectPullDebugLog = getBool("ObjectPullDebugLog", m_ObjectPullDebugLog);
+    Game::logMsg(
+        "[VR][ObjectPull] config enabled=%d visuals=%d debug=%d min=%.2fm max=%.2fm assist=%.2fm gesture=%.2fm speed=%.1fm/s",
+        m_ObjectPullEnabled ? 1 : 0,
+        m_ObjectPullVisualsEnabled ? 1 : 0,
+        m_ObjectPullDebugLog ? 1 : 0,
+        m_ObjectPullMinimumDistanceMeters,
+        m_ObjectPullMaxDistanceMeters,
+        m_ObjectPullTargetAssistRadiusMeters,
+        m_ObjectPullGestureDistanceMeters,
+        m_ObjectPullSpeedMetersPerSecond);
     m_ThrowArcLandingOffset = std::max(-10000.0f, std::min(10000.0f, getFloat("ThrowArcLandingOffset", m_ThrowArcLandingOffset)));
     m_ThrowArcMaxHz = GetHmdDisplayFrequencyHz();
     // Debug / memory

@@ -1,226 +1,225 @@
 {
-   "action_manifest_version" : 0,
-   "alias_info" : {},
-   "bindings" : {
-      "/actions/base" : {
-         "chords" : [],
-         "haptics" : [
+   "action_manifest_version": 0,
+   "alias_info": {},
+   "bindings": {
+      "/actions/base": {
+         "chords": [],
+         "haptics": [
             {
-               "output" : "/actions/base/out/vibration_left",
-               "path" : "/user/hand/left/output/haptic"
+               "output": "/actions/base/out/vibration_left",
+               "path": "/user/hand/left/output/haptic"
             },
             {
-               "output" : "/actions/base/out/vibration_right",
-               "path" : "/user/hand/right/output/haptic"
+               "output": "/actions/base/out/vibration_right",
+               "path": "/user/hand/right/output/haptic"
             }
          ],
-         "poses" : [
+         "poses": [
             {
-               "output" : "/actions/base/in/pose_lefthand",
-               "path" : "/user/hand/left/pose/raw"
+               "output": "/actions/base/in/pose_lefthand",
+               "path": "/user/hand/left/pose/raw"
             },
             {
-               "output" : "/actions/base/in/pose_righthand",
-               "path" : "/user/hand/right/pose/raw"
+               "output": "/actions/base/in/pose_righthand",
+               "path": "/user/hand/right/pose/raw"
             }
          ],
-         "skeleton" : [
+         "skeleton": [
             {
-               "output" : "/actions/base/in/skeleton_lefthand",
-               "path" : "/user/hand/left/input/skeleton/left"
+               "output": "/actions/base/in/skeleton_lefthand",
+               "path": "/user/hand/left/input/skeleton/left"
             },
             {
-               "output" : "/actions/base/in/skeleton_righthand",
-               "path" : "/user/hand/right/input/skeleton/right"
+               "output": "/actions/base/in/skeleton_righthand",
+               "path": "/user/hand/right/input/skeleton/right"
             }
          ],
-         "sources" : []
+         "sources": []
       },
-      "/actions/main" : {
-         "sources" : [
+      "/actions/main": {
+         "sources": [
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/ResetPosition"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/ResetPosition"
                   },
-                  "position" : {
-                     "output" : "/actions/main/in/Walk"
+                  "position": {
+                     "output": "/actions/main/in/Walk"
                   }
                },
-               "mode" : "joystick",
-               "parameters" : {
-                  "deadzone_pct" : "10"
+               "mode": "joystick",
+               "parameters": {
+                  "deadzone_pct": "10"
                },
-               "path" : "/user/hand/left/input/joystick"
+               "path": "/user/hand/left/input/joystick"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Flashlight"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Flashlight"
                   },
-                  "position" : {
-                     "output" : "/actions/main/in/Turn"
+                  "position": {
+                     "output": "/actions/main/in/Turn"
                   }
                },
-               "mode" : "joystick",
-               "parameters" : {
-                  "deadzone_pct" : "10"
+               "mode": "joystick",
+               "parameters": {
+                  "deadzone_pct": "10"
                },
-               "path" : "/user/hand/right/input/joystick"
+               "path": "/user/hand/right/input/joystick"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Reload"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Reload"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/left/input/grip"
+               "mode": "button",
+               "path": "/user/hand/left/input/grip"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/PrimaryAttack"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/PrimaryAttack"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/trigger"
+               "mode": "button",
+               "path": "/user/hand/right/input/trigger"
             },
             {
-               "inputs" : {
-                  "east" : {
-                     "output" : "/actions/main/in/boolean_turnright"
+               "inputs": {
+                  "east": {
+                     "output": "/actions/main/in/boolean_turnright"
                   },
-                  "north" : {
-                     "output" : "/actions/main/in/PrevItem"
+                  "north": {
+                     "output": "/actions/main/in/PrevItem"
                   },
-                  "south" : {
-                     "output" : "/actions/main/in/NextItem"
+                  "south": {
+                     "output": "/actions/main/in/NextItem"
                   },
-                  "west" : {
-                     "output" : "/actions/main/in/boolean_turnleft"
+                  "west": {
+                     "output": "/actions/main/in/boolean_turnleft"
                   }
                },
-               "mode" : "dpad",
-               "parameters" : {
-                  "deadzone_pct" : "70",
-                  "overlap_pct" : "0",
-                  "sub_mode" : "touch"
+               "mode": "dpad",
+               "parameters": {
+                  "deadzone_pct": "70",
+                  "overlap_pct": "0",
+                  "sub_mode": "touch"
                },
-               "path" : "/user/hand/right/input/joystick"
+               "path": "/user/hand/right/input/joystick"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Use"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Use"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/b"
-            },
-			{
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/ActivateVR"
-                  }
-               },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/a"
+               "mode": "button",
+               "path": "/user/hand/right/input/b"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Jump"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/ActivateVR"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/a"
-            },
-			{
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/MenuSelect"
-                  }
-               },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/a"
-            },
-			{
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/MenuBack"
-                  }
-               },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/b"
-            },
-			{
-               "inputs" : {
-                  "east" : {
-                     "output" : "/actions/main/in/MenuRight"
-                  },
-                  "north" : {
-                     "output" : "/actions/main/in/MenuUp"
-                  },
-                  "south" : {
-                     "output" : "/actions/main/in/MenuDown"
-                  },
-                  "west" : {
-                     "output" : "/actions/main/in/MenuLeft"
-                  }
-               },
-               "mode" : "dpad",
-               "parameters" : {
-                  "deadzone_pct" : "70",
-                  "overlap_pct" : "0",
-                  "sub_mode" : "touch"
-               },
-               "path" : "/user/hand/left/input/joystick"
-            },
-			{
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Scoreboard"
-                  }
-               },
-               "mode" : "button",
-               "path" : "/user/hand/left/input/x"
-            },
-			{
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Pause"
-                  }
-               },
-               "mode" : "button",
-               "path" : "/user/hand/left/input/y"
+               "mode": "button",
+               "path": "/user/hand/right/input/a"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/Crouch"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Jump"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/right/input/grip"
+               "mode": "button",
+               "path": "/user/hand/right/input/a"
             },
             {
-               "inputs" : {
-                  "click" : {
-                     "output" : "/actions/main/in/SecondaryAttack"
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/MenuSelect"
                   }
                },
-               "mode" : "button",
-               "path" : "/user/hand/left/input/trigger"
+               "mode": "button",
+               "path": "/user/hand/right/input/a"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/MenuBack"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/b"
+            },
+            {
+               "inputs": {
+                  "east": {
+                     "output": "/actions/main/in/MenuRight"
+                  },
+                  "north": {
+                     "output": "/actions/main/in/MenuUp"
+                  },
+                  "south": {
+                     "output": "/actions/main/in/MenuDown"
+                  },
+                  "west": {
+                     "output": "/actions/main/in/MenuLeft"
+                  }
+               },
+               "mode": "dpad",
+               "parameters": {
+                  "deadzone_pct": "70",
+                  "overlap_pct": "0",
+                  "sub_mode": "touch"
+               },
+               "path": "/user/hand/left/input/joystick"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Scoreboard"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/x"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Pause"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/y"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/Crouch"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/SecondaryAttack"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/trigger"
             }
          ]
       }
    },
-   "category" : "steamvr_input",
-   "controller_type" : "oculus_touch",
-   "description" : "",
-   "name" : "Default Left 4 Dead 2 VR bindings for Oculus Touch",
-   "options" : {},
-   "simulated_actions" : []
+   "category": "steamvr_input",
+   "controller_type": "oculus_touch",
+   "description": "",
+   "name": "Default Left 4 Dead 2 VR bindings for Oculus Touch",
+   "options": {},
+   "simulated_actions": []
 }
-

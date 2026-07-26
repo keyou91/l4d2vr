@@ -1378,6 +1378,9 @@
     <None Include="vr\vr_process_input.inl">
       <Filter>Source Files\vr</Filter>
     </None>
+    <None Include="vr\vr_object_pull.inl">
+      <Filter>Source Files\vr</Filter>
+    </None>
     <None Include="vr\vr_roomscale_prediction.inl">
       <Filter>Source Files\vr</Filter>
     </None>

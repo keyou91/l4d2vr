@@ -1532,6 +1532,7 @@ float __fastcall Hooks::dProcessUsercmds(void* ecx, void* edx, edict_t* player,
 	IServerUnknown* pUnknown = player->m_pUnk;
 	Server_BaseEntity* pPlayer = (Server_BaseEntity*)pUnknown->GetBaseEntity();
 	m_Game->m_CurrentUsercmdPlayer = pPlayer;
+	m_Game->m_CurrentUsercmdEdict = player;
 
 	int index = oEntindex(pPlayer);
 	m_Game->m_CurrentUsercmdID = index;
@@ -1618,6 +1619,7 @@ float __fastcall Hooks::dProcessUsercmds(void* ecx, void* edx, edict_t* player,
 	m_ServerProcessingUsercmdPlayer = pPlayer;
 	m_ServerProcessingUsercmdPlayerIndex = index;
 	float result = hkProcessUsercmds.fOriginal(ecx, player, buf, numcmds, totalcmds, dropped_packets, ignore, paused);
+	ObjectPullUpdateServer(index, pPlayer);
 	// Custom inventory throws suppress stock IN_ATTACK/IN_USE, then invoke the
 	// game's generic Weapon_Drop path here.
 	const bool inventoryDropExecuted =
@@ -1942,6 +1944,36 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 		move->viewangles.z = 0;
 		move->upmove = 0;
 
+		const uint8_t objectPullCommand = move->impulse;
+		if (objectPullCommand >= VR::kObjectPullWireBegin &&
+			objectPullCommand <= VR::kObjectPullWireCancel)
+		{
+			// weaponselect is serialized with MAX_EDICT_BITS and carries the
+			// exact client/server network entity index for Object Pull.
+			// Do not use weaponsubtype as a magic marker: Source serializes it
+			// with only WEAPON_SUBTYPE_BITS (6 bits).
+			const int objectPullEntityIndex = move->weaponselect;
+			if (m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] incoming wire command=%u entityIndex=%d player=%d tick=%d",
+					static_cast<unsigned int>(objectPullCommand),
+					objectPullEntityIndex,
+					i,
+					move->tick_count);
+			}
+			move->impulse = 0;
+			move->weaponselect = 0;
+			if (hasValidPlayer)
+			{
+				ObjectPullDecodeServerCommand(
+					i,
+					objectPullCommand,
+					move->tick_count,
+					objectPullEntityIndex);
+			}
+		}
+
 		Player* vrPlayerState = hasValidPlayer
 			? &m_Game->m_PlayersVRInfo[static_cast<size_t>(i)]
 			: nullptr;
@@ -2173,6 +2205,7 @@ void __fastcall Hooks::dWriteUsercmdDeltaToBuffer(void* ecx, void* edx, int a1, 
 int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 {
 	static int s_lastButtons = 0;
+	static uint32_t s_lastObjectPullLoggedWirePayload = 0u;
 
 	const bool localUsingMountedWeapon = m_VR &&
 		m_VR->m_IsVREnabled &&
@@ -2237,21 +2270,68 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 		to->buttons &= ~(1 << 0); // IN_ATTACK
 	}
 
-	// Signal to the server that this CUserCmd has VR info
-	to->tick_count *= -1;
+	const int originalCommandNum = to->command_number;
+	const uint8_t originalImpulse = to->impulse;
+	uint8_t objectPullCommand = VR::kObjectPullWireNone;
+	Vector objectPullPosition{};
+	QAngle objectPullAngles{};
+	bool objectPullOverridePose = false;
+	int objectPullTargetEntityIndex = 0;
+	const bool hasObjectPullCommand = m_VR->GetObjectPullUsercmdData(
+		originalCommandNum,
+		objectPullCommand,
+		objectPullPosition,
+		objectPullAngles,
+		objectPullOverridePose,
+		objectPullTargetEntityIndex);
 
-	int originalCommandNum = to->command_number;
-
-	Vector controllerPos = m_VR->GetRightControllerViewmodelAbsPos();
-	if (m_VR->m_HasAimLine && !m_VR->m_HasThrowArc && IsFiniteVector(m_VR->m_AimLineStart))
-		controllerPos = m_VR->m_AimLineStart;
-	QAngle controllerAngles = m_VR->GetRightControllerAbsAngle();
-	if (m_Game && !m_Game->m_IsMeleeWeaponActive)
+	Vector controllerPos{};
+	QAngle controllerAngles{};
+	if (objectPullOverridePose)
 	{
-		QAngle serverAimAngles = controllerAngles;
-		if (BuildAnglesToEncodedServerAim(m_VR, controllerPos, serverAimAngles))
-			controllerAngles = serverAimAngles;
+		controllerPos = objectPullPosition;
+		controllerAngles = objectPullAngles;
 	}
+	else if (!TryGetManualThrowUsercmdControllerPose(
+		m_VR,
+		originalCommandNum,
+		controllerPos,
+		controllerAngles) &&
+		!BuildEncodedVRUsercmdControllerPose(
+			m_VR,
+			m_Game,
+			controllerPos,
+			controllerAngles))
+	{
+		return hkWriteUsercmd.fOriginal(buf, to, from);
+	}
+	const int originalWeaponSelect = to->weaponselect;
+	if (hasObjectPullCommand)
+	{
+		to->impulse = objectPullCommand;
+		to->weaponselect = objectPullTargetEntityIndex;
+		const uint32_t objectPullLogPayload =
+			static_cast<uint32_t>(objectPullCommand) |
+			(static_cast<uint32_t>(std::clamp(objectPullTargetEntityIndex, 0, 2047)) << 8);
+		if (m_VR->m_ObjectPullDebugLog &&
+			s_lastObjectPullLoggedWirePayload != objectPullLogPayload)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][client] outgoing wire command=%u entityIndex=%d usercmd=%d",
+				static_cast<unsigned int>(objectPullCommand),
+				objectPullTargetEntityIndex,
+				originalCommandNum);
+			s_lastObjectPullLoggedWirePayload = objectPullLogPayload;
+		}
+	}
+	else
+	{
+		s_lastObjectPullLoggedWirePayload = 0u;
+	}
+
+	// Signal to the server that this CUserCmd has VR info. The controller pose above
+	// belongs to this exact command, including when Source retransmits it as backup.
+	to->tick_count *= -1;
 	if (to && (to->buttons & (1 << 0)) != 0 && m_Game && m_Game->m_EngineClient)
 	{
 		const int lpIdx = m_Game->m_EngineClient->GetLocalPlayer();
@@ -2293,6 +2373,8 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 	to->viewangles.z = 0.0f;
 	to->upmove = 0.0f;
 	to->command_number = originalCommandNum;
+	to->impulse = originalImpulse;
+	to->weaponselect = originalWeaponSelect;
 
 	// 重算校验，否则多人下枪声会异常
 	pVerified->m_cmd = *to;

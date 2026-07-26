@@ -1,7 +1,17 @@
 void VR::ProcessInput()
 {
     if (!m_IsVREnabled)
+    {
+        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle ||
+            m_ObjectPullDesiredWireCommand != kObjectPullWireNone)
+        {
+            ResetObjectPullInput(false);
+        }
+        m_ObjectPullActionDownPrev = false;
+        m_ObjectPullCatchActionDownPrev = false;
+        m_ObjectPullCatchActionSuppressMask = 0;
         return;
+    }
 
     if (m_InGameVguiMouseDown && m_Game && m_Game->m_VguiInput)
     {
@@ -76,6 +86,8 @@ void VR::ProcessInput()
         (void)UpdateMagazineInteraction(nullptr, false, false, false, false, false);
         CancelMagazineInteractionManual();
         CancelTeleportTargeting();
+        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle)
+            ResetObjectPullInput(true);
         return;
     }
 
@@ -250,9 +262,14 @@ void VR::ProcessInput()
 
     const bool jumpGestureActive = m_MotionGesturesEnabled && currentTime < m_JumpGestureHoldUntil;
 
-    // While aiming teleport, Use is reserved as a modifier that ignores playerclip
-    // barriers. Do not also send +use into gameplay.
-    const bool wantUse = PressedDigitalAction(m_ActionUse) && !m_TeleportTargetingActive;
+    // Object pull selection uses its own SteamVR action. Catching reuses existing
+    // gameplay actions that the user may bind to the weapon-hand Grip.
+    const bool objectPullActionDown = PressedDigitalAction(m_ActionObjectPull);
+
+    // While aiming teleport, Use remains reserved as a modifier that ignores
+    // playerclip barriers. Normal Use behavior is otherwise unchanged.
+    const bool physicalUseDown = PressedDigitalAction(m_ActionUse);
+    const bool wantUse = physicalUseDown && !m_TeleportTargetingActive;
     const bool vrAwareServerSupportPath = !m_ForceNonVRServerMovement;
     m_ServerUseControllerAimActive = vrAwareServerSupportPath && wantUse;
     if (m_ServerUseControllerAimActive)
@@ -464,6 +481,116 @@ void VR::ProcessInput()
         (originMatchesRole(jumpActionData.activeOrigin, gameplayLeftRole) ||
             jumpActionData.activeOrigin == vr::k_ulInvalidInputValueHandle);
 
+    vr::InputDigitalActionData_t inventoryQuickSwitchActionData{};
+    bool inventoryQuickSwitchDown = false;
+    bool inventoryQuickSwitchJustPressed = false;
+    bool inventoryQuickSwitchDataValid = getActionState(
+        &m_ActionInventoryQuickSwitch,
+        inventoryQuickSwitchActionData,
+        inventoryQuickSwitchDown,
+        inventoryQuickSwitchJustPressed);
+
+    auto actionComesFromGameplayRightHand = [&](
+        bool dataValid,
+        const vr::InputDigitalActionData_t& data) -> bool
+        {
+            if (!dataValid || !data.bActive)
+                return false;
+            return
+                originMatchesRole(data.activeOrigin, gameplayRightRole) ||
+                data.activeOrigin == vr::k_ulInvalidInputValueHandle;
+        };
+
+    const bool reloadCatchInputDown =
+        reloadButtonDown &&
+        actionComesFromGameplayRightHand(reloadDataValid, reloadActionData);
+    const bool jumpCatchInputDown =
+        jumpButtonDown &&
+        actionComesFromGameplayRightHand(jumpDataValid, jumpActionData);
+    const bool crouchCatchInputDown =
+        crouchButtonDown &&
+        actionComesFromGameplayRightHand(crouchDataValid, crouchActionData);
+    const bool inventoryQuickSwitchCatchInputDown =
+        inventoryQuickSwitchDown &&
+        actionComesFromGameplayRightHand(
+            inventoryQuickSwitchDataValid,
+            inventoryQuickSwitchActionData);
+    const bool objectPullCatchActionDown =
+        reloadCatchInputDown ||
+        jumpCatchInputDown ||
+        crouchCatchInputDown ||
+        inventoryQuickSwitchCatchInputDown;
+
+    const bool objectPullCatchInputConsumed = UpdateObjectPullInput(
+        localPlayer,
+        objectPullActionDown,
+        objectPullCatchActionDown);
+
+    static constexpr uint8_t kObjectPullCatchReloadBit = 1u << 0;
+    static constexpr uint8_t kObjectPullCatchJumpBit = 1u << 1;
+    static constexpr uint8_t kObjectPullCatchCrouchBit = 1u << 2;
+    static constexpr uint8_t kObjectPullCatchInventoryQuickSwitchBit = 1u << 3;
+    if (objectPullCatchInputConsumed)
+    {
+        if (reloadCatchInputDown)
+            m_ObjectPullCatchActionSuppressMask |= kObjectPullCatchReloadBit;
+        if (jumpCatchInputDown)
+            m_ObjectPullCatchActionSuppressMask |= kObjectPullCatchJumpBit;
+        if (crouchCatchInputDown)
+            m_ObjectPullCatchActionSuppressMask |= kObjectPullCatchCrouchBit;
+        if (inventoryQuickSwitchCatchInputDown)
+            m_ObjectPullCatchActionSuppressMask |=
+                kObjectPullCatchInventoryQuickSwitchBit;
+    }
+
+    auto suppressObjectPullCatchActionUntilRelease = [&](
+        uint8_t maskBit,
+        bool& actionDown,
+        bool& actionJustPressed) -> bool
+        {
+            if ((m_ObjectPullCatchActionSuppressMask & maskBit) == 0)
+                return false;
+
+            if (actionDown)
+            {
+                actionDown = false;
+                actionJustPressed = false;
+                return true;
+            }
+
+            m_ObjectPullCatchActionSuppressMask &=
+                static_cast<uint8_t>(~maskBit);
+            return false;
+        };
+
+    suppressReload |= suppressObjectPullCatchActionUntilRelease(
+        kObjectPullCatchReloadBit,
+        reloadButtonDown,
+        reloadJustPressed);
+    suppressObjectPullCatchActionUntilRelease(
+        kObjectPullCatchJumpBit,
+        jumpButtonDown,
+        jumpJustPressed);
+    suppressCrouch |= suppressObjectPullCatchActionUntilRelease(
+        kObjectPullCatchCrouchBit,
+        crouchButtonDown,
+        crouchJustPressed);
+    suppressObjectPullCatchActionUntilRelease(
+        kObjectPullCatchInventoryQuickSwitchBit,
+        inventoryQuickSwitchDown,
+        inventoryQuickSwitchJustPressed);
+
+    const bool inventoryQuickSwitchHeld =
+        m_InventoryQuickSwitchEnabled &&
+        inventoryQuickSwitchDataValid &&
+        inventoryQuickSwitchDown;
+    if (inventoryQuickSwitchHeld)
+        m_ReloadGestureHoldUntil = currentTime;
+    const bool gestureReloadActive =
+        m_MotionGesturesEnabled &&
+        !inventoryQuickSwitchHeld &&
+        currentTime < m_ReloadGestureHoldUntil;
+
     const bool vrHandsGripInputEnabled =
         localPlayer &&
         !isObserverOrIdle &&
@@ -613,15 +740,6 @@ void VR::ProcessInput()
     bool flashlightButtonDown = false;
     bool flashlightJustPressed = false;
     bool flashlightDataValid = getActionState(&m_ActionFlashlight, flashlightActionData, flashlightButtonDown, flashlightJustPressed);
-
-    vr::InputDigitalActionData_t inventoryQuickSwitchActionData{};
-    bool inventoryQuickSwitchDown = false;
-    bool inventoryQuickSwitchJustPressed = false;
-    bool inventoryQuickSwitchDataValid = getActionState(&m_ActionInventoryQuickSwitch, inventoryQuickSwitchActionData, inventoryQuickSwitchDown, inventoryQuickSwitchJustPressed);
-    const bool inventoryQuickSwitchHeld = m_InventoryQuickSwitchEnabled && inventoryQuickSwitchDataValid && inventoryQuickSwitchDown;
-    if (inventoryQuickSwitchHeld)
-        m_ReloadGestureHoldUntil = currentTime;
-    const bool gestureReloadActive = m_MotionGesturesEnabled && !inventoryQuickSwitchHeld && currentTime < m_ReloadGestureHoldUntil;
 
     vr::InputDigitalActionData_t autoAimToggleActionData{};
     [[maybe_unused]] bool autoAimToggleDown = false;

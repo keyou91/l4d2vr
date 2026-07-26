@@ -308,6 +308,21 @@ ManualThrowVelocityWindowTicks=5
 ManualThrowPeakVelocityBlend=0.5
 ManualThrowMaxVelocity=1400.0
 
+# Bind the separate Object Pull action in SteamVR Controller Bindings. It does not use the game Use action.
+# A quick backward flick applies one ballistic launch velocity, clears the selection immediately,
+# and then leaves gravity, rotation, collision, and bounce to the normal Source physics simulation.
+# Catching reuses weapon-hand Reload, Jump, Crouch, or InventoryQuickSwitch; bind any of them to Grip.
+ObjectPullEnabled=true
+ObjectPullVisualsEnabled=true
+ObjectPullMaxDistanceMeters=12.0
+ObjectPullMinimumDistanceMeters=0.25
+ObjectPullTargetAssistRadiusMeters=0.08
+ObjectPullGestureDistanceMeters=0.16
+ObjectPullCatchDistanceMeters=0.70
+ObjectPullSpeedMetersPerSecond=3.0
+ObjectPullCatchOffsetMeters=0.32,0.0,-0.08
+ObjectPullDebugLog=false
+
 MotionGesturesEnabled=true
 MotionGestureSwingEnabled=true
 MotionGestureSwingThreshold=2

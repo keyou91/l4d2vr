@@ -140,6 +140,7 @@ namespace
 		player.throwableAimPrevWeaponThrowable = false;
 		player.manualCarryThrowLastDecodedReleaseTick = 0;
 		player.manualThrowPending = {};
+		player.objectPull = {};
 	}
 
 	static void ManualThrowRecordPoseSample(Player& player, int tick, const Vector& position, const QAngle& angles)
@@ -901,6 +902,74 @@ namespace
 		size_t count = 0;
 	};
 
+	static int ObjectPullReadServerEntityIndex(void* entity)
+	{
+		if (!entity || !Hooks::m_Game ||
+			!Hooks::m_Game->m_Offsets ||
+			!Hooks::m_Game->m_Offsets->CBaseEntity_entindex.valid)
+		{
+			return -1;
+		}
+
+		using EntindexFn = int(__thiscall*)(void*);
+		auto entindex = reinterpret_cast<EntindexFn>(
+			Hooks::m_Game->m_Offsets->CBaseEntity_entindex.address);
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			return entindex(entity);
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return -1;
+		}
+#endif
+	}
+
+	class ObjectPullServerEntityIndexCollector
+	{
+	public:
+		explicit ObjectPullServerEntityIndexCollector(int wantedIndex)
+			: targetIndex(wantedIndex)
+		{
+		}
+
+		virtual bool EnumEntity(IHandleEntity* candidate)
+		{
+			if (!candidate || entity || !Hooks::m_Game ||
+				!Hooks::m_Game->m_Offsets ||
+				!Hooks::m_Game->m_Offsets->CBaseEntity_entindex.valid)
+			{
+				return entity == nullptr;
+			}
+
+#ifdef _MSC_VER
+			__try
+			{
+#endif
+				void* candidateEntity = reinterpret_cast<void*>(candidate);
+				if (ObjectPullReadServerEntityIndex(candidateEntity) ==
+					targetIndex)
+				{
+					entity = candidateEntity;
+					return false;
+				}
+#ifdef _MSC_VER
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return true;
+			}
+#endif
+			return true;
+		}
+
+		int targetIndex = 0;
+		void* entity = nullptr;
+	};
+
 	static ManualCarryImpactTargetKind ManualCarryImpactClassifyTarget(
 		void* entity,
 		char* className,
@@ -971,10 +1040,11 @@ namespace
 #endif
 	}
 
+	template <typename TEntityCollector>
 	static bool ManualCarryImpactEnumerateArea(
 		const Vector& minimums,
 		const Vector& maximums,
-		ManualCarryImpactEntityCollector& collector)
+		TEntityCollector& collector)
 	{
 		if (!Hooks::m_Game || !Hooks::m_Game->m_EngineTraceServer)
 			return false;
@@ -1016,7 +1086,7 @@ namespace
 			void*,
 			const Vector&,
 			const Vector&,
-			ManualCarryImpactEntityCollector*);
+			TEntityCollector*);
 		auto enumerate = reinterpret_cast<EnumerateEntitiesBoxFn>(target);
 #ifdef _MSC_VER
 		__try
@@ -2191,6 +2261,933 @@ namespace
 			consumed.origin.z);
 		return applied;
 	}
+
+	static void ObjectPullResetServerState(Player& player)
+	{
+		player.objectPull = {};
+	}
+
+	static bool ObjectPullServerContainsNormalizedToken(
+		const char* source,
+		const char* normalizedToken)
+	{
+		if (!source || !normalizedToken || !*normalizedToken)
+			return false;
+
+		for (const char* start = source; *start; ++start)
+		{
+			if (!std::isalnum(static_cast<unsigned char>(*start)))
+				continue;
+
+			const char* cursor = start;
+			const char* token = normalizedToken;
+			while (*token)
+			{
+				while (*cursor &&
+					!std::isalnum(static_cast<unsigned char>(*cursor)))
+				{
+					++cursor;
+				}
+				if (!*cursor ||
+					std::tolower(static_cast<unsigned char>(*cursor)) !=
+						std::tolower(static_cast<unsigned char>(*token)))
+				{
+					break;
+				}
+				++cursor;
+				++token;
+			}
+			if (!*token)
+				return true;
+		}
+		return false;
+	}
+
+	static bool ObjectPullServerClassIsSupported(const char* className)
+	{
+		if (!className || !*className)
+			return false;
+
+		static const char* const rejectedTokens[] =
+		{
+			"projectile", "player", "infected", "witch", "door", "button", "world"
+		};
+		for (const char* token : rejectedTokens)
+		{
+			if (ObjectPullServerContainsNormalizedToken(className, token))
+				return false;
+		}
+
+		static const char* const supportedTokens[] =
+		{
+			"weapon", "rifle", "shotgun", "pistol", "smg", "sniper",
+			"grenadelauncher", "chainsaw", "molotov", "pipebomb", "vomitjar",
+			"painpills", "adrenaline", "firstaid", "defibrillator", "upgradepack",
+			"ammopack", "gascan", "propanetank", "oxygentank", "fireworkcrate",
+			"gnome", "colabottles", "physicsprop", "propphysics", "physbox",
+			"funcphysbox", "breakableprop"
+		};
+		for (const char* token : supportedTokens)
+		{
+			if (ObjectPullServerContainsNormalizedToken(className, token))
+				return true;
+		}
+		return false;
+	}
+
+	static bool ObjectPullServerClassIsPhysicsProp(const char* className)
+	{
+		return ObjectPullServerContainsNormalizedToken(className, "physicsprop") ||
+			ObjectPullServerContainsNormalizedToken(className, "propphysics") ||
+			ObjectPullServerContainsNormalizedToken(className, "physbox") ||
+			ObjectPullServerContainsNormalizedToken(className, "funcphysbox") ||
+			ObjectPullServerContainsNormalizedToken(className, "breakableprop");
+	}
+
+	static bool ObjectPullResolveServerTargetByIndex(
+		void* serverPlayer,
+		int entityIndex,
+		const Vector& controllerPosition,
+		const QAngle& controllerAngles,
+		void*& outEntity,
+		void*& outVtable,
+		bool& outHoldAsPhysicsProp,
+		char* outClassName,
+		size_t outClassNameCapacity,
+		float minimumAlignment)
+	{
+		outEntity = nullptr;
+		outVtable = nullptr;
+		outHoldAsPhysicsProp = false;
+		if (outClassName && outClassNameCapacity > 0)
+			outClassName[0] = '\0';
+		if (!serverPlayer || !Hooks::m_Game || !Hooks::m_VR ||
+			!Hooks::m_Game->m_CurrentUsercmdEdict ||
+			entityIndex <= 0 || entityIndex >= 2048 ||
+			!ManualThrowIsFiniteVector(controllerPosition) ||
+			!IsFiniteViewAngle(controllerAngles))
+		{
+			return false;
+		}
+
+		edict_t* currentEdict = Hooks::m_Game->m_CurrentUsercmdEdict;
+		void* entity = nullptr;
+		bool resolved = false;
+		bool resolvedBySpatialFallback = false;
+		// L4D2's own CBaseEntity::entindex implementation subtracts the global
+		// edict base and shifts right by four, proving that this server build's
+		// native edict stride is 16 bytes. The public SDK edict_t declaration
+		// includes a trailing freetime field and is 20 bytes in this project;
+		// typed pointer arithmetic therefore lands on the wrong entity.
+		constexpr size_t kNativeEdictStride = 16;
+#ifdef _MSC_VER
+		__try
+		{
+			const int currentIndex =
+				Hooks::m_Game->m_CurrentUsercmdID;
+			if (currentIndex > 0 && currentIndex < 2048)
+			{
+				uint8_t* edictBase =
+					reinterpret_cast<uint8_t*>(currentEdict) -
+					static_cast<size_t>(currentIndex) *
+						kNativeEdictStride;
+				CBaseEdict* targetEdict =
+					reinterpret_cast<CBaseEdict*>(
+						edictBase +
+						static_cast<size_t>(entityIndex) *
+							kNativeEdictStride);
+				if (targetEdict && targetEdict->m_pUnk)
+				{
+					void* candidate =
+						targetEdict->m_pUnk->GetBaseEntity();
+					if (candidate &&
+						ObjectPullReadServerEntityIndex(candidate) ==
+							entityIndex)
+					{
+						entity = candidate;
+						resolved = true;
+					}
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			entity = nullptr;
+			resolved = false;
+		}
+#else
+		const int currentIndex =
+			Hooks::m_Game->m_CurrentUsercmdID;
+		if (currentIndex > 0 && currentIndex < 2048)
+		{
+			uint8_t* edictBase =
+				reinterpret_cast<uint8_t*>(currentEdict) -
+				static_cast<size_t>(currentIndex) *
+					kNativeEdictStride;
+			CBaseEdict* targetEdict =
+				reinterpret_cast<CBaseEdict*>(
+					edictBase +
+					static_cast<size_t>(entityIndex) *
+						kNativeEdictStride);
+			if (targetEdict && targetEdict->m_pUnk)
+			{
+				void* candidate =
+					targetEdict->m_pUnk->GetBaseEntity();
+				if (candidate &&
+					ObjectPullReadServerEntityIndex(candidate) ==
+						entityIndex)
+				{
+					entity = candidate;
+					resolved = true;
+				}
+			}
+		}
+#endif
+		if (!resolved || !entity)
+		{
+			// Client network entity indices normally map directly to the server's
+			// edict array. Some L4D2 entity classes expose a different edict layout
+			// through ProcessUsercmds, though, so retain an exact entindex fallback
+			// over only the pullable range around the controller.
+			const float scale = std::max(1.0f, Hooks::m_VR->m_VRScale);
+			const float searchRadius =
+				(std::max(
+					0.1f,
+					Hooks::m_VR->m_ObjectPullMaxDistanceMeters) +
+					0.75f) *
+				scale;
+			const Vector extents{
+				searchRadius,
+				searchRadius,
+				searchRadius
+			};
+			ObjectPullServerEntityIndexCollector collector(entityIndex);
+			const bool enumerated = ManualCarryImpactEnumerateArea(
+				controllerPosition - extents,
+				controllerPosition + extents,
+				collector);
+			if (enumerated && collector.entity)
+			{
+				entity = collector.entity;
+				resolved = true;
+				resolvedBySpatialFallback = true;
+			}
+			else if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] target resolve failed index=%d currentEdict=%p playerIndex=%d enumerated=%d",
+					entityIndex,
+					currentEdict,
+					Hooks::m_Game->m_CurrentUsercmdID,
+					enumerated ? 1 : 0);
+			}
+		}
+		if (!resolved || !entity || entity == serverPlayer)
+			return false;
+
+		char className[128]{};
+		if (!ManualCarryImpactReadServerClassName(entity, className, sizeof(className)) ||
+			!ObjectPullServerClassIsSupported(className))
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] indexed target rejected index=%d class=%s",
+					entityIndex,
+					className[0] ? className : "<none>");
+			}
+			return false;
+		}
+
+		Vector origin{};
+		if (!ManualCarryImpactReadOrigin(entity, origin))
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] target origin rejected index=%d class=%s entity=%p",
+					entityIndex,
+					className,
+					entity);
+			}
+			return false;
+		}
+		const float scale = std::max(1.0f, Hooks::m_VR->m_VRScale);
+		const Vector toTarget = origin - controllerPosition;
+		const float distanceMeters = toTarget.Length() / scale;
+		if (!std::isfinite(distanceMeters) ||
+			distanceMeters < std::max(0.0f, Hooks::m_VR->m_ObjectPullMinimumDistanceMeters) ||
+			distanceMeters > std::max(0.1f, Hooks::m_VR->m_ObjectPullMaxDistanceMeters) + 0.75f)
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] target distance rejected index=%d class=%s distance=%.2fm controller=(%.1f %.1f %.1f) origin=(%.1f %.1f %.1f)",
+					entityIndex,
+					className,
+					distanceMeters,
+					controllerPosition.x,
+					controllerPosition.y,
+					controllerPosition.z,
+					origin.x,
+					origin.y,
+					origin.z);
+			}
+			return false;
+		}
+
+		Vector forward{};
+		QAngle::AngleVectors(controllerAngles, &forward, nullptr, nullptr);
+		Vector direction = toTarget;
+		if (VectorNormalize(forward) <= 0.0001f ||
+			VectorNormalize(direction) <= 0.0001f)
+		{
+			return false;
+		}
+		const float alignment = forward.Dot(direction);
+		if (!std::isfinite(alignment) ||
+			(minimumAlignment > -1.0f && alignment < minimumAlignment))
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] indexed target angle rejected index=%d class=%s alignment=%.3f",
+					entityIndex,
+					className,
+					alignment);
+			}
+			return false;
+		}
+
+		void* vtable = ManualThrowReadEntityVtable(entity);
+		if (!vtable)
+		{
+			if (Hooks::m_VR->m_ObjectPullDebugLog)
+			{
+				Game::logMsg(
+					"[VR][ObjectPull][server] target vtable rejected index=%d class=%s entity=%p",
+					entityIndex,
+					className,
+					entity);
+			}
+			return false;
+		}
+		outEntity = entity;
+		outVtable = vtable;
+		outHoldAsPhysicsProp = ObjectPullServerClassIsPhysicsProp(className);
+		if (outClassName && outClassNameCapacity > 0)
+		{
+			std::strncpy(outClassName, className, outClassNameCapacity - 1);
+			outClassName[outClassNameCapacity - 1] = '\0';
+		}
+		if (resolvedBySpatialFallback && Hooks::m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] target resolved by spatial entindex fallback index=%d class=%s entity=%p",
+				entityIndex,
+				className,
+				entity);
+		}
+		return true;
+	}
+
+	static bool ObjectPullArmServerTarget(
+		int playerIndex,
+		Player& player,
+		int tick,
+		int targetEntityIndex,
+		float minimumAlignment,
+		const char* source)
+	{
+		void* entity = nullptr;
+		void* vtable = nullptr;
+		bool holdAsPhysicsProp = false;
+		char className[128]{};
+		if (!ObjectPullResolveServerTargetByIndex(
+			Hooks::m_Game->m_CurrentUsercmdPlayer,
+			targetEntityIndex,
+			player.controllerPos,
+			player.controllerAngle,
+			entity,
+			vtable,
+			holdAsPhysicsProp,
+			className,
+			sizeof(className),
+			minimumAlignment))
+		{
+			return false;
+		}
+
+		for (size_t otherIndex = 0;
+			otherIndex < Hooks::m_Game->m_PlayersVRInfo.size();
+			++otherIndex)
+		{
+			if (otherIndex == static_cast<size_t>(playerIndex))
+				continue;
+
+			const ObjectPullServerState& otherPull =
+				Hooks::m_Game->m_PlayersVRInfo[otherIndex].objectPull;
+			if (otherPull.active && otherPull.entity == entity)
+				return false;
+		}
+
+		player.objectPull = {};
+		player.objectPull.active = true;
+		player.objectPull.launched = false;
+		player.objectPull.lastCommandTick = tick;
+		player.objectPull.entity = entity;
+		player.objectPull.entityVtable = vtable;
+		player.objectPull.entityIndex = targetEntityIndex;
+		player.objectPull.holdAsPhysicsProp = holdAsPhysicsProp;
+
+		if (Hooks::m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] armed player=%d entity=%p index=%d class=%s physicsHold=%d tick=%d source=%s",
+				playerIndex,
+				entity,
+				targetEntityIndex,
+				className,
+				holdAsPhysicsProp ? 1 : 0,
+				tick,
+				source ? source : "unknown");
+		}
+		return true;
+	}
+
+	static bool ObjectPullLaunchServerObject(
+		int playerIndex,
+		Player& player,
+		int tick)
+	{
+		ObjectPullServerState& pull = player.objectPull;
+		if (!pull.active || pull.launched || !pull.entity ||
+			!Hooks::m_VR)
+		{
+			return false;
+		}
+
+		Vector origin{};
+		if (!ManualCarryImpactReadOrigin(pull.entity, origin))
+			return false;
+
+		Vector forward{};
+		Vector right{};
+		Vector up{};
+		QAngle::AngleVectors(
+			player.controllerAngle,
+			&forward,
+			&right,
+			&up);
+		if (VectorNormalize(forward) <= 0.0001f ||
+			VectorNormalize(right) <= 0.0001f ||
+			VectorNormalize(up) <= 0.0001f)
+		{
+			return false;
+		}
+
+		const float scale =
+			std::max(1.0f, Hooks::m_VR->m_VRScale);
+		const Vector offset =
+			Hooks::m_VR->m_ObjectPullCatchOffsetMeters *
+			scale;
+		const Vector catchPoint =
+			player.controllerPos +
+			forward * offset.x +
+			right * offset.y +
+			up * offset.z;
+		const Vector displacement = catchPoint - origin;
+		const float distance = displacement.Length();
+		if (!std::isfinite(distance) || distance <= 0.01f)
+			return false;
+
+		Vector handVelocity{};
+		Vector handAngularVelocity{};
+		float flickSpeedMetersPerSecond = 0.0f;
+		if (ManualThrowEstimateReleaseVelocity(
+			player,
+			tick,
+			4,
+			0.35f,
+			handVelocity,
+			handAngularVelocity))
+		{
+			flickSpeedMetersPerSecond =
+				handVelocity.Length() / scale;
+			if (!std::isfinite(flickSpeedMetersPerSecond))
+				flickSpeedMetersPerSecond = 0.0f;
+		}
+
+		const float configuredSpeedMetersPerSecond =
+			std::max(
+				0.1f,
+				Hooks::m_VR->
+					m_ObjectPullSpeedMetersPerSecond);
+		const float launchSpeedMetersPerSecond =
+			configuredSpeedMetersPerSecond +
+			std::clamp(
+				flickSpeedMetersPerSecond * 0.35f,
+				0.0f,
+				3.5f);
+		const float launchSpeedUnitsPerSecond =
+			launchSpeedMetersPerSecond * scale;
+		const float travelSeconds =
+			std::clamp(
+				distance /
+					std::max(
+						1.0f,
+						launchSpeedUnitsPerSecond),
+				0.18f,
+				0.70f);
+
+		// L4D2's normal gravity is 800 Source units/s^2. The launch velocity
+		// is solved once so the object reaches the fixed catch point along a
+		// ballistic arc. After this call the engine owns all gravity, rotation,
+		// collision, bounce, and obstruction response.
+		constexpr float kSourceGravityUnitsPerSecondSquared =
+			800.0f;
+		Vector launchVelocity =
+			displacement / travelSeconds;
+		launchVelocity.z +=
+			0.5f *
+			kSourceGravityUnitsPerSecondSquared *
+			travelSeconds;
+		if (!ManualThrowIsFiniteVector(launchVelocity))
+			return false;
+
+		ManualThrowPending launch{};
+		launch.origin = origin;
+		launch.velocity = launchVelocity;
+		if (!ManualCarryThrowTeleportDroppedEntity(
+			pull.entity,
+			launch))
+		{
+			return false;
+		}
+
+		pull.launched = true;
+		pull.launchTick = tick;
+		pull.lastCommandTick = tick;
+
+		if (Hooks::m_VR->m_ObjectPullDebugLog)
+		{
+			Game::logMsg(
+				"[VR][ObjectPull][server] physical launch player=%d entity=%p distance=%.2fm travel=%.3fs baseSpeed=%.2fm/s flick=%.2fm/s velocity=(%.1f %.1f %.1f)",
+				playerIndex,
+				pull.entity,
+				distance / scale,
+				travelSeconds,
+				configuredSpeedMetersPerSecond,
+				flickSpeedMetersPerSecond,
+				launchVelocity.x,
+				launchVelocity.y,
+				launchVelocity.z);
+		}
+		return true;
+	}
+
+	static bool ObjectPullInvokeNativePickup(
+		void* serverPlayer,
+		void* entity)
+	{
+		if (!serverPlayer ||
+			!entity ||
+			!Hooks::hkPlayerUse.fOriginal)
+		{
+			return false;
+		}
+
+		// CTerrorPlayer::PlayerUse(entity) still gates its exact-entity use path
+		// on the native IN_USE state. Object Pull Catch is bound to Grip through
+		// Reload/Jump/Crouch/InventoryQuickSwitch, so passing the entity alone
+		// enters PlayerUse but performs no pickup. Temporarily synthesize one
+		// native Use press for this exact call, then restore all button state so
+		// doors and other unrelated interactions remain untouched.
+		constexpr ptrdiff_t kButtonPressedOffset = 0x1CB4;
+		constexpr ptrdiff_t kButtonsDownOffset = 0x1CB8;
+		constexpr ptrdiff_t kButtonReleasedOffset = 0x1CBC;
+		constexpr uint32_t kInUse = (1u << 5);
+		unsigned char* const playerBytes =
+			reinterpret_cast<unsigned char*>(serverPlayer);
+		uint32_t* const buttonPressed =
+			reinterpret_cast<uint32_t*>(
+				playerBytes + kButtonPressedOffset);
+		uint32_t* const buttonsDown =
+			reinterpret_cast<uint32_t*>(
+				playerBytes + kButtonsDownOffset);
+		uint32_t* const buttonReleased =
+			reinterpret_cast<uint32_t*>(
+				playerBytes + kButtonReleasedOffset);
+		uint32_t savedButtonPressed = 0;
+		uint32_t savedButtonsDown = 0;
+		uint32_t savedButtonReleased = 0;
+		bool stateCaptured = false;
+
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			savedButtonPressed = *buttonPressed;
+			savedButtonsDown = *buttonsDown;
+			savedButtonReleased = *buttonReleased;
+			stateCaptured = true;
+			*buttonPressed = savedButtonPressed | kInUse;
+			*buttonsDown = savedButtonsDown | kInUse;
+			*buttonReleased = savedButtonReleased & ~kInUse;
+
+			Hooks::hkPlayerUse.fOriginal(
+				serverPlayer,
+				entity);
+
+			*buttonPressed = savedButtonPressed;
+			*buttonsDown = savedButtonsDown;
+			*buttonReleased = savedButtonReleased;
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			if (stateCaptured)
+			{
+				*buttonPressed = savedButtonPressed;
+				*buttonsDown = savedButtonsDown;
+				*buttonReleased = savedButtonReleased;
+			}
+			return false;
+		}
+#endif
+		return true;
+	}
+
+	static void ObjectPullDecodeServerCommand(
+		int playerIndex,
+		uint8_t command,
+		int tick,
+		int targetEntityIndex)
+	{
+		if (!Hooks::m_Game ||
+			!Hooks::m_VR ||
+			!Hooks::m_Game->IsValidPlayerIndex(playerIndex))
+		{
+			return;
+		}
+
+		Player& player =
+			Hooks::m_Game->m_PlayersVRInfo[static_cast<size_t>(playerIndex)];
+		if (!Hooks::m_VR->m_ObjectPullEnabled)
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+		if (player.objectPull.active &&
+			tick <= player.objectPull.lastCommandTick)
+		{
+			return;
+		}
+
+		if (command == VR::kObjectPullWireCancel)
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		if (command == VR::kObjectPullWireBegin)
+		{
+			if (player.objectPull.active &&
+				player.objectPull.entityIndex == targetEntityIndex &&
+				!player.objectPull.launched)
+			{
+				// A backup Begin for the currently armed object must not reset it.
+				// Once launched, however, selecting that same physical object again
+				// is a new pull and must replace the old flight-tracking state.
+				player.objectPull.lastCommandTick = tick;
+				return;
+			}
+
+			if (player.objectPull.active)
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog &&
+					player.objectPull.entityIndex == targetEntityIndex &&
+					player.objectPull.launched)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] rearming launched target player=%d entity=%p index=%d tick=%d",
+						playerIndex,
+						player.objectPull.entity,
+						targetEntityIndex,
+						tick);
+				}
+				ObjectPullResetServerState(player);
+			}
+
+			if (!ObjectPullArmServerTarget(
+				playerIndex,
+				player,
+				tick,
+				targetEntityIndex,
+				-1.0f,
+				"begin"))
+			{
+				ObjectPullResetServerState(player);
+			}
+			return;
+		}
+
+		if (command != VR::kObjectPullWireContinue &&
+			command != VR::kObjectPullWireCatch)
+		{
+			return;
+		}
+
+		if (player.objectPull.active &&
+			player.objectPull.nativePickupIssued &&
+			player.objectPull.entityIndex == targetEntityIndex)
+		{
+			// Grip is level-triggered and Catch is repeated while held. Once the
+			// native pickup has been issued, retain a tombstone until Cancel or
+			// a fresh Begin instead of rearming the newly equipped entity.
+			player.objectPull.lastCommandTick = tick;
+			return;
+		}
+
+		// The short Begin repeat window can fall entirely between Source packet
+		// batches. Continue and Catch carry the same exact entity index, so either
+		// command can bootstrap the server state instead of being silently dropped.
+		if (!player.objectPull.active ||
+			player.objectPull.entityIndex != targetEntityIndex)
+		{
+			if (player.objectPull.active)
+				ObjectPullResetServerState(player);
+
+			if (!ObjectPullArmServerTarget(
+				playerIndex,
+				player,
+				tick,
+				targetEntityIndex,
+				-1.0f,
+				command == VR::kObjectPullWireCatch
+					? "catch-bootstrap"
+					: "continue-bootstrap"))
+			{
+				ObjectPullResetServerState(player);
+				return;
+			}
+		}
+
+		if (ManualThrowReadEntityVtable(player.objectPull.entity) !=
+			player.objectPull.entityVtable)
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		player.objectPull.lastCommandTick = tick;
+		if (!player.objectPull.launched &&
+			!ObjectPullLaunchServerObject(playerIndex, player, tick))
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		if (command == VR::kObjectPullWireCatch)
+			player.objectPull.catchRequested = true;
+	}
+
+	static void ObjectPullUpdateServer(
+		int playerIndex,
+		void* serverPlayer)
+	{
+		if (!Hooks::m_Game ||
+			!Hooks::m_VR ||
+			!serverPlayer ||
+			!Hooks::m_Game->IsValidPlayerIndex(
+				playerIndex))
+		{
+			return;
+		}
+
+		Player& player =
+			Hooks::m_Game->m_PlayersVRInfo[
+				static_cast<size_t>(playerIndex)];
+		ObjectPullServerState& pull =
+			player.objectPull;
+		if (!pull.active)
+			return;
+
+		if (pull.nativePickupIssued)
+			return;
+
+		if (!pull.entity ||
+			ManualThrowReadEntityVtable(
+				pull.entity) != pull.entityVtable)
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		if (!pull.launched)
+		{
+			const int armAgeTicks =
+				player.manualThrowLastTick -
+				pull.lastCommandTick;
+			if (armAgeTicks < 0 ||
+				armAgeTicks > 18)
+			{
+				ObjectPullResetServerState(player);
+			}
+			return;
+		}
+
+		if (!pull.held)
+		{
+			const int flightAgeTicks =
+				player.manualThrowLastTick -
+				pull.launchTick;
+			if (flightAgeTicks < 0 ||
+				flightAgeTicks > 240)
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] flight tracking expired player=%d entity=%p ageTicks=%d",
+						playerIndex,
+						pull.entity,
+						flightAgeTicks);
+				}
+				ObjectPullResetServerState(player);
+				return;
+			}
+		}
+
+		// Free flight needs no per-tick origin reads, basis construction, or
+		// distance math until the player actually requests a catch.
+		if (!pull.held && !pull.catchRequested)
+			return;
+
+		Vector origin{};
+		if (!ManualCarryImpactReadOrigin(
+			pull.entity,
+			origin))
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		Vector forward{};
+		Vector right{};
+		Vector up{};
+		QAngle::AngleVectors(
+			player.controllerAngle,
+			&forward,
+			&right,
+			&up);
+		if (VectorNormalize(forward) <= 0.0001f ||
+			VectorNormalize(right) <= 0.0001f ||
+			VectorNormalize(up) <= 0.0001f)
+		{
+			ObjectPullResetServerState(player);
+			return;
+		}
+
+		const float scale =
+			std::max(1.0f, Hooks::m_VR->m_VRScale);
+		const Vector offset =
+			Hooks::m_VR->
+				m_ObjectPullCatchOffsetMeters *
+			scale;
+		const Vector catchPoint =
+			player.controllerPos +
+			forward * offset.x +
+			right * offset.y +
+			up * offset.z;
+		const float distance =
+			(catchPoint - origin).Length();
+		const float catchDistance =
+			std::max(
+				0.05f,
+				Hooks::m_VR->
+					m_ObjectPullCatchDistanceMeters) *
+			scale;
+
+		if (pull.catchRequested)
+		{
+			if (!pull.held &&
+				distance <= catchDistance)
+			{
+				if (pull.holdAsPhysicsProp)
+				{
+					pull.held = true;
+					pull.catchRequested = false;
+					if (Hooks::m_VR->
+						m_ObjectPullDebugLog)
+					{
+						Game::logMsg(
+							"[VR][ObjectPull][server] physics prop caught player=%d entity=%p distance=%.1f",
+							playerIndex,
+							pull.entity,
+							distance);
+					}
+				}
+				else if (ObjectPullInvokeNativePickup(
+					serverPlayer,
+					pull.entity))
+				{
+					pull.nativePickupIssued = true;
+					pull.catchRequested = false;
+					if (Hooks::m_VR->
+						m_ObjectPullDebugLog)
+					{
+						Game::logMsg(
+							"[VR][ObjectPull][server] native pickup issued with synthetic IN_USE player=%d entity=%p distance=%.1f",
+							playerIndex,
+							pull.entity,
+							distance);
+					}
+					return;
+				}
+			}
+		}
+
+		if (!pull.held)
+		{
+			// No homing, position correction, or per-tick velocity update occurs
+			// during flight. The Source physics simulation owns the object now.
+			return;
+		}
+
+		// Once a physical prop is actually caught, Grip holds it at the hand.
+		// This is separate from the free-flight path above.
+		CTraceFilterSkipTwoEntities motionFilter(
+			reinterpret_cast<IHandleEntity*>(
+				serverPlayer),
+			reinterpret_cast<IHandleEntity*>(
+				pull.entity),
+			0);
+		Ray_t motionRay;
+		motionRay.Init(origin, catchPoint);
+		CGameTrace motionTrace{};
+		TraceRoomscaleServerRay(
+			Hooks::m_Game->m_EngineTraceServer,
+			motionRay,
+			MASK_SHOT_HULL,
+			&motionFilter,
+			motionTrace);
+
+		ManualThrowPending holdMovement{};
+		holdMovement.origin =
+			(motionTrace.startsolid ||
+				motionTrace.allsolid ||
+				motionTrace.fraction < 0.999f)
+			? origin
+			: catchPoint;
+		holdMovement.velocity = {};
+		if (!ManualCarryThrowTeleportDroppedEntity(
+			pull.entity,
+			holdMovement))
+		{
+			ObjectPullResetServerState(player);
+		}
+	}
+
 
 }
 
