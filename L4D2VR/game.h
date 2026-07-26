@@ -40,8 +40,10 @@ inline Game* g_Game = nullptr;
 struct ManualThrowPoseSample
 {
     bool valid = false;
+    bool hasPlayerRelativePosition = false;
     int tick = 0;
     Vector position = { 0.f, 0.f, 0.f };
+    Vector playerRelativePosition = { 0.f, 0.f, 0.f };
     QAngle angles = { 0.f, 0.f, 0.f };
 };
 
@@ -117,6 +119,11 @@ struct Player
     void* manualEmptyHandsDummyPistolVtable = nullptr;
     ManualThrowPending manualThrowPending{};
     ObjectPullServerState objectPull{};
+    // Source re-decodes backup CUserCmds on later packets. Keep this wire
+    // sequence watermark outside ObjectPullServerState so Cancel cannot erase
+    // it and let an older Catch bootstrap the same map spawn again.
+    int objectPullLastWireCommandNumber = 0;
+    int objectPullLastWireTick = 0;
     // This survives active-state reset so a delayed repeated Catch packet
     // cannot relaunch the entity immediately after native pickup.
     int objectPullLastPickedUpEntityIndex = 0;

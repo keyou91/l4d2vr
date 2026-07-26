@@ -1937,7 +1937,35 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 		{
 			Player& vrPlayer = m_Game->m_PlayersVRInfo[static_cast<size_t>(i)];
 			vrPlayer.controllerPos.z = decodedZ;
-			ManualThrowRecordPoseSample(vrPlayer, move->tick_count, vrPlayer.controllerPos, vrPlayer.controllerAngle);
+
+			Vector playerRelativePosition{};
+			bool hasPlayerRelativePosition =
+				IsLocalServerUsercmdContext() &&
+				TryGetManualThrowUsercmdPlayerRelativePosition(
+					m_VR,
+					move->command_number,
+					vrPlayer.controllerPos,
+					playerRelativePosition);
+			if (!hasPlayerRelativePosition)
+			{
+				Vector playerOrigin{};
+				if (ManualThrowGetPlayerOrigin(
+					m_Game->m_CurrentUsercmdPlayer,
+					playerOrigin))
+				{
+					playerRelativePosition =
+						vrPlayer.controllerPos - playerOrigin;
+					hasPlayerRelativePosition = true;
+				}
+			}
+
+			ManualThrowRecordPoseSample(
+				vrPlayer,
+				move->tick_count,
+				vrPlayer.controllerPos,
+				playerRelativePosition,
+				hasPlayerRelativePosition,
+				vrPlayer.controllerAngle);
 		}
 
 		move->viewangles.x = decodedAngle;
@@ -1980,13 +2008,16 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 			move->weaponsubtype = 0;
 			if (hasValidPlayer)
 			{
-				ObjectPullDecodeServerCommand(
-					i,
-					objectPullCommand,
-					move->tick_count,
-					objectPullEntityIndex,
-					objectPullTargetHint);
-				if (objectPullCommand ==
+				const bool acceptedObjectPullCommand =
+					ObjectPullDecodeServerCommand(
+						i,
+						objectPullCommand,
+						move->command_number,
+						move->tick_count,
+						objectPullEntityIndex,
+						objectPullTargetHint);
+				if (acceptedObjectPullCommand &&
+					objectPullCommand ==
 						VR::kObjectPullWireCatch &&
 					ObjectPullPrepareNativePickupUsercmd(
 						i,

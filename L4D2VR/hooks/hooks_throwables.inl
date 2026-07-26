@@ -143,10 +143,56 @@ namespace
 		player.objectPull = {};
 	}
 
-	static void ManualThrowRecordPoseSample(Player& player, int tick, const Vector& position, const QAngle& angles)
+	static bool ManualThrowGetPlayerOrigin(void* owner, Vector& origin)
+	{
+		origin = {};
+		if (!owner || !Hooks::m_Game || !Hooks::m_Game->m_Offsets ||
+			!Hooks::m_Game->m_Offsets->CBaseEntity_GetAbsOrigin_Server.valid)
+		{
+			return false;
+		}
+
+		using GetAbsOriginServerFn = Vector* (__thiscall*)(void*);
+		auto getAbsOrigin = reinterpret_cast<GetAbsOriginServerFn>(
+			Hooks::m_Game->m_Offsets->CBaseEntity_GetAbsOrigin_Server.address);
+		if (!getAbsOrigin)
+			return false;
+
+#ifdef _MSC_VER
+		__try
+		{
+			Vector* originPtr = getAbsOrigin(owner);
+			if (!originPtr || !ManualThrowIsFiniteVector(*originPtr))
+				return false;
+			origin = *originPtr;
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#else
+		Vector* originPtr = getAbsOrigin(owner);
+		if (!originPtr || !ManualThrowIsFiniteVector(*originPtr))
+			return false;
+		origin = *originPtr;
+		return true;
+#endif
+	}
+
+	static void ManualThrowRecordPoseSample(
+		Player& player,
+		int tick,
+		const Vector& position,
+		const Vector& playerRelativePosition,
+		bool hasPlayerRelativePosition,
+		const QAngle& angles)
 	{
 		if (tick <= 0 || !ManualThrowIsFiniteVector(position) || !IsFiniteViewAngle(angles))
 			return;
+		hasPlayerRelativePosition =
+			hasPlayerRelativePosition &&
+			ManualThrowIsFiniteVector(playerRelativePosition);
 
 		if (player.manualThrowLastTick > 0 &&
 			(tick > player.manualThrowLastTick + 16 || tick < player.manualThrowLastTick - 16))
@@ -160,6 +206,9 @@ namespace
 			if (sample.valid && sample.tick == tick)
 			{
 				sample.position = position;
+				sample.hasPlayerRelativePosition = hasPlayerRelativePosition;
+				sample.playerRelativePosition =
+					hasPlayerRelativePosition ? playerRelativePosition : Vector{};
 				sample.angles = angles;
 				player.manualThrowLastTick = (std::max)(player.manualThrowLastTick, tick);
 				return;
@@ -168,8 +217,11 @@ namespace
 
 		ManualThrowPoseSample sample{};
 		sample.valid = true;
+		sample.hasPlayerRelativePosition = hasPlayerRelativePosition;
 		sample.tick = tick;
 		sample.position = position;
+		sample.playerRelativePosition =
+			hasPlayerRelativePosition ? playerRelativePosition : Vector{};
 		sample.angles = angles;
 
 		if (player.manualThrowPoseCount < static_cast<int>(Player::kManualThrowPoseSampleCount))
@@ -231,7 +283,21 @@ namespace
 			if (deltaSeconds <= 0.0f)
 				continue;
 
-			const Vector segmentVelocity = (current.position - previous.position) / deltaSeconds;
+			// Absolute controller poses include player locomotion. Prefer the
+			// controller pose captured relative to the player origin so joystick
+			// acceleration, knockback, moving platforms, and roomscale translation
+			// cannot inflate manual throw strength.
+			const bool hasRelativeSegment =
+				previous.hasPlayerRelativePosition &&
+				current.hasPlayerRelativePosition;
+			const Vector& previousMotionPosition = hasRelativeSegment
+				? previous.playerRelativePosition
+				: previous.position;
+			const Vector& currentMotionPosition = hasRelativeSegment
+				? current.playerRelativePosition
+				: current.position;
+			const Vector segmentVelocity =
+				(currentMotionPosition - previousMotionPosition) / deltaSeconds;
 			Vector segmentAngularVelocity(
 				AngleDeltaDeg(current.angles.x, previous.angles.x) / deltaSeconds,
 				AngleDeltaDeg(current.angles.y, previous.angles.y) / deltaSeconds,
@@ -3365,9 +3431,10 @@ namespace
 		return true;
 	}
 
-	static void ObjectPullDecodeServerCommand(
+	static bool ObjectPullDecodeServerCommand(
 		int playerIndex,
 		uint8_t command,
+		int commandNumber,
 		int tick,
 		int targetEntityIndex,
 		uint8_t targetHint)
@@ -3376,7 +3443,7 @@ namespace
 			!Hooks::m_VR ||
 			!Hooks::m_Game->IsValidPlayerIndex(playerIndex))
 		{
-			return;
+			return false;
 		}
 
 		Player& player =
@@ -3384,7 +3451,63 @@ namespace
 		if (!Hooks::m_VR->m_ObjectPullEnabled)
 		{
 			ObjectPullResetServerState(player);
-			return;
+			return false;
+		}
+
+		// GetObjectPullUsercmdData assigns a stable payload to command_number,
+		// and Source later re-decodes backup commands from that same sequence.
+		// Keep the ordering fence outside ObjectPullServerState: otherwise a
+		// newer Cancel clears lastCommandTick and an older Catch can bootstrap
+		// the same repeatable map spawn for a second time.
+		if (commandNumber > 0)
+		{
+			const int lastCommandNumber =
+				player.objectPullLastWireCommandNumber;
+			const int commandsBack =
+				lastCommandNumber - commandNumber;
+			const int ticksBack =
+				player.objectPullLastWireTick - tick;
+			const bool clearSequenceRestart =
+				command == VR::kObjectPullWireBegin &&
+				lastCommandNumber > 0 &&
+				commandNumber < lastCommandNumber &&
+				(commandsBack > 64 || ticksBack > 64);
+			if (clearSequenceRestart)
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] wire sequence restarted player=%d oldCommand=%d newCommand=%d oldTick=%d newTick=%d",
+						playerIndex,
+						lastCommandNumber,
+						commandNumber,
+						player.objectPullLastWireTick,
+						tick);
+				}
+				player.objectPullLastWireCommandNumber = 0;
+				player.objectPullLastWireTick = 0;
+			}
+
+			if (player.objectPullLastWireCommandNumber > 0 &&
+				commandNumber <=
+					player.objectPullLastWireCommandNumber)
+			{
+				if (Hooks::m_VR->m_ObjectPullDebugLog)
+				{
+					Game::logMsg(
+						"[VR][ObjectPull][server] ignored replayed wire command=%u player=%d commandNumber=%d watermark=%d tick=%d",
+						static_cast<unsigned int>(command),
+						playerIndex,
+						commandNumber,
+						player.objectPullLastWireCommandNumber,
+						tick);
+				}
+				return false;
+			}
+
+			player.objectPullLastWireCommandNumber =
+				commandNumber;
+			player.objectPullLastWireTick = tick;
 		}
 
 		// A repeated level-triggered Catch may arrive after the client's Cancel
@@ -3409,19 +3532,19 @@ namespace
 					targetEntityIndex,
 					ticksSinceLastPickup);
 			}
-			return;
+			return false;
 		}
 
 		if (player.objectPull.active &&
 			tick <= player.objectPull.lastCommandTick)
 		{
-			return;
+			return false;
 		}
 
 		if (command == VR::kObjectPullWireCancel)
 		{
 			ObjectPullResetServerState(player);
-			return;
+			return true;
 		}
 
 		if (command == VR::kObjectPullWireBegin)
@@ -3434,7 +3557,7 @@ namespace
 				// Once launched, however, selecting that same physical object again
 				// is a new pull and must replace the old flight-tracking state.
 				player.objectPull.lastCommandTick = tick;
-				return;
+				return true;
 			}
 
 			if (player.objectPull.active)
@@ -3463,14 +3586,15 @@ namespace
 				"begin"))
 			{
 				ObjectPullResetServerState(player);
+				return false;
 			}
-			return;
+			return true;
 		}
 
 		if (command != VR::kObjectPullWireContinue &&
 			command != VR::kObjectPullWireCatch)
 		{
-			return;
+			return false;
 		}
 
 		if (player.objectPull.active &&
@@ -3481,12 +3605,13 @@ namespace
 			// native pickup has been issued, retain a tombstone until Cancel or
 			// a fresh Begin instead of rearming the newly equipped entity.
 			player.objectPull.lastCommandTick = tick;
-			return;
+			return true;
 		}
 
 		// The short Begin repeat window can fall entirely between Source packet
 		// batches. Continue and Catch carry the same exact entity index, so either
-		// command can bootstrap the server state instead of being silently dropped.
+		// new forward command can bootstrap state. Replayed commands were rejected
+		// by the persistent command-number fence above.
 		if (!player.objectPull.active ||
 			player.objectPull.targetEntityIndex != targetEntityIndex)
 		{
@@ -3505,7 +3630,7 @@ namespace
 					: "continue-bootstrap"))
 			{
 				ObjectPullResetServerState(player);
-				return;
+				return false;
 			}
 		}
 
@@ -3513,7 +3638,7 @@ namespace
 			player.objectPull.entityVtable)
 		{
 			ObjectPullResetServerState(player);
-			return;
+			return false;
 		}
 
 		player.objectPull.lastCommandTick = tick;
@@ -3521,11 +3646,12 @@ namespace
 			!ObjectPullLaunchServerObject(playerIndex, player, tick))
 		{
 			ObjectPullResetServerState(player);
-			return;
+			return false;
 		}
 
 		if (command == VR::kObjectPullWireCatch)
 			player.objectPull.catchRequested = true;
+		return true;
 	}
 
 	static bool ObjectPullPrepareNativePickupUsercmd(

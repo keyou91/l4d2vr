@@ -938,8 +938,10 @@ public:
 	struct ManualThrowUsercmdPoseSnapshot
 	{
 		bool valid = false;
+		bool hasPlayerRelativePosition = false;
 		int commandNumber = 0;
 		Vector position = { 0.0f, 0.0f, 0.0f };
+		Vector playerRelativePosition = { 0.0f, 0.0f, 0.0f };
 		QAngle angles = { 0.0f, 0.0f, 0.0f };
 	};
 	static constexpr size_t kManualThrowUsercmdPoseSnapshotCount = 150;

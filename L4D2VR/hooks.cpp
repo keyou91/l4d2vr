@@ -533,6 +533,37 @@ static inline bool IsFiniteControllerPosition(const Vector& value)
 	return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+static bool TryGetLocalClientPlayerOrigin(Game* game, Vector& playerOrigin)
+{
+	playerOrigin = {};
+	if (!game || !game->m_EngineClient)
+		return false;
+
+	const int localPlayerIndex = game->m_EngineClient->GetLocalPlayer();
+	if (localPlayerIndex <= 0)
+		return false;
+
+	C_BasePlayer* localPlayer =
+		reinterpret_cast<C_BasePlayer*>(game->GetClientEntity(localPlayerIndex));
+	if (!localPlayer)
+		return false;
+
+#ifdef _MSC_VER
+	__try
+	{
+		playerOrigin = localPlayer->GetAbsOrigin();
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		playerOrigin = {};
+		return false;
+	}
+#else
+	playerOrigin = localPlayer->GetAbsOrigin();
+#endif
+	return IsFiniteControllerPosition(playerOrigin);
+}
+
 static bool BuildEncodedVRUsercmdControllerPose(
 	VR* vr,
 	Game* game,
@@ -602,6 +633,12 @@ static void CacheManualThrowUsercmdControllerPose(
 	snapshot.valid = true;
 	snapshot.commandNumber = commandNumber;
 	snapshot.position = controllerPos;
+	Vector playerOrigin{};
+	if (TryGetLocalClientPlayerOrigin(game, playerOrigin))
+	{
+		snapshot.hasPlayerRelativePosition = true;
+		snapshot.playerRelativePosition = controllerPos - playerOrigin;
+	}
 	snapshot.angles = controllerAngles;
 }
 
@@ -624,6 +661,44 @@ static bool TryGetManualThrowUsercmdControllerPose(
 	controllerPos = snapshot.position;
 	controllerAngles = snapshot.angles;
 	return IsFiniteControllerPosition(controllerPos) && IsFiniteViewAngle(controllerAngles);
+}
+
+static bool TryGetManualThrowUsercmdPlayerRelativePosition(
+	const VR* vr,
+	int commandNumber,
+	const Vector& decodedControllerPosition,
+	Vector& playerRelativePosition)
+{
+	playerRelativePosition = {};
+	if (!vr || commandNumber <= 0 ||
+		!IsFiniteControllerPosition(decodedControllerPosition))
+	{
+		return false;
+	}
+
+	const size_t slotIndex = static_cast<size_t>(commandNumber) %
+		VR::kManualThrowUsercmdPoseSnapshotCount;
+	const VR::ManualThrowUsercmdPoseSnapshot& snapshot =
+		vr->m_ManualThrowUsercmdPoseSnapshots[slotIndex];
+	if (!snapshot.valid ||
+		!snapshot.hasPlayerRelativePosition ||
+		snapshot.commandNumber != commandNumber ||
+		!IsFiniteControllerPosition(snapshot.position) ||
+		!IsFiniteControllerPosition(snapshot.playerRelativePosition))
+	{
+		return false;
+	}
+
+	// Object Pull can replace the wire pose after this snapshot was captured.
+	// Only pair the body-relative sample with the decoded command when both
+	// absolute controller positions still identify the same pose.
+	const Vector absolutePositionError =
+		snapshot.position - decodedControllerPosition;
+	if (absolutePositionError.LengthSqr() > 1.0f)
+		return false;
+
+	playerRelativePosition = snapshot.playerRelativePosition;
+	return true;
 }
 
 static inline bool StringContains(const char* text, const char* needle)
