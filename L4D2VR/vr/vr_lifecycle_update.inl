@@ -3209,13 +3209,29 @@ void VR::SubmitVRTextures()
         const int submitWaitMs = std::clamp(m_QueuedSubmitWaitMs, 0, 20);
         if (!renderedNewFrame && submitWaitMs > 0 && m_RenderFrameReadyEvent)
         {
-            waitedForRenderFrame = true;
-            waitResult = WaitForSingleObject(m_RenderFrameReadyEvent, static_cast<DWORD>(submitWaitMs));
+            // This is an auto-reset event, but a normally consumed frame does not
+            // wait on it, so its signal can remain armed and make the next stale
+            // submit return immediately. Clear that old signal, then recheck the
+            // generation to close the reset-vs-publish race before actually waiting.
+            ResetEvent(m_RenderFrameReadyEvent);
             renderedNewFrame = m_RenderedNewFrame.load(std::memory_order_acquire);
             completedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
             lastSubmittedFrameId = m_LastSubmittedFrameId.load(std::memory_order_acquire);
             if (!renderedNewFrame && completedFrameId != 0 && completedFrameId != lastSubmittedFrameId)
                 renderedNewFrame = true;
+
+            if (!renderedNewFrame)
+            {
+                waitedForRenderFrame = true;
+                waitResult = WaitForSingleObject(
+                    m_RenderFrameReadyEvent,
+                    static_cast<DWORD>(submitWaitMs));
+                renderedNewFrame = m_RenderedNewFrame.load(std::memory_order_acquire);
+                completedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                lastSubmittedFrameId = m_LastSubmittedFrameId.load(std::memory_order_acquire);
+                if (!renderedNewFrame && completedFrameId != 0 && completedFrameId != lastSubmittedFrameId)
+                    renderedNewFrame = true;
+            }
         }
 
         if (renderedNewFrame)
@@ -3271,9 +3287,28 @@ void VR::SubmitVRTextures()
             const DWORD duplicatePoseWaitMs = static_cast<DWORD>(std::clamp(m_QueuedSubmitWaitMs, 0, 20));
             if (duplicatePoseWaitMs > 0)
             {
-                const DWORD duplicateWaitResult = WaitForSingleObject(m_RenderFrameReadyEvent, duplicatePoseWaitMs);
-                const uint32_t waitedRenderPoseToken = m_RenderCompletedPoseToken.load(std::memory_order_acquire);
-                const uint32_t waitedCompletedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                // As above, discard a signal belonging to the frame we already
+                // inspected, then recheck before blocking so a concurrent publish
+                // cannot be lost.
+                ResetEvent(m_RenderFrameReadyEvent);
+                uint32_t waitedRenderPoseToken =
+                    m_RenderCompletedPoseToken.load(std::memory_order_acquire);
+                uint32_t waitedCompletedFrameId =
+                    m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                DWORD duplicateWaitResult = WAIT_OBJECT_0;
+                const bool poseStillStale =
+                    waitedRenderPoseToken == 0 ||
+                    (waitedRenderPoseToken == lastSubmittedToken &&
+                        waitedCompletedFrameId == poseCheckCompletedFrameId);
+                if (poseStillStale)
+                {
+                    duplicateWaitResult =
+                        WaitForSingleObject(m_RenderFrameReadyEvent, duplicatePoseWaitMs);
+                    waitedRenderPoseToken =
+                        m_RenderCompletedPoseToken.load(std::memory_order_acquire);
+                    waitedCompletedFrameId =
+                        m_RenderCompletedFrameId.load(std::memory_order_acquire);
+                }
                 if (waitedRenderPoseToken != 0)
                 {
                     renderPoseToken = waitedRenderPoseToken;

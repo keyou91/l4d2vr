@@ -413,12 +413,14 @@ public:
 	std::atomic<float> m_RenderCameraAnchorX{ 0.0f };
 	std::atomic<float> m_RenderCameraAnchorY{ 0.0f };
 	std::atomic<float> m_RenderCameraAnchorZ{ 0.0f };
-	// Exact update-thread origin that cameraAnchor corresponded to when this snapshot
-	// was published. Queued rendering can retime normal first-person XY motion to the
-	// current CViewSetup without filtering or prediction:
-	//   renderAnchor.xy = cameraAnchor.xy + (setup.origin.xy - anchorReference.xy)
+	// Exact update-thread body origin that cameraAnchor corresponded to when this
+	// snapshot was published. Queued rendering retimes only the physically plausible
+	// along-velocity portion of the current CViewSetup delta; this rejects camera
+	// shake/collision impulses without low-pass filtering the whole world anchor.
 	std::atomic<float> m_RenderCameraAnchorReferenceX{ 0.0f };
 	std::atomic<float> m_RenderCameraAnchorReferenceY{ 0.0f };
+	std::atomic<float> m_RenderBodyVelocityX{ 0.0f };
+	std::atomic<float> m_RenderBodyVelocityY{ 0.0f };
 	// Set only when cameraAnchor is intentionally following the live local-player
 	// first-person origin. Cleared for roomscale-decoupled, scout, observer, third-
 	// person, revive/incap, mounted-gun, and scripted-camera states.
@@ -654,6 +656,11 @@ public:
 	// First-person stair/step smoothing: Source's step-smoothed setup.origin.z is flat-screen camera
 	// motion. Low-pass it before it becomes the VR world anchor so stairs do not yank the whole view.
 	int m_StairStepCameraSmoothMs = 90;
+	// This state belongs to UpdateTracking, where m_CameraAnchor.z is actually produced.
+	// Render-hook-only Z smoothing is overwritten by EyePosition() on the next update.
+	bool m_StairStepCameraSmoothValid = false;
+	float m_StairStepCameraSmoothedZ = 0.0f;
+	std::chrono::steady_clock::time_point m_StairStepCameraSmoothLastT{};
 
 	// Queued rendering: HMD pose smoothing time constant (ms) for visual stability.
 	// 0 = off. Higher values can soften visible stepping from stale pose reuse, but they do not fetch
@@ -923,7 +930,7 @@ public:
 	bool m_ObjectPullVisualsEnabled = true;
 	float m_ObjectPullMaxDistanceMeters = 12.0f;
 	float m_ObjectPullMinimumDistanceMeters = 0.25f;
-	float m_ObjectPullTargetAssistRadiusMeters = 0.08f;
+	float m_ObjectPullTargetAssistRadiusMeters = 0.15f;
 	float m_ObjectPullGestureDistanceMeters = 0.08f;
 	float m_ObjectPullCatchDistanceMeters = 0.70f;
 	float m_ObjectPullSpeedMetersPerSecond = 12.0f;
@@ -1143,7 +1150,7 @@ public:
 	}
 	// Present-side wait budget (ms) for a fresh rendered frame in mat_queue_mode!=0.
 	// 0 disables waiting. Used as an upper bound by adaptive submit-wait logic.
-	int m_QueuedSubmitWaitMs = 0;
+	int m_QueuedSubmitWaitMs = 1;
 	// Queued submit policy switch:
 	// true = submit only frames whose render-completed pose token advanced (less ghosting, may skip frames)
 	// false = original submit-pose-token path (smoother cadence, can submit stale render-pose frames)

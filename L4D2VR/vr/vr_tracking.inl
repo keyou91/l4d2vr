@@ -303,6 +303,8 @@ void VR::UpdateTracking()
         m_HadLocalPlayerPrev = false;
         m_ResetPositionStableFrames.store(0u, std::memory_order_release);
         m_ResetPositionStableEyeZValid = false;
+        m_StairStepCameraSmoothValid = false;
+        m_StairStepCameraSmoothLastT = {};
         m_ThirdPersonMapLoadCooldownPending = true;
         m_ThirdPersonMapLoadCooldownEnd = {};
         if (m_ServerHookFallbackPending)
@@ -315,6 +317,8 @@ void VR::UpdateTracking()
 
             m_RenderHasLocalPlayer.store(0, std::memory_order_relaxed);
             m_RenderCameraAnchorPhaseAlignEligible.store(0, std::memory_order_relaxed);
+            m_RenderBodyVelocityX.store(0.0f, std::memory_order_relaxed);
+            m_RenderBodyVelocityY.store(0.0f, std::memory_order_relaxed);
             m_RenderHasViewEntityOverride.store(0, std::memory_order_relaxed);
             m_RenderViewEntityHandle.store(0, std::memory_order_relaxed);
             m_RenderBeingRevived.store(0, std::memory_order_relaxed);
@@ -534,10 +538,70 @@ void VR::UpdateTracking()
         Vector eyeOrigin = viewPlayer->EyePosition();
         if (!eyeOrigin.IsZero())
         {
+            // Apply vertical comfort smoothing where the world anchor is actually
+            // produced. The render-hook copy is overwritten by EyePosition() here,
+            // so filtering only there never affected m_CameraAnchor.z.
+            //
+            // Keep jumps/falls fully responsive: stair/ground smoothing is active
+            // only while the live local player is grounded in normal first person.
+            const bool verticalComfortEligible =
+                viewPlayer == localPlayer &&
+                !inEyeObserver &&
+                !isObserver &&
+                obsMode == 0 &&
+                !usingMountedGunNow &&
+                !m_TeleportVisualScoutActive &&
+                localPlayer->m_hGroundEntity != -1 &&
+                m_StairStepCameraSmoothMs > 0 &&
+                std::isfinite(eyeOrigin.z);
+
+            if (verticalComfortEligible)
+            {
+                const auto now = std::chrono::steady_clock::now();
+                const float rawZ = eyeOrigin.z;
+                const bool discontinuity =
+                    !m_StairStepCameraSmoothValid ||
+                    !std::isfinite(m_StairStepCameraSmoothedZ) ||
+                    std::fabs(rawZ - m_StairStepCameraSmoothedZ) > 48.0f;
+
+                if (discontinuity)
+                {
+                    m_StairStepCameraSmoothedZ = rawZ;
+                    m_StairStepCameraSmoothValid = true;
+                }
+                else
+                {
+                    float dt = m_LastFrameDuration;
+                    if (m_StairStepCameraSmoothLastT.time_since_epoch().count() != 0)
+                        dt = std::chrono::duration<float>(now - m_StairStepCameraSmoothLastT).count();
+                    if (!std::isfinite(dt) || dt <= 0.0f)
+                        dt = 1.0f / 90.0f;
+                    dt = std::clamp(dt, 1.0f / 240.0f, 0.050f);
+
+                    const float tau = static_cast<float>(m_StairStepCameraSmoothMs) / 1000.0f;
+                    const float alpha = std::clamp(1.0f - std::exp(-dt / tau), 0.0f, 1.0f);
+                    m_StairStepCameraSmoothedZ +=
+                        (rawZ - m_StairStepCameraSmoothedZ) * alpha;
+                }
+
+                m_StairStepCameraSmoothLastT = now;
+                eyeOrigin.z = m_StairStepCameraSmoothedZ;
+            }
+            else
+            {
+                m_StairStepCameraSmoothValid = false;
+                m_StairStepCameraSmoothLastT = {};
+            }
+
             m_SetupOrigin = eyeOrigin;
             if (m_SetupOriginPrev.IsZero())
                 m_SetupOriginPrev = eyeOrigin;
         }
+    }
+    else
+    {
+        m_StairStepCameraSmoothValid = false;
+        m_StairStepCameraSmoothLastT = {};
     }
 
     // --- Fix: third-person camera shifts CViewSetup::origin behind the player.
@@ -1922,6 +1986,8 @@ void VR::UpdateTracking()
         m_RenderCameraAnchorZ.store(m_CameraAnchor.z, std::memory_order_relaxed);
         m_RenderCameraAnchorReferenceX.store(m_SetupOrigin.x, std::memory_order_relaxed);
         m_RenderCameraAnchorReferenceY.store(m_SetupOrigin.y, std::memory_order_relaxed);
+        m_RenderBodyVelocityX.store(localPlayer->m_vecVelocity.x, std::memory_order_relaxed);
+        m_RenderBodyVelocityY.store(localPlayer->m_vecVelocity.y, std::memory_order_relaxed);
         m_RenderCameraAnchorPhaseAlignEligible.store(
             __cameraAnchorPhaseAlignEligible ? 1u : 0u,
             std::memory_order_relaxed);

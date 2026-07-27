@@ -969,7 +969,43 @@ namespace
             visibilityTrace.m_pEnt != reinterpret_cast<void*>(target) &&
             visibilityTrace.fraction < 0.97f)
         {
-            return false;
+            int blockerIndex = -1;
+            C_BaseEntity* blocker = ObjectPullResolveTraceEntity(
+                vr,
+                visibilityTrace.m_pEnt,
+                blockerIndex);
+            if (!blocker)
+                return false;
+
+            char blockerClass[128]{};
+            char blockerModel[260]{};
+            ObjectPullSafeCopyNetworkClassName(
+                vr,
+                blocker,
+                blockerClass,
+                sizeof(blockerClass));
+            if (!blockerClass[0])
+            {
+                ObjectPullSafeCopyModelName(
+                    vr,
+                    blocker,
+                    blockerModel,
+                    sizeof(blockerModel));
+            }
+
+            const bool livingBlocker =
+                ObjectPullClientNameIsLivingBlocker(
+                    blockerClass,
+                    blockerModel);
+            const float obstructionGap =
+                (aimPoint - visibilityTrace.endpos).Length();
+            const float embeddedTolerance =
+                std::max(assistRadius * 2.0f, 0.20f * scale);
+            if (!livingBlocker &&
+                obstructionGap > embeddedTolerance)
+            {
+                return false;
+            }
         }
         return true;
     }

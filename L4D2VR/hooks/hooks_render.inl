@@ -859,6 +859,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		{
 			Vector cameraAnchor{};
 			Vector cameraAnchorReference{};
+			Vector bodyVelocity{};
 			bool cameraAnchorPhaseAlignEligible = false;
 			float rotationOffset = 0.0f;
 			float vrScale = 1.0f;
@@ -917,6 +918,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			vp.cameraAnchor.z = m_VR->m_RenderCameraAnchorZ.load(std::memory_order_relaxed);
 			vp.cameraAnchorReference.x = m_VR->m_RenderCameraAnchorReferenceX.load(std::memory_order_relaxed);
 			vp.cameraAnchorReference.y = m_VR->m_RenderCameraAnchorReferenceY.load(std::memory_order_relaxed);
+			vp.bodyVelocity.x = m_VR->m_RenderBodyVelocityX.load(std::memory_order_relaxed);
+			vp.bodyVelocity.y = m_VR->m_RenderBodyVelocityY.load(std::memory_order_relaxed);
 			vp.cameraAnchorPhaseAlignEligible =
 				(m_VR->m_RenderCameraAnchorPhaseAlignEligible.load(std::memory_order_relaxed) != 0);
 			vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
@@ -989,6 +992,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				vp.cameraAnchor.z = m_VR->m_RenderCameraAnchorZ.load(std::memory_order_relaxed);
 				vp.cameraAnchorReference.x = m_VR->m_RenderCameraAnchorReferenceX.load(std::memory_order_relaxed);
 				vp.cameraAnchorReference.y = m_VR->m_RenderCameraAnchorReferenceY.load(std::memory_order_relaxed);
+				vp.bodyVelocity.x = m_VR->m_RenderBodyVelocityX.load(std::memory_order_relaxed);
+				vp.bodyVelocity.y = m_VR->m_RenderBodyVelocityY.load(std::memory_order_relaxed);
 				vp.cameraAnchorPhaseAlignEligible =
 					(m_VR->m_RenderCameraAnchorPhaseAlignEligible.load(std::memory_order_relaxed) != 0);
 				vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
@@ -1069,14 +1074,15 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		// domains and then hid the resulting hold/jump motion with a low-pass filter.
 		// That necessarily added roughly QueuedRenderViewSmoothMs of locomotion lag.
 		//
-		// In normal first person cameraAnchor and cameraAnchorReference translate together,
-		// so their common motion cancels exactly:
-		//   frameAnchor.xy = cameraAnchor.xy
-		//                  + (setup.origin.xy - cameraAnchorReference.xy)
-		// This is frame pairing, not prediction or smoothing, and therefore adds no filter
-		// latency. Z remains on the existing stair/height path.
+		// In normal first person cameraAnchor and cameraAnchorReference translate together.
+		// CViewSetup::origin also contains flat-screen camera impulses (collision/view
+		// shake/ground bumps), so applying its full delta makes VR hypersensitive. Keep
+		// only the component along the player's physical velocity and bound it to a
+		// plausible queued-frame travel distance. This remains an instantaneous phase
+		// correction: the full world anchor is never low-pass filtered.
 		Vector queuedAnchorTarget = vp.cameraAnchor;
 		Vector queuedBodyPhaseDelta{};
+		Vector queuedBodyPhaseCorrection{};
 		bool queuedBodyPhaseAligned = false;
 		auto IsFiniteXY = [](const Vector& v)
 			{
@@ -1100,9 +1106,39 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				queuedBodyPhaseDelta.y * queuedBodyPhaseDelta.y;
 			if (phaseDeltaSq < (kMaxQueuedBodyPhaseDelta * kMaxQueuedBodyPhaseDelta))
 			{
-				queuedAnchorTarget.x += queuedBodyPhaseDelta.x;
-				queuedAnchorTarget.y += queuedBodyPhaseDelta.y;
 				queuedBodyPhaseAligned = true;
+
+				const float bodySpeedSq =
+					vp.bodyVelocity.x * vp.bodyVelocity.x +
+					vp.bodyVelocity.y * vp.bodyVelocity.y;
+				if (IsFiniteXY(vp.bodyVelocity) && std::isfinite(bodySpeedSq) &&
+					bodySpeedSq > (0.5f * 0.5f))
+				{
+					const float bodySpeed = std::sqrt(bodySpeedSq);
+					const Vector bodyDirection(
+						vp.bodyVelocity.x / bodySpeed,
+						vp.bodyVelocity.y / bodySpeed,
+						0.0f);
+
+					float alongTravel =
+						queuedBodyPhaseDelta.x * bodyDirection.x +
+						queuedBodyPhaseDelta.y * bodyDirection.y;
+
+					// mat_queue_mode is intentionally kept near one frame ahead. A
+					// 45 ms physical-travel window covers low-tick scenes while
+					// rejecting camera impulses that cannot be body locomotion.
+					const float maxAlongTravel =
+						std::clamp(0.75f + bodySpeed * 0.045f, 0.75f, 12.0f);
+					alongTravel = std::clamp(
+						alongTravel,
+						-maxAlongTravel,
+						maxAlongTravel);
+
+					queuedBodyPhaseCorrection.x = bodyDirection.x * alongTravel;
+					queuedBodyPhaseCorrection.y = bodyDirection.y * alongTravel;
+					queuedAnchorTarget.x += queuedBodyPhaseCorrection.x;
+					queuedAnchorTarget.y += queuedBodyPhaseCorrection.y;
+				}
 			}
 		}
 
@@ -1588,11 +1624,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				{
 					const Vector smoothErrA = queuedAnchorTarget - extrapAnchor;
 					const float smoothErrYaw = AngleDeltaDeg(vp.rotationOffset, extrapRot);
-					Game::logMsg("[VR][Queued][RenderView] status q=%d vpSeq=%u poseSeq=%u havePoses=%d waitCfg=%d waitEff=%d phase=%d phaseD=(%.3f %.3f) snap=%d smoothMs=%d alpha=%.3f errD=%.3f errYaw=%.3f pendD=%.4f pendYaw=%.3f vpRot=%.2f smRot=%.2f tick=%.1fms",
+					Game::logMsg("[VR][Queued][RenderView] status q=%d vpSeq=%u poseSeq=%u havePoses=%d waitCfg=%d waitEff=%d phase=%d phaseD=(%.3f %.3f) phaseC=(%.3f %.3f) bodyV=(%.2f %.2f) snap=%d smoothMs=%d alpha=%.3f errD=%.3f errYaw=%.3f pendD=%.4f pendYaw=%.3f vpRot=%.2f smRot=%.2f tick=%.1fms",
 						queueMode, (unsigned)vpSeqEven, (unsigned)poseSeq, havePoses ? 1 : 0,
 						waitMsCfg, waitMs,
 						queuedBodyPhaseAligned ? 1 : 0,
 						queuedBodyPhaseDelta.x, queuedBodyPhaseDelta.y,
+						queuedBodyPhaseCorrection.x, queuedBodyPhaseCorrection.y,
+						vp.bodyVelocity.x, vp.bodyVelocity.y,
 						didSnapSmooth ? 1 : 0, smoothMsCfg, alpha,
 						smoothErrA.Length(), smoothErrYaw,
 						std::sqrt(pendingDeltaSq), pendingYawDelta,
