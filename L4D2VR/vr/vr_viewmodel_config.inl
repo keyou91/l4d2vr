@@ -2691,6 +2691,10 @@ void VR::ParseConfigFile()
     else if (hasHeadSmoothing) // Backward compatibility: old configs used HeadSmoothing
         controllerSmoothingValue = getFloat("HeadSmoothing", controllerSmoothingValue);
     m_ControllerSmoothing = std::clamp(controllerSmoothingValue, 0.0f, 0.99f);
+    m_WeaponAimPitchOffsetDeg = std::clamp(
+        getFloat("WeaponAimPitchOffsetDeg", m_WeaponAimPitchOffsetDeg),
+        -90.0f,
+        90.0f);
 
     float headSmoothingValue = m_HeadSmoothing;
     if (hasHeadSmoothing)

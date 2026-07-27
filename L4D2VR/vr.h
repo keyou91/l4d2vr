@@ -308,6 +308,9 @@ public:
 	Vector m_RightControllerForward;
 	Vector m_RightControllerRight;
 	Vector m_RightControllerUp;
+	// Rotates the logical weapon hand's OpenVR grip pose around its local right
+	// axis before the pose is used by the viewmodel, aim line, and gameplay aim.
+	float m_WeaponAimPitchOffsetDeg = -45.0f;
 
 	Vector m_ViewmodelForward;
 	Vector m_ViewmodelRight;
@@ -437,6 +440,7 @@ public:
 	std::atomic<float> m_RenderViewmodelAngOffsetX{ 0.0f };
 	std::atomic<float> m_RenderViewmodelAngOffsetY{ 0.0f };
 	std::atomic<float> m_RenderViewmodelAngOffsetZ{ 0.0f };
+	std::atomic<float> m_RenderWeaponAimPitchOffsetDeg{ -45.0f };
 
 	// Local-player & camera state snapshot for the render thread (mat_queue_mode!=0).
 	// NOTE: These are written under the same seqlock as m_RenderViewParamsSeq.

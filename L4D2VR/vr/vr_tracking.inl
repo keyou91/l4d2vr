@@ -1179,12 +1179,20 @@ void VR::UpdateTracking()
     QAngle::AngleVectors(leftControllerAngSmoothed, &m_LeftControllerForward, &m_LeftControllerRight, &m_LeftControllerUp);
     QAngle::AngleVectors(rightControllerAngSmoothed, &m_RightControllerForward, &m_RightControllerRight, &m_RightControllerUp);
 
-    // Adjust controller angle 45 degrees downward
+    // Keep the existing off-hand/controller-model calibration.
     m_LeftControllerForward = VectorRotate(m_LeftControllerForward, m_LeftControllerRight, -45.0);
     m_LeftControllerUp = VectorRotate(m_LeftControllerUp, m_LeftControllerRight, -45.0);
 
-    m_RightControllerForward = VectorRotate(m_RightControllerForward, m_RightControllerRight, -45.0);
-    m_RightControllerUp = VectorRotate(m_RightControllerUp, m_RightControllerRight, -45.0);
+    // Calibrate the logical weapon hand's grip pose. This stays in the shared
+    // aim basis so the gun model, aim line, scope, and bullets remain aligned.
+    m_RightControllerForward = VectorRotate(
+        m_RightControllerForward,
+        m_RightControllerRight,
+        m_WeaponAimPitchOffsetDeg);
+    m_RightControllerUp = VectorRotate(
+        m_RightControllerUp,
+        m_RightControllerRight,
+        m_WeaponAimPitchOffsetDeg);
 
     m_RightControllerForwardUnforced = m_RightControllerForward;
     if (!m_RightControllerForwardUnforced.IsZero())
@@ -1936,6 +1944,7 @@ void VR::UpdateTracking()
         m_RenderViewmodelAngOffsetX.store(m_ViewmodelAngOffset.x, std::memory_order_relaxed);
         m_RenderViewmodelAngOffsetY.store(m_ViewmodelAngOffset.y, std::memory_order_relaxed);
         m_RenderViewmodelAngOffsetZ.store(m_ViewmodelAngOffset.z, std::memory_order_relaxed);
+        m_RenderWeaponAimPitchOffsetDeg.store(m_WeaponAimPitchOffsetDeg, std::memory_order_relaxed);
 
         // Local player / third-person / aim line state for the render thread.
         m_RenderHasLocalPlayer.store(1, std::memory_order_relaxed);

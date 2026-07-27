@@ -117,6 +117,7 @@ HudAlwaysVisible=false
 FixedHudYOffset=0.25
 FixedHudDistanceOffset=0.25
 ControllerSmoothing=0.0
+WeaponAimPitchOffsetDeg=-45.0
 FirstPersonBodyEnabled=true
 FirstPersonBodyHideHead=true
 FirstPersonBodyHideArms=true

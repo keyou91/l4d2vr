@@ -3626,7 +3626,9 @@ bool VR::ShouldFreezeMagazineInteractionViewmodel() const
             m_MagazineInteractionState == MagazineInteractionManualState::HoldingBolt ||
             ((m_MagazineInteractionState == MagazineInteractionManualState::WaitingForFreshMagazine ||
                 m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine) &&
-                m_MagazineInteractionShotgunShellsLoadedThisSession > 0);
+                (m_MagazineInteractionShotgunShellsLoadedThisSession > 0 ||
+                    (m_MagazineInteractionSuppressEmptyClipAutoReload &&
+                        m_MagazineInteractionChamberEmpty)));
     }
 
     return m_MagazineInteractionState == MagazineInteractionManualState::HoldingOldMagazine ||
@@ -4536,6 +4538,14 @@ bool VR::UpdateMagazineInteraction(
 
     auto startImmediateReloadCommand = [&](const char* reason)
     {
+        if (m_MagazineInteractionShotgunShellMode)
+        {
+            // An empty-shotgun suppress request may have been queued earlier in this
+            // update while the shell was still being held. Do not let that stale
+            // request cancel the backend reload started by the physical insertion.
+            m_MagazineInteractionShotgunServerReloadAbortPending = false;
+            m_MagazineInteractionShotgunServerReloadAbortUntil = {};
+        }
         m_MagazineInteractionReloadTriggered = true;
         m_MagazineInteractionReloadCommandPending = true;
         m_MagazineInteractionReloadCommandIssued = false;
@@ -4864,7 +4874,9 @@ bool VR::UpdateMagazineInteraction(
     auto rebuildSocketCaptureFromSocket = [&]()
     {
         if (m_MagazineInteractionShotgunShellMode &&
-            m_MagazineInteractionShotgunShellsLoadedThisSession > 0 &&
+            (m_MagazineInteractionShotgunShellsLoadedThisSession > 0 ||
+                (m_MagazineInteractionSuppressEmptyClipAutoReload &&
+                    m_MagazineInteractionChamberEmpty)) &&
             applyShotgunStableSocketCapture())
         {
             return;
@@ -6150,6 +6162,8 @@ bool VR::UpdateMagazineInteraction(
         m_MagazineInteractionSocketValid = true;
         m_MagazineInteractionSocketWorld = MagazineInteractionBuildBoxWorld(box);
         rebuildSocketCaptureFromSocket();
+        if (m_MagazineInteractionShotgunShellMode)
+            captureShotgunStableSocketCapture("session-begin");
         setDetachedMagazineWorld(m_MagazineInteractionSocketWorld);
         m_MagazineInteractionFreshPickupBasisValid = false;
         m_MagazineInteractionFreshPickupForward = {};
@@ -6346,6 +6360,17 @@ bool VR::UpdateMagazineInteraction(
         }
     }
 
+    const bool shotgunWaitingForPhysicalShell =
+        m_MagazineInteractionShotgunShellMode &&
+        (m_MagazineInteractionState == MagazineInteractionManualState::WaitingForFreshMagazine ||
+            m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine);
+    const bool suppressEmptyShotgunAutoReload =
+        shotgunWaitingForPhysicalShell &&
+        m_MagazineInteractionSuppressEmptyClipAutoReload &&
+        activeClip == 0;
+    if (suppressEmptyShotgunAutoReload)
+        m_MagazineInteractionChamberEmpty = true;
+
     if (m_MagazineInteractionState == MagazineInteractionManualState::WaitingForFreshMagazine ||
         m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine)
     {
@@ -6358,15 +6383,18 @@ bool VR::UpdateMagazineInteraction(
         rebuildInputSocketFromSessionBox();
     }
 
-    if (m_MagazineInteractionShotgunShellMode &&
-        m_MagazineInteractionShotgunShellsLoadedThisSession > 0 &&
-        (m_MagazineInteractionState == MagazineInteractionManualState::WaitingForFreshMagazine ||
-            m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine))
+    if (shotgunWaitingForPhysicalShell &&
+        (m_MagazineInteractionShotgunShellsLoadedThisSession > 0 ||
+            suppressEmptyShotgunAutoReload))
     {
         ApplyMagazineInteractionShotgunClientReloadAbort(
             activeWeapon,
             static_cast<int>(activeWeaponId),
-            "shotgun-between-shells");
+            suppressEmptyShotgunAutoReload
+                ? "shotgun-empty-clip-auto-reload"
+                : "shotgun-between-shells");
+        if (suppressEmptyShotgunAutoReload)
+            queueShotgunServerReloadAbort("shotgun-empty-clip-auto-reload");
     }
 
     if (m_MagazineInteractionServerClipSettlementActive &&
@@ -7177,8 +7205,7 @@ bool VR::UpdateMagazineInteraction(
             }
             m_MagazineInteractionFreshMagazineContactActive = false;
             triggerMagazineInteractionBothHandsHaptic(0.026f, 105.0f, 0.42f, 2);
-            if (!m_MagazineInteractionShotgunShellMode)
-                MagazineInteractionPlayClipInSound(this);
+            MagazineInteractionPlayClipInSound(this);
             if (m_MagazineInteractionShotgunShellMode)
                 startImmediateReloadCommand("shotgun-shell-inserted");
             m_MagazineInteractionLeftHandHolding = false;
@@ -8533,6 +8560,18 @@ bool VR::CaptureMagazineInteractionSound(int entityIndex, const char* sample, fl
         Game::logMsg(
             "[VR][MagazineInteraction][Audio] let synthetic bolt-forward play sample=%s",
             sample);
+        return false;
+    }
+
+    const bool allowVisibleShotgunNativeReloadSound =
+        m_MagazineInteractionShotgunShellMode &&
+        !ShouldFreezeMagazineInteractionViewmodel();
+    if (!nativeReloadSuppressed && allowVisibleShotgunNativeReloadSound)
+    {
+        Game::logMsg(
+            "[VR][MagazineInteraction][Audio] let visible native shotgun sound play sample=%s state=%d",
+            sample,
+            static_cast<int>(m_MagazineInteractionState));
         return false;
     }
 
