@@ -410,6 +410,16 @@ public:
 	std::atomic<float> m_RenderCameraAnchorX{ 0.0f };
 	std::atomic<float> m_RenderCameraAnchorY{ 0.0f };
 	std::atomic<float> m_RenderCameraAnchorZ{ 0.0f };
+	// Exact update-thread origin that cameraAnchor corresponded to when this snapshot
+	// was published. Queued rendering can retime normal first-person XY motion to the
+	// current CViewSetup without filtering or prediction:
+	//   renderAnchor.xy = cameraAnchor.xy + (setup.origin.xy - anchorReference.xy)
+	std::atomic<float> m_RenderCameraAnchorReferenceX{ 0.0f };
+	std::atomic<float> m_RenderCameraAnchorReferenceY{ 0.0f };
+	// Set only when cameraAnchor is intentionally following the live local-player
+	// first-person origin. Cleared for roomscale-decoupled, scout, observer, third-
+	// person, revive/incap, mounted-gun, and scripted-camera states.
+	std::atomic<uint32_t> m_RenderCameraAnchorPhaseAlignEligible{ 0 };
 	std::atomic<float> m_RenderRotationOffset{ 0.0f };
 	std::atomic<float> m_RenderVRScale{ 1.0f };
 	std::atomic<float> m_RenderIpdScale{ 1.0f };
@@ -503,6 +513,17 @@ public:
 
 	// Render thread id (captured in dRenderView) used to gate render-only snapshot reads.
 	std::atomic<uint32_t> m_RenderThreadId{ 0 };
+
+	// Queued render camera -> update-thread bridge. The render hook must not write
+	// plain m_SetupOrigin/m_SetupAngles while UpdateTracking is using them to
+	// advance m_CameraAnchor. The update thread consumes this coherent snapshot.
+	std::atomic<uint32_t> m_RenderSetupCameraSeq{ 0 };
+	std::atomic<float> m_RenderSetupOriginX{ 0.0f };
+	std::atomic<float> m_RenderSetupOriginY{ 0.0f };
+	std::atomic<float> m_RenderSetupOriginZ{ 0.0f };
+	std::atomic<float> m_RenderSetupAnglesX{ 0.0f };
+	std::atomic<float> m_RenderSetupAnglesY{ 0.0f };
+	std::atomic<float> m_RenderSetupAnglesZ{ 0.0f };
 
 	// True on the render thread while inside dRenderView when mat_queue_mode!=0.
 	static inline thread_local bool t_UseRenderFrameSnapshot = false;
@@ -625,7 +646,7 @@ public:
 
 	// Queued rendering: render-thread smoothing time constant (ms) for cameraAnchor/rotationOffset.
 	// 0 = off (follow snapshot exactly), 20~80 = typical. Higher = smoother but more latency.
-	int m_QueuedRenderViewSmoothMs = 25;
+	int m_QueuedRenderViewSmoothMs = 0;
 	// First-person stair/step smoothing: Source's step-smoothed setup.origin.z is flat-screen camera
 	// motion. Low-pass it before it becomes the VR world anchor so stairs do not yank the whole view.
 	int m_StairStepCameraSmoothMs = 90;

@@ -858,6 +858,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		struct ViewParams
 		{
 			Vector cameraAnchor{};
+			Vector cameraAnchorReference{};
+			bool cameraAnchorPhaseAlignEligible = false;
 			float rotationOffset = 0.0f;
 			float vrScale = 1.0f;
 			float ipdScale = 1.0f;
@@ -912,7 +914,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			vp.cameraAnchor.x = m_VR->m_RenderCameraAnchorX.load(std::memory_order_relaxed);
 			vp.cameraAnchor.y = m_VR->m_RenderCameraAnchorY.load(std::memory_order_relaxed);
 			vp.cameraAnchor.z = m_VR->m_RenderCameraAnchorZ.load(std::memory_order_relaxed);
-			vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_relaxed);
+			vp.cameraAnchorReference.x = m_VR->m_RenderCameraAnchorReferenceX.load(std::memory_order_relaxed);
+			vp.cameraAnchorReference.y = m_VR->m_RenderCameraAnchorReferenceY.load(std::memory_order_relaxed);
+			vp.cameraAnchorPhaseAlignEligible =
+				(m_VR->m_RenderCameraAnchorPhaseAlignEligible.load(std::memory_order_relaxed) != 0);
+			vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
 			vp.vrScale = m_VR->m_RenderVRScale.load(std::memory_order_relaxed);
 			vp.ipdScale = m_VR->m_RenderIpdScale.load(std::memory_order_relaxed);
 			vp.eyeZ = m_VR->m_RenderEyeZ.load(std::memory_order_relaxed);
@@ -978,7 +984,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				vp.cameraAnchor.x = m_VR->m_RenderCameraAnchorX.load(std::memory_order_relaxed);
 				vp.cameraAnchor.y = m_VR->m_RenderCameraAnchorY.load(std::memory_order_relaxed);
 				vp.cameraAnchor.z = m_VR->m_RenderCameraAnchorZ.load(std::memory_order_relaxed);
-				vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_relaxed);
+				vp.cameraAnchorReference.x = m_VR->m_RenderCameraAnchorReferenceX.load(std::memory_order_relaxed);
+				vp.cameraAnchorReference.y = m_VR->m_RenderCameraAnchorReferenceY.load(std::memory_order_relaxed);
+				vp.cameraAnchorPhaseAlignEligible =
+					(m_VR->m_RenderCameraAnchorPhaseAlignEligible.load(std::memory_order_relaxed) != 0);
+				vp.rotationOffset = m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
 				vp.vrScale = m_VR->m_RenderVRScale.load(std::memory_order_relaxed);
 				vp.ipdScale = m_VR->m_RenderIpdScale.load(std::memory_order_relaxed);
 				vp.eyeZ = m_VR->m_RenderEyeZ.load(std::memory_order_relaxed);
@@ -1047,19 +1057,59 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		}
 
-		// Render-thread smoothing of camera anchor / body yaw in queued rendering.
-//
-// Why: under mat_queue_mode 2, cameraAnchor/rotationOffset are produced on the update thread.
-// Even when seqlock prevents tearing, those values can still advance in \"steps\" (tick cadence),
-// which SteamVR reprojection turns into ghosting / micro-stutter during stick locomotion/turning.
-//
-// Strategy: run a tiny 1st-order low-pass filter on the render thread. This turns step updates
-// into continuous motion at HMD rate. The smoothing is only \"active\" while there's a meaningful
-// error between the filtered state and the latest snapshot; when idle, we snap to avoid lag.
+		// Pair the update-thread body anchor with this Source scene frame.
+		//
+		// Queued rendering lets Present/VR::Update publish a newer (or older) body anchor
+		// than the CViewSetup currently being rendered. The old path mixed those time
+		// domains and then hid the resulting hold/jump motion with a low-pass filter.
+		// That necessarily added roughly QueuedRenderViewSmoothMs of locomotion lag.
+		//
+		// In normal first person cameraAnchor and cameraAnchorReference translate together,
+		// so their common motion cancels exactly:
+		//   frameAnchor.xy = cameraAnchor.xy
+		//                  + (setup.origin.xy - cameraAnchorReference.xy)
+		// This is frame pairing, not prediction or smoothing, and therefore adds no filter
+		// latency. Z remains on the existing stair/height path.
+		Vector queuedAnchorTarget = vp.cameraAnchor;
+		Vector queuedBodyPhaseDelta{};
+		bool queuedBodyPhaseAligned = false;
+		auto IsFiniteXY = [](const Vector& v)
+			{
+				return std::isfinite(v.x) && std::isfinite(v.y);
+			};
+		if (vpOk &&
+			vp.cameraAnchorPhaseAlignEligible &&
+			IsFiniteXY(vp.cameraAnchor) &&
+			IsFiniteXY(vp.cameraAnchorReference) &&
+			IsFiniteXY(setup.origin))
+		{
+			queuedBodyPhaseDelta.x = setup.origin.x - vp.cameraAnchorReference.x;
+			queuedBodyPhaseDelta.y = setup.origin.y - vp.cameraAnchorReference.y;
+
+			// The existing first/third-person detector treats 20 Source units of
+			// planar separation as a shoulder camera. Reject instead of clamping so
+			// teleports or a missed state transition can never become a slow drift.
+			constexpr float kMaxQueuedBodyPhaseDelta = 20.0f;
+			const float phaseDeltaSq =
+				queuedBodyPhaseDelta.x * queuedBodyPhaseDelta.x +
+				queuedBodyPhaseDelta.y * queuedBodyPhaseDelta.y;
+			if (phaseDeltaSq < (kMaxQueuedBodyPhaseDelta * kMaxQueuedBodyPhaseDelta))
+			{
+				queuedAnchorTarget.x += queuedBodyPhaseDelta.x;
+				queuedAnchorTarget.y += queuedBodyPhaseDelta.y;
+				queuedBodyPhaseAligned = true;
+			}
+		}
+
+		// Keep the old filter only as a fallback for states where exact frame pairing
+		// is deliberately unavailable (third person, observer, roomscale-decoupled,
+		// scout/scripted cameras, transitions). Normal first-person locomotion snaps
+		// to the paired target even if the legacy smoothing setting is non-zero.
 		static thread_local bool s_viewSmoothValid = false;
 		static thread_local Vector s_viewSmoothAnchor{};
 		static thread_local float s_viewSmoothRot = 0.0f;
 		static thread_local std::chrono::steady_clock::time_point s_viewSmoothLastT{};
+		static thread_local bool s_bodyPhaseAlignedPrev = false;
 		bool didSnapSmooth = false;
 
 		auto Wrap360 = [&](float a) -> float
@@ -1087,29 +1137,31 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		if (vpOk)
 		{
-			if (!s_viewSmoothValid)
+			const bool phaseAlignTransition =
+				queuedBodyPhaseAligned != s_bodyPhaseAlignedPrev;
+			if (!s_viewSmoothValid || phaseAlignTransition || queuedBodyPhaseAligned)
 			{
-				s_viewSmoothAnchor = vp.cameraAnchor;
+				s_viewSmoothAnchor = queuedAnchorTarget;
 				s_viewSmoothRot = Wrap360(vp.rotationOffset);
 				s_viewSmoothValid = true;
 				didSnapSmooth = true;
 			}
 			else
 			{
-				const Vector errA = vp.cameraAnchor - s_viewSmoothAnchor;
+				const Vector errA = queuedAnchorTarget - s_viewSmoothAnchor;
 				const float errYaw = AngleDeltaDeg(vp.rotationOffset, s_viewSmoothRot);
 
 				// Large discontinuities -> snap immediately.
 				if (errA.LengthSqr() > (256.0f * 256.0f) || std::fabs(errYaw) > 120.0f)
 				{
-					s_viewSmoothAnchor = vp.cameraAnchor;
+					s_viewSmoothAnchor = queuedAnchorTarget;
 					s_viewSmoothRot = Wrap360(vp.rotationOffset);
 					didSnapSmooth = true;
 				}
 				else if (smoothMsCfg <= 0)
 				{
 					// Smoothing disabled -> follow exactly.
-					s_viewSmoothAnchor = vp.cameraAnchor;
+					s_viewSmoothAnchor = queuedAnchorTarget;
 					s_viewSmoothRot = Wrap360(vp.rotationOffset);
 				}
 				else
@@ -1118,7 +1170,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					const bool smallErr = (errA.LengthSqr() < (0.05f * 0.05f)) && (std::fabs(errYaw) < 0.05f);
 					if (smallErr)
 					{
-						s_viewSmoothAnchor = vp.cameraAnchor;
+						s_viewSmoothAnchor = queuedAnchorTarget;
 						s_viewSmoothRot = Wrap360(vp.rotationOffset);
 						didSnapSmooth = true;
 					}
@@ -1129,10 +1181,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					}
 				}
 			}
+			s_bodyPhaseAlignedPrev = queuedBodyPhaseAligned;
 		}
 
-		const Vector extrapAnchor = s_viewSmoothValid ? s_viewSmoothAnchor : vp.cameraAnchor;
-		const float extrapRot = s_viewSmoothValid ? s_viewSmoothRot : vp.rotationOffset;
+		const Vector extrapAnchor = s_viewSmoothValid ? s_viewSmoothAnchor : queuedAnchorTarget;
+		float extrapRot = s_viewSmoothValid ? s_viewSmoothRot : vp.rotationOffset;
 
 		// For debug: show how \"steppy\" the engine view inputs are (not used for smoothing).
 		const float pendingDeltaSq = pendingOriginDelta.LengthSqr();
@@ -1505,17 +1558,37 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			if (havePoses && poseSeq != 0)
 				renderPoseTokenUsed = poseSeq;
 
+			// ProcessInput runs after UpdateTracking publishes the full ViewParams
+			// snapshot. Rotation is independently refreshed after ProcessInput, so
+			// late-latch that scalar after any pose wait. It is safe to apply the
+			// latest body yaw in the same normal first-person path where translation
+			// is frame-paired; no low-pass delay is introduced.
+			if (queuedBodyPhaseAligned)
+			{
+				const float latestRotationOffset =
+					m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
+				if (std::isfinite(latestRotationOffset))
+				{
+					vp.rotationOffset = latestRotationOffset;
+					extrapRot = Wrap360(latestRotationOffset);
+					s_viewSmoothRot = extrapRot;
+				}
+			}
+
 			// Periodic diagnostics (piggyback on QueuedViewmodelStabilizeDebugLog).
 			if (m_VR->m_QueuedViewmodelStabilizeDebugLog)
 			{
 				static thread_local std::chrono::steady_clock::time_point s_lastStatusLog{};
 				if (!ShouldThrottleLog(s_lastStatusLog, 1.0f))
 				{
-					const Vector smoothErrA = vp.cameraAnchor - extrapAnchor;
+					const Vector smoothErrA = queuedAnchorTarget - extrapAnchor;
 					const float smoothErrYaw = AngleDeltaDeg(vp.rotationOffset, extrapRot);
-					Game::logMsg("[VR][Queued][RenderView] status q=%d vpSeq=%u poseSeq=%u havePoses=%d waitCfg=%d waitEff=%d snap=%d smoothMs=%d alpha=%.3f errD=%.3f errYaw=%.3f pendD=%.4f pendYaw=%.3f vpRot=%.2f smRot=%.2f tick=%.1fms",
+					Game::logMsg("[VR][Queued][RenderView] status q=%d vpSeq=%u poseSeq=%u havePoses=%d waitCfg=%d waitEff=%d phase=%d phaseD=(%.3f %.3f) snap=%d smoothMs=%d alpha=%.3f errD=%.3f errYaw=%.3f pendD=%.4f pendYaw=%.3f vpRot=%.2f smRot=%.2f tick=%.1fms",
 						queueMode, (unsigned)vpSeqEven, (unsigned)poseSeq, havePoses ? 1 : 0,
-						waitMsCfg, waitMs, didSnapSmooth ? 1 : 0, smoothMsCfg, alpha,
+						waitMsCfg, waitMs,
+						queuedBodyPhaseAligned ? 1 : 0,
+						queuedBodyPhaseDelta.x, queuedBodyPhaseDelta.y,
+						didSnapSmooth ? 1 : 0, smoothMsCfg, alpha,
 						smoothErrA.Length(), smoothErrYaw,
 						std::sqrt(pendingDeltaSq), pendingYawDelta,
 						vp.rotationOffset, extrapRot,
@@ -2307,7 +2380,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	// CBasePlayer::m_hViewEntity. In that case, setup.origin can jump to an attachment-driven
 	// camera that does NOT match the HMD eye origin and can appear "too high" in VR.
 	// So: only borrow setup.origin.z when the player has no active view-entity override.
-	m_VR->m_SetupOrigin = eyeOrigin;
+	// Keep the render-frame setup origin local in queued mode. VR::UpdateTracking
+	// owns m_SetupOrigin/m_SetupOriginPrev and uses their delta to advance
+	// m_CameraAnchor; writing that plain Vector from the queued render thread can
+	// make the update thread miss or double-apply a locomotion step.
+	Vector renderSetupOrigin = eyeOrigin;
 	{
 		static bool s_stepZSmoothValid = false;
 		static float s_stepZSmooth = 0.0f;
@@ -2340,7 +2417,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				const float alpha = (tau > 0.0f) ? std::clamp(1.0f - std::exp(-dt / tau), 0.0f, 1.0f) : 1.0f;
 				s_stepZSmooth += (rawStepZ - s_stepZSmooth) * alpha;
 			}
-			m_VR->m_SetupOrigin.z = s_stepZSmooth;
+			renderSetupOrigin.z = s_stepZSmooth;
 		}
 		else
 		{
@@ -2348,7 +2425,26 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			s_stepZSmoothLastT = {};
 		}
 	}
-	m_VR->m_SetupAngles.Init(setup.angles.x, setup.angles.y, setup.angles.z);
+	const QAngle renderSetupAngles(setup.angles.x, setup.angles.y, setup.angles.z);
+	if (queueMode == 0)
+	{
+		m_VR->m_SetupOrigin = renderSetupOrigin;
+		m_VR->m_SetupAngles = renderSetupAngles;
+	}
+	else
+	{
+		// Publish render-camera state instead of writing update-thread-owned
+		// Vector/QAngle objects from the queued render thread.
+		uint32_t setupSeq = m_VR->m_RenderSetupCameraSeq.load(std::memory_order_relaxed);
+		m_VR->m_RenderSetupCameraSeq.store(setupSeq + 1u, std::memory_order_release);
+		m_VR->m_RenderSetupOriginX.store(renderSetupOrigin.x, std::memory_order_relaxed);
+		m_VR->m_RenderSetupOriginY.store(renderSetupOrigin.y, std::memory_order_relaxed);
+		m_VR->m_RenderSetupOriginZ.store(renderSetupOrigin.z, std::memory_order_relaxed);
+		m_VR->m_RenderSetupAnglesX.store(renderSetupAngles.x, std::memory_order_relaxed);
+		m_VR->m_RenderSetupAnglesY.store(renderSetupAngles.y, std::memory_order_relaxed);
+		m_VR->m_RenderSetupAnglesZ.store(renderSetupAngles.z, std::memory_order_relaxed);
+		m_VR->m_RenderSetupCameraSeq.store(setupSeq + 2u, std::memory_order_release);
+	}
 
 	Vector leftOrigin, rightOrigin;
 	Vector viewAngles = m_VR->GetViewAngle();
@@ -2369,7 +2465,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	{
 		static bool s_yawResetInit = false;
 		static float s_yawResetBase = 0.0f;
-		const float bodyYaw = m_VR->m_RotationOffset; // wrapped to [0, 360)
+		const float bodyYaw = (queueMode == 0)
+			? m_VR->m_RotationOffset
+			: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
 
 		if (!s_yawResetInit)
 		{
@@ -2383,7 +2481,16 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			diff -= 360.0f * std::floor((diff + 180.0f) / 360.0f);
 			if (std::fabs(diff) >= 60.0f)
 			{
-				m_VR->ResetPosition();
+				if (queueMode == 0)
+				{
+					m_VR->ResetPosition();
+				}
+				else
+				{
+					// ResetPosition mutates the update-thread camera anchor. Queue
+					// an atomic request instead of doing that from the render thread.
+					m_VR->m_ResetPositionDeferredPending.store(1u, std::memory_order_release);
+				}
 				s_yawResetBase = bodyYaw;
 			}
 		}
@@ -2562,7 +2669,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		leftOrigin = m_VR->GetViewOriginLeft();
 		rightOrigin = m_VR->GetViewOriginRight();
 		// Keep this sane even in 1P (unused there, but prevents stale deltas if 3P toggles).
-		m_VR->m_ThirdPersonRenderCenter = m_VR->m_SetupOrigin;
+		m_VR->m_ThirdPersonRenderCenter = renderSetupOrigin;
 	}
 
 	leftEyeView.origin = leftOrigin;

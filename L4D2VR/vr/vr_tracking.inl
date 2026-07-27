@@ -314,6 +314,7 @@ void VR::UpdateTracking()
             m_RenderViewParamsSeq.store(seq + 1, std::memory_order_release);
 
             m_RenderHasLocalPlayer.store(0, std::memory_order_relaxed);
+            m_RenderCameraAnchorPhaseAlignEligible.store(0, std::memory_order_relaxed);
             m_RenderHasViewEntityOverride.store(0, std::memory_order_relaxed);
             m_RenderViewEntityHandle.store(0, std::memory_order_relaxed);
             m_RenderBeingRevived.store(0, std::memory_order_relaxed);
@@ -1874,6 +1875,31 @@ void VR::UpdateTracking()
     const bool __weaponLaserSightActive = IsWeaponLaserSightActive(__activeWeapon);
 
     const bool __inMapLoadCooldown = IsThirdPersonMapLoadCooldownActive();
+    const bool __cameraAnchorPhaseAlignEligible =
+        viewPlayer == localPlayer &&
+        !inEyeObserver &&
+        teamNum != 1 &&
+        lifeState == 0 &&
+        obsMode == 0 &&
+        !m_RoomscaleActive &&
+        !m_TeleportVisualScoutActive &&
+        !m_TeleportPendingCameraPlanarRecenterValid &&
+        !m_IsThirdPersonCamera &&
+        m_ThirdPersonHoldFrames <= 0 &&
+        !m_ThirdPersonDefault &&
+        !(m_ThirdPersonRenderOnCustomWalk && m_CustomWalkHeld) &&
+        !handleValid(__viewEnt) &&
+        !__beingRevived &&
+        !__revivingOther &&
+        !__usingMountedGun &&
+        !__playerIncap &&
+        !__tpDead &&
+        !__tpObserver &&
+        !__tpLedge &&
+        !__tpTongue &&
+        !__tpPinned &&
+        !__tpSelfMedkit &&
+        !__inMapLoadCooldown;
 
     // Publish a stable snapshot of view/tracking parameters for the render thread (mat_queue_mode!=0).
     // The render hook will consume these with a seqlock and combine them with a render-thread WaitGetPoses() sample
@@ -1886,6 +1912,11 @@ void VR::UpdateTracking()
         m_RenderCameraAnchorX.store(m_CameraAnchor.x, std::memory_order_relaxed);
         m_RenderCameraAnchorY.store(m_CameraAnchor.y, std::memory_order_relaxed);
         m_RenderCameraAnchorZ.store(m_CameraAnchor.z, std::memory_order_relaxed);
+        m_RenderCameraAnchorReferenceX.store(m_SetupOrigin.x, std::memory_order_relaxed);
+        m_RenderCameraAnchorReferenceY.store(m_SetupOrigin.y, std::memory_order_relaxed);
+        m_RenderCameraAnchorPhaseAlignEligible.store(
+            __cameraAnchorPhaseAlignEligible ? 1u : 0u,
+            std::memory_order_relaxed);
         m_RenderRotationOffset.store(m_RotationOffset, std::memory_order_relaxed);
         m_RenderVRScale.store(m_VRScale, std::memory_order_relaxed);
         m_RenderIpdScale.store(m_IpdScale, std::memory_order_relaxed);

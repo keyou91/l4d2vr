@@ -1588,6 +1588,37 @@ void VR::Update()
     if (!m_Game->m_Initialized)
         return;
 
+    // Consume the queued render-camera bridge on the update thread. dRenderView
+    // publishes this instead of racing plain m_SetupOrigin/m_SetupAngles while
+    // UpdateTracking derives the next camera anchor. The serial path owns these
+    // fields directly and must not consume a stale queued snapshot after a mode switch.
+    if (m_Game->GetMatQueueMode() != 0)
+    {
+        for (int attempt = 0; attempt < 4; ++attempt)
+        {
+            const uint32_t s1 = m_RenderSetupCameraSeq.load(std::memory_order_acquire);
+            if (s1 == 0u || (s1 & 1u) != 0u)
+                continue;
+
+            const float originX = m_RenderSetupOriginX.load(std::memory_order_relaxed);
+            const float originY = m_RenderSetupOriginY.load(std::memory_order_relaxed);
+            const float originZ = m_RenderSetupOriginZ.load(std::memory_order_relaxed);
+            const float anglesX = m_RenderSetupAnglesX.load(std::memory_order_relaxed);
+            const float anglesY = m_RenderSetupAnglesY.load(std::memory_order_relaxed);
+            const float anglesZ = m_RenderSetupAnglesZ.load(std::memory_order_relaxed);
+
+            const uint32_t s2 = m_RenderSetupCameraSeq.load(std::memory_order_acquire);
+            if (s1 == s2 && (s2 & 1u) == 0u)
+            {
+                m_SetupOrigin.x = originX;
+                m_SetupOrigin.y = originY;
+                m_SetupOrigin.z = originZ;
+                m_SetupAngles.Init(anglesX, anglesY, anglesZ);
+                break;
+            }
+        }
+    }
+
     static bool s_WasInGameLastUpdate = false;
     const bool inGameAtUpdateStart = m_Game->m_EngineClient && m_Game->m_EngineClient->IsInGame();
     const bool returnedToMainMenu = s_WasInGameLastUpdate && !inGameAtUpdateStart;
@@ -2030,6 +2061,12 @@ void VR::Update()
     }
     else
         ProcessInput();
+
+    // UpdateTracking publishes the queued ViewParams snapshot before ProcessInput,
+    // while smooth/snap turning modifies m_RotationOffset inside ProcessInput.
+    // Refresh this independently atomic scalar so the queued render path can
+    // late-latch current body yaw instead of waiting one additional update.
+    m_RenderRotationOffset.store(m_RotationOffset, std::memory_order_release);
 
     PumpSpeechToTextVoiceBroadcast();
     FlushHapticMixer();
