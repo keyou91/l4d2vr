@@ -7,7 +7,6 @@ bool __fastcall Hooks::dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx
 	void* const localRenderable =
 		g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
 	if (!ecx || ecx != localRenderable ||
-		!g_FirstPersonBodyEligible.load(std::memory_order_acquire) ||
 		!m_VR || !m_VR->m_IsVREnabled || !m_VR->m_FirstPersonBodyEnabled ||
 		m_VR->m_IsThirdPersonCamera)
 	{
@@ -23,134 +22,112 @@ bool __fastcall Hooks::dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx
 
 void* __fastcall Hooks::dFirstPersonBodyRenderableGetModel(void* ecx, void* edx)
 {
+	void* const originalModel = hkFirstPersonBodyRenderableGetModel.fOriginal
+		? hkFirstPersonBodyRenderableGetModel.fOriginal(ecx)
+		: nullptr;
+
 	void* const localRenderable =
 		g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
-	const bool firstPersonBodyTarget =
-		ecx &&
-		ecx == localRenderable &&
-		g_FirstPersonBodyEligible.load(std::memory_order_acquire) &&
-		m_VR && m_VR->m_IsVREnabled && m_VR->m_FirstPersonBodyEnabled &&
-		!m_VR->m_IsThirdPersonCamera;
-
-	if (!firstPersonBodyTarget)
+	C_BasePlayer* const localPlayer =
+		g_FirstPersonBodyLocalPlayer.load(std::memory_order_acquire);
+	if (!ecx || ecx != localRenderable || !localPlayer ||
+		!m_VR || !m_VR->m_IsVREnabled || !m_VR->m_FirstPersonBodyEnabled ||
+		m_VR->m_IsThirdPersonCamera || !m_Game || !m_Game->m_ModelInfo)
 	{
-		return hkFirstPersonBodyRenderableGetModel.fOriginal
-			? hkFirstPersonBodyRenderableGetModel.fOriginal(ecx)
-			: nullptr;
+		return originalModel;
 	}
 
-	// Keep the local player registered in the leaf system, but expose its world
-	// model only while one of the two main VR eye scenes is being built. This
-	// prevents the body from entering water/reflection, shadow-only, scope,
-	// mirror, HUD and other nested/offscreen render lists in queued mode.
-	if (!HooksFirstPersonBodyEyeSceneMatchesRenderable(ecx) ||
-		!m_Game || !m_Game->m_ModelInfo)
+	constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
+	constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
+	constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
+	constexpr int kEffectNoDraw = 0x20;
+	std::uint16_t modelIndex = 0;
+	int effects = kEffectNoDraw;
+	std::uint8_t lifeState = 2;
+	__try
 	{
-		return nullptr;
+		const std::uint8_t* const playerBytes =
+			reinterpret_cast<const std::uint8_t*>(localPlayer);
+		modelIndex = *reinterpret_cast<const std::uint16_t*>(
+			playerBytes + kModelIndexOffset);
+		effects = *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
+		lifeState = *(playerBytes + kLifeStateOffset);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return originalModel;
 	}
 
-	const int modelIndex =
-		g_FirstPersonBodyModelIndex.load(std::memory_order_acquire);
-	if (modelIndex <= 0)
-		return nullptr;
+	if ((effects & kEffectNoDraw) != 0 || lifeState != 0 || modelIndex == 0)
+		return originalModel;
 
 	void* indexedModel = nullptr;
 	__try
 	{
-		indexedModel = m_Game->m_ModelInfo->GetModel(modelIndex);
+		indexedModel = m_Game->m_ModelInfo->GetModel(static_cast<int>(modelIndex));
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
 		indexedModel = nullptr;
 	}
 
-	return indexedModel;
+	return indexedModel ? indexedModel : originalModel;
 }
 
-int __fastcall Hooks::dFirstPersonBodyCamIsThirdPerson(
-	void* ecx,
-	void* edx,
-	int splitScreenSlot)
-{
-	const bool forceNativeBodyPath =
-		g_FirstPersonBodyForceNativeThirdPersonDepth != 0 &&
-		ecx &&
-		ecx == g_FirstPersonBodyInputObject.load(std::memory_order_acquire) &&
-		g_FirstPersonBodyCamHookReady.load(std::memory_order_acquire) &&
-		g_FirstPersonBodyEligible.load(std::memory_order_acquire) &&
-		g_FirstPersonBodyPublishedState.load(std::memory_order_acquire) != nullptr &&
-		InterlockedCompareExchange(
-			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0 &&
-		m_VR && m_VR->m_IsVREnabled && m_VR->m_FirstPersonBodyEnabled &&
-		!m_VR->m_IsThirdPersonCamera;
-	if (forceNativeBodyPath)
-		return 1;
-
-	return hkFirstPersonBodyCamIsThirdPerson.fOriginal
-		? hkFirstPersonBodyCamIsThirdPerson.fOriginal(ecx, splitScreenSlot)
-		: 0;
-}
 
 int __fastcall Hooks::dFirstPersonBodyRenderableDrawModel(
-	void* ecx,
-	void* edx,
-	int flags,
-	const void* instance)
+    void* ecx,
+    void* edx,
+    int flags,
+    const void* instance)
 {
-	void* const localRenderable =
-		g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
-	const bool firstPersonBodyTarget =
-		ecx &&
-		ecx == localRenderable &&
-		g_FirstPersonBodyEligible.load(std::memory_order_acquire) &&
-		m_VR && m_VR->m_IsVREnabled && m_VR->m_FirstPersonBodyEnabled &&
-		!m_VR->m_IsThirdPersonCamera;
+    const int originalResult = hkFirstPersonBodyRenderableDrawModel.fOriginal
+        ? hkFirstPersonBodyRenderableDrawModel.fOriginal(ecx, flags, instance)
+        : 0;
 
-	if (!firstPersonBodyTarget)
-	{
-		return hkFirstPersonBodyRenderableDrawModel.fOriginal
-			? hkFirstPersonBodyRenderableDrawModel.fOriginal(ecx, flags, instance)
-			: 0;
-	}
+    void* const localRenderable =
+        g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
+    C_BasePlayer* const localPlayer =
+        g_FirstPersonBodyLocalPlayer.load(std::memory_order_acquire);
+    const bool eyeActive =
+        g_FirstPersonBodyPublishedState.load(std::memory_order_acquire) != nullptr &&
+        InterlockedCompareExchange(&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
 
-	// FirstPersonBody is not a general local-player visibility override. Outside
-	// the active stereo eye scene, reject the draw without entering Source's model
-	// renderer. GetModel uses the same gate so offscreen lists cannot retain it.
-	if (!HooksFirstPersonBodyEyeSceneMatchesRenderable(ecx) ||
-		!g_FirstPersonBodyCamHookReady.load(std::memory_order_acquire))
-	{
-		return 0;
-	}
+    if (!ecx || ecx != localRenderable || !localPlayer || !eyeActive ||
+        originalResult != 0 ||
+        !m_VR || !m_VR->m_IsVREnabled || !m_VR->m_FirstPersonBodyEnabled ||
+        m_VR->m_IsThirdPersonCamera)
+    {
+        return originalResult;
+    }
 
-	struct NativeThirdPersonRenderModeScope
-	{
-		NativeThirdPersonRenderModeScope()
-		{
-			++g_FirstPersonBodyForceNativeThirdPersonDepth;
-		}
-		~NativeThirdPersonRenderModeScope()
-		{
-			--g_FirstPersonBodyForceNativeThirdPersonDepth;
-		}
-	} nativeThirdPersonRenderModeScope;
+    // The engine has already selected this renderable and entered the native
+    // player DrawModel stage. CTerrorPlayer rejects the local first-person
+    // color draw here, so submit the indexed world model while Source's model
+    // and material state is still valid. This avoids the out-of-band RenderView
+    // submission that previously invalidated queued DXVK shader constants.
+    static thread_local bool s_nativeStageSubmissionActive = false;
+    if (s_nativeStageSubmissionActive)
+        return originalResult;
 
-	// Run the player's own DrawModel path exactly once. The thread-local camera
-	// override above makes Source classify only this call as third person, so the
-	// entity supplies its real RenderableInstance_t/model instance and normal
-	// queued-render ownership. Do not re-enter IModelRender::DrawModel manually.
-	const int result = hkFirstPersonBodyRenderableDrawModel.fOriginal
-		? hkFirstPersonBodyRenderableDrawModel.fOriginal(ecx, flags, instance)
-		: 0;
-	if (result == 0)
-	{
-		static std::atomic<bool> s_loggedNativeBodyRejection{ false };
-		if (!s_loggedNativeBodyRejection.exchange(true, std::memory_order_acq_rel))
-		{
-			Game::logMsg(
-				"[VR][FirstPersonBody] native local-player DrawModel still rejected the active eye body");
-		}
-	}
-	return result;
+    s_nativeStageSubmissionActive = true;
+    int bypassResult = 0;
+    const bool submitted = HooksFirstPersonBodySubmitNativeStageModelSafe(
+        localPlayer,
+        ecx,
+        flags,
+        &bypassResult);
+    s_nativeStageSubmissionActive = false;
+
+    if (!submitted)
+    {
+        static std::atomic<bool> s_loggedSubmissionFailure{ false };
+        if (!s_loggedSubmissionFailure.exchange(true, std::memory_order_acq_rel))
+            Game::logMsg("[VR][FirstPersonBody] native-stage body submission failed");
+        return originalResult;
+    }
+
+    return bypassResult;
 }
 
 ITexture* __fastcall Hooks::dGetRenderTarget(void* ecx, void* edx)
@@ -2806,18 +2783,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		(leftEyeView.origin.x + rightEyeView.origin.x) * 0.5f,
 		(leftEyeView.origin.y + rightEyeView.origin.y) * 0.5f,
 		(leftEyeView.origin.z + rightEyeView.origin.z) * 0.5f);
-	const bool firstPersonBodyRenderStateEligible =
-		localPlayerValid &&
-		!hasViewEntityOverride &&
-		!tpStateDbg.dead &&
-		!tpStateDbg.incap &&
-		!tpStateDbg.ledge &&
-		!tpStateDbg.tongue &&
-		!tpStateDbg.pinned &&
-		!stateObserver &&
-		!renderThirdPerson;
-	const std::uint64_t firstPersonBodyRenderGeneration =
-		g_FirstPersonBodyRenderGeneration.fetch_add(1, std::memory_order_acq_rel);
 
 	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture, LPDIRECT3DSURFACE9 reshadeSurface,
 		CViewSetup& eyeView, CViewSetup& eyeHud, bool drawPreViewLaser)
@@ -2932,9 +2897,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				FirstPersonBodyEyeSceneScope(
 					VR* owner,
 					const CViewSetup& view,
-					const Vector& centerEyePosition,
-					bool renderStateEligible,
-					std::uint64_t stableBoneGeneration)
+					const Vector& centerEyePosition)
 				{
 					previousOverride = InterlockedExchange(
 						&g_FirstPersonBodyEyeSceneActive, 0);
@@ -2943,28 +2906,21 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 					const bool hooksReady =
 						g_FirstPersonBodyRenderableHooksReady.load(std::memory_order_acquire);
-					const bool cameraHookReady =
-						g_FirstPersonBodyCamHookReady.load(std::memory_order_acquire);
 					void* const localRenderable =
 						g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
 					const bool enable =
-						renderStateEligible &&
 						owner &&
-						g_FirstPersonBodyEligible.load(std::memory_order_acquire) &&
 						localRenderable &&
 						owner->m_IsVREnabled &&
 						owner->m_FirstPersonBodyEnabled &&
 						!owner->m_IsThirdPersonCamera &&
-						hooksReady &&
-						cameraHookReady;
+						hooksReady;
 					if (!enable)
 						return;
 
 					g_FirstPersonBodyProducerState = HooksFirstPersonBodyEyeSceneState{};
 					g_FirstPersonBodyProducerState.view = view;
 					g_FirstPersonBodyProducerState.centerEyePosition = centerEyePosition;
-					g_FirstPersonBodyProducerState.stableBoneGeneration =
-						stableBoneGeneration;
 					C_BasePlayer* const localPlayer =
 						g_FirstPersonBodyLocalPlayer.load(std::memory_order_acquire);
 					QAngle movementYaw(0.0f, view.angles.y, 0.0f);
@@ -3015,11 +2971,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 			{
 				FirstPersonBodyEyeSceneScope firstPersonBodyScope(
-					m_VR,
-					eyeView,
-					sharedCenterOrigin,
-					firstPersonBodyRenderStateEligible,
-					firstPersonBodyRenderGeneration);
+					m_VR, eyeView, sharedCenterOrigin);
 				callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
 			}
 

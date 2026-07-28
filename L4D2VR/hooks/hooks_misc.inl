@@ -15631,74 +15631,6 @@ namespace
         return true;
     }
 
-    struct HooksFirstPersonBodyBonePoolBlock
-    {
-        std::unique_ptr<vr_vm_stabilize::Mat3x4[]> bones;
-        int capacity = 0;
-    };
-
-    static constexpr size_t kHooksFirstPersonBodyBonePoolBlocksPerGeneration = 16;
-
-    struct HooksFirstPersonBodyBonePoolSlot
-    {
-        std::uint64_t generation = 0;
-        size_t nextBlock = 0;
-        std::array<
-            HooksFirstPersonBodyBonePoolBlock,
-            kHooksFirstPersonBodyBonePoolBlocksPerGeneration> blocks{};
-    };
-
-    inline vr_vm_stabilize::Mat3x4* HooksFirstPersonBodyAllocStableBones(
-        int numBones,
-        std::uint64_t generation)
-    {
-        if (numBones <= 0 || numBones > 512 || generation == 0)
-            return nullptr;
-
-        // FirstPersonBody used the shared per-frame allocator, which appended a
-        // new[] block on every draw and only reclaimed it when m_RenderFrameSeq
-        // advanced to a different ring generation. A stalled render sequence
-        // therefore made the current slot grow without limit. This dedicated
-        // pool is keyed by the outer VR RenderView generation instead and reuses
-        // its blocks after 64 complete stereo frames.
-        static constexpr size_t kRingSize = 64;
-        static HooksFirstPersonBodyBonePoolSlot s_slots[kRingSize];
-        static std::mutex s_poolMutex;
-
-        std::lock_guard<std::mutex> lock(s_poolMutex);
-        HooksFirstPersonBodyBonePoolSlot& slot =
-            s_slots[static_cast<size_t>(generation % kRingSize)];
-        if (slot.generation != generation)
-        {
-            slot.generation = generation;
-            slot.nextBlock = 0;
-        }
-
-        if (slot.nextBlock >= slot.blocks.size())
-            return nullptr;
-
-        HooksFirstPersonBodyBonePoolBlock& block =
-            slot.blocks[slot.nextBlock++];
-        if (!block.bones || block.capacity < numBones)
-        {
-            std::unique_ptr<vr_vm_stabilize::Mat3x4[]> replacement;
-            try
-            {
-                replacement.reset(new vr_vm_stabilize::Mat3x4[
-                    static_cast<size_t>(numBones)]);
-            }
-            catch (...)
-            {
-                return nullptr;
-            }
-
-            block.bones = std::move(replacement);
-            block.capacity = numBones;
-        }
-
-        return block.bones.get();
-    }
-
     inline bool HooksFirstPersonBodyBuildAnchoredBones(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
@@ -15708,9 +15640,7 @@ namespace
     {
         outBones = nullptr;
         if (!vr || !bodyState || !drawState || !pCustomBoneToWorld ||
-            !g_FirstPersonBodyEligible.load(std::memory_order_acquire) ||
             !vr->m_FirstPersonBodyEnabled ||
-            bodyState->stableBoneGeneration == 0 ||
             !HooksNativeViewmodelHandsOnlyVectorFinite(bodyState->centerEyePosition))
         {
             return false;
@@ -15723,10 +15653,13 @@ namespace
         const auto* sourceBones =
             reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
 
+        uint32_t seqEven = vr->m_RenderFrameSeq.load(std::memory_order_acquire);
+        seqEven &= ~1u;
+        if (seqEven == 0)
+            seqEven = 2;
+
         vr_vm_stabilize::Mat3x4* anchoredBones =
-            HooksFirstPersonBodyAllocStableBones(
-                s_layout.numBones,
-                bodyState->stableBoneGeneration);
+            vr_vm_stabilize::AllocStableBones(s_layout.numBones, seqEven);
         if (!anchoredBones)
             return false;
 
@@ -16861,7 +16794,6 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
 
 	if (firstPersonBodyEyeActive &&
-		g_FirstPersonBodyEligible.load(std::memory_order_acquire) &&
 		m_VR &&
 		m_Game &&
 		m_VR->m_FirstPersonBodyEnabled)

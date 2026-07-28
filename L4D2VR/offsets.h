@@ -61,13 +61,6 @@ public:
     Offset WriteUsercmdDeltaToBuffer =   { "client.dll", 0x134790, "55 8B EC 83 EC 60 0F 57 C0 8B 55 0C" };
     Offset WriteUsercmd =                { "client.dll", 0x1AAD50, "55 8B EC A1 ? ? ? ? 83 78 30 00 53 8B 5D 10 56 57" };
     Offset g_pppInput =                  { "client.dll", 0xA8A22, "8B 0D ? ? ? ? 8B 01 8B 50 58 FF E2", 2 };
-    // Current L4D2 CInput::CAM_IsThirdPerson(int splitScreenSlot). Verified against
-    // client.dll SHA256 c0a8e1e88f7312db11bcfd4b0ec574d224a34b2d9a615d6088b28335eeb4af1f.
-    Offset CInput_CAM_IsThirdPerson = { "client.dll", 0x12E050,
-        "55 8B EC 56 8B F1 E8 ? ? ? ? 84 C0 74 07 33 C0 5E 5D C2 04 00 8B 45 08 83 F8 FF 75 11",
-        0,
-        true
-    };
     Offset AdjustEngineViewport =        { "client.dll", 0x31A890, "55 8B EC 8B 0D ? ? ? ? 85 C9 74 17" };
     Offset TestMeleeSwingClient =        { "client.dll", 0x30C040, "55 8B EC 81 EC ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 53 56 8B 75 08 57 8B D9 E8 ? ? ? ? 8B" };
     Offset GetMeleeWeaponInfoClient =    { "client.dll", 0x30B570, "8B 81 ? ? ? ? 50 B9 ? ? ? ? E8 ? ? ? ? C3" };

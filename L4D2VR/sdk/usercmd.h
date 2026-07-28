@@ -146,15 +146,6 @@ public:
 	virtual        void        func8(void);
 	virtual        void        func9(void);
 	virtual        void        func10(void);
-	virtual        void        ActivateMouse(void);              // 21
-	virtual        void        DeactivateMouse(void);            // 22
-	virtual        void        ClearStates(void);                // 23
-	virtual        float       GetLookSpring(void);              // 24
-	virtual        void        GetFullscreenMousePos(int* mx, int* my, int* unclampedX = nullptr, int* unclampedY = nullptr); // 25
-	virtual        void        SetFullscreenMousePos(int mx, int my); // 26
-	virtual        void        ResetMouse(void);                 // 27
-	virtual        float       GetLastForwardMove(void);         // 28
-	virtual        void        CAM_Think(void);                  // 29
-	virtual        int         CAM_IsThirdPerson(int splitScreenSlot = -1); // 30, ret 4
-	virtual        void        CAM_GetCameraOffset(Vector& offset); // 31
+	virtual        void        ActivateMouse(void);
+	virtual        void        DeactivateMouse(void);
 };
