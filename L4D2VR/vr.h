@@ -2407,7 +2407,7 @@ public:
 	// Remote-server fallback: the rendered camera may scout without moving the
 	// authoritative player entity. Teleport may be used repeatedly while detached;
 	// a fresh Use press exits scouting and returns to the real body position.
-	bool m_TeleportVisualScoutActive = false;
+	std::atomic<bool> m_TeleportVisualScoutActive{ false };
 	bool m_TeleportVisualScoutUseExitArmed = false;
 	Vector m_TeleportVisualScoutCameraAnchor = {};
 	float m_TeleportVisualScoutReturnRotationOffset = 0.0f;

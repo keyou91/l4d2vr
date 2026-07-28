@@ -8032,8 +8032,10 @@ void VR::DrawVrHandsWorldDepthMaskBeforeViewmodel()
     const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
     if (queueMode != 0)
     {
-        IMatRenderContext* renderContext =
-            m_Game && m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+        CRefPtr<IMatRenderContext> renderContextRef;
+        if (m_Game && m_Game->m_MaterialSystem)
+            renderContextRef = m_Game->m_MaterialSystem->GetRenderContext();
+        IMatRenderContext* const renderContext = renderContextRef;
         m_VrHandsWorldMaskDrawn = QueueVrHandsDrawForEye(
             renderContext,
             *m_VrHandsActiveEyeView,
@@ -8065,8 +8067,10 @@ void VR::FinishVrHandsEyeRender()
     const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
     if (queueMode != 0)
     {
-        IMatRenderContext* renderContext =
-            m_Game && m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+        CRefPtr<IMatRenderContext> renderContextRef;
+        if (m_Game && m_Game->m_MaterialSystem)
+            renderContextRef = m_Game->m_MaterialSystem->GetRenderContext();
+        IMatRenderContext* const renderContext = renderContextRef;
         QueueVrHandsDrawForEye(renderContext, *view, eyeIndex, drawPass);
         return;
     }

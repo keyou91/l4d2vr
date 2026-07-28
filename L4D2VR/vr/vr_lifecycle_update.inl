@@ -855,7 +855,9 @@ namespace
         if (!vr || !vr->m_Game || !vr->m_Game->m_MaterialSystem)
             return;
 
-        IMatRenderContext* ctx = vr->m_Game->m_MaterialSystem->GetRenderContext();
+        CRefPtr<IMatRenderContext> contextRef;
+        contextRef = vr->m_Game->m_MaterialSystem->GetRenderContext();
+        IMatRenderContext* const ctx = contextRef;
         if (!ctx)
         {
             vr->HandleMissingRenderContext("ClearVRMenuTransitionResiduals");
@@ -1644,7 +1646,9 @@ void VR::Update()
         // Prevents crashing at menu
         if (!inGameAtUpdateStart)
         {
-            IMatRenderContext* rndrContext = m_Game->m_MaterialSystem->GetRenderContext();
+            CRefPtr<IMatRenderContext> renderContextRef;
+            renderContextRef = m_Game->m_MaterialSystem->GetRenderContext();
+            IMatRenderContext* const rndrContext = renderContextRef;
             if (!rndrContext)
             {
                 HandleMissingRenderContext("VR::Update");
@@ -2264,12 +2268,20 @@ void VR::CreateVRTextures()
 
     LogVAS("before CreateVRTextures");
 
-    int windowWidth, windowHeight;
-    m_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    CRefPtr<IMatRenderContext> renderContext;
+    renderContext = m_Game->m_MaterialSystem->GetRenderContext();
+    if (renderContext)
+        renderContext->GetWindowSize(windowWidth, windowHeight);
 
     int backBufferWidth = 0;
     int backBufferHeight = 0;
     m_Game->m_MaterialSystem->GetBackBufferDimensions(backBufferWidth, backBufferHeight);
+    if (windowWidth <= 0)
+        windowWidth = backBufferWidth;
+    if (windowHeight <= 0)
+        windowHeight = backBufferHeight;
 
     m_Game->m_MaterialSystem->isGameRunning = false;
     m_Game->m_MaterialSystem->BeginRenderTargetAllocation();
@@ -3120,8 +3132,10 @@ void VR::SubmitVRTextures()
         int hudActualH = 0;
         if (m_Game && m_Game->m_MaterialSystem)
         {
-            if (IMatRenderContext* ctx = m_Game->m_MaterialSystem->GetRenderContext())
-                ctx->GetWindowSize(windowW, windowH);
+            CRefPtr<IMatRenderContext> contextRef;
+            contextRef = m_Game->m_MaterialSystem->GetRenderContext();
+            if (contextRef)
+                contextRef->GetWindowSize(windowW, windowH);
             m_Game->m_MaterialSystem->GetBackBufferDimensions(backBufferW, backBufferH);
         }
         {
@@ -4384,8 +4398,16 @@ void VR::RepositionOverlays()
     Vector hmdRightFull = { hmdMat.m[0][0], hmdMat.m[1][0], hmdMat.m[2][0] };
     Vector hmdUpFull = { hmdMat.m[0][1], hmdMat.m[1][1], hmdMat.m[2][1] };
 
-    int windowWidth, windowHeight;
-    m_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    CRefPtr<IMatRenderContext> renderContext;
+    renderContext = m_Game->m_MaterialSystem->GetRenderContext();
+    if (renderContext)
+        renderContext->GetWindowSize(windowWidth, windowHeight);
+    if (windowWidth <= 0)
+        windowWidth = static_cast<int>((std::max)(1u, m_RenderWidth));
+    if (windowHeight <= 0)
+        windowHeight = static_cast<int>((std::max)(1u, m_RenderHeight));
 
     vr::HmdMatrix34_t menuTransform =
     {

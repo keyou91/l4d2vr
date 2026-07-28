@@ -66,11 +66,34 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 	static int s_lastButtons = 0;
 
+	auto updateFirstPersonBodyLocalState = [&]()
+		{
+			C_BasePlayer* localPlayer = nullptr;
+			if (m_Game && m_Game->m_EngineClient)
+			{
+				const int localIndex = m_Game->m_EngineClient->GetLocalPlayer();
+				if (localIndex > 0)
+				{
+					localPlayer = reinterpret_cast<C_BasePlayer*>(
+						m_Game->GetClientEntity(localIndex));
+				}
+			}
+			HooksFirstPersonBodyUpdateLocalStateMainThread(localPlayer);
+		};
+
 	if (!cmd)
-		return hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
+	{
+		const bool result = hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
+		updateFirstPersonBodyLocalState();
+		return result;
+	}
 
 	if (!cmd->command_number)
-		return hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
+	{
+		const bool result = hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
+		updateFirstPersonBodyLocalState();
+		return result;
+	}
 
 	// Keep the latest real CUserCmd number latched beyond this function call.
 	// On remote servers, ClientFireTerrorBullets can be reached by prediction replay
@@ -81,19 +104,9 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 	bool result = hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
 
-	// Publish the exact local renderable from the game/update thread. In queued
-	// rendering dRenderView runs on a worker and must not walk client entities.
-	C_BasePlayer* firstPersonBodyLocalPlayer = nullptr;
-	if (m_Game && m_Game->m_EngineClient)
-	{
-		const int firstPersonBodyLocalIndex = m_Game->m_EngineClient->GetLocalPlayer();
-		if (firstPersonBodyLocalIndex > 0)
-		{
-			firstPersonBodyLocalPlayer = reinterpret_cast<C_BasePlayer*>(
-				m_Game->GetClientEntity(firstPersonBodyLocalIndex));
-		}
-	}
-	HooksFirstPersonBodyUpdateLocalStateMainThread(firstPersonBodyLocalPlayer);
+	// Keep lifecycle cleanup running even when Source emits command_number==0
+	// during loading, pause, disconnect, or menu transitions (handled above).
+	updateFirstPersonBodyLocalState();
 
 	// Server-hook roomscale movement is applied after the originating CreateMove.
 	// Consume its accepted-vs-visual correction before this command uses cached VR poses.

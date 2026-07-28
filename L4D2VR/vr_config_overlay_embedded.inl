@@ -5795,8 +5795,11 @@ namespace
 
         int windowWidth = 0;
         int windowHeight = 0;
-        if (g_Game->m_MaterialSystem && g_Game->m_MaterialSystem->GetRenderContext())
-            g_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+        CRefPtr<IMatRenderContext> renderContext;
+        if (g_Game->m_MaterialSystem)
+            renderContext = g_Game->m_MaterialSystem->GetRenderContext();
+        if (renderContext)
+            renderContext->GetWindowSize(windowWidth, windowHeight);
 
         hudWidthMeters = (std::max)(0.1f, vrState->m_HudSize);
         const float aspectHeightOverWidth =

@@ -289,8 +289,11 @@ void VR::UpdateTracking()
         m_ForceNonVRServerMovement = m_ConfigForceNonVRServerMovement;
     }
     m_WasInGamePrev = inGameNow;
-    int playerIndex = m_Game->m_EngineClient->GetLocalPlayer();
-    C_BasePlayer* localPlayer = (C_BasePlayer*)m_Game->GetClientEntity(playerIndex);
+    int playerIndex = inGameNow ? m_Game->m_EngineClient->GetLocalPlayer() : -1;
+    C_BasePlayer* localPlayer =
+        (inGameNow && playerIndex > 0)
+        ? (C_BasePlayer*)m_Game->GetClientEntity(playerIndex)
+        : nullptr;
     if (!localPlayer) {
         m_ScopeWeaponIsFirearm = false;
         // If we temporarily lose the local player (connect/disconnect/map change),

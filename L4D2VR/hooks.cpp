@@ -19,6 +19,8 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <memory>
+#include <new>
 #include <unordered_map>
 #include <cmath>
 #include <cfloat>
@@ -52,6 +54,13 @@ namespace
     std::atomic<void*> g_FirstPersonBodyGetModelTarget{ nullptr };
     std::atomic<void*> g_FirstPersonBodyDrawModelTarget{ nullptr };
     std::atomic<bool> g_FirstPersonBodyRenderableHooksReady{ false };
+    // PlayerReady is stable player/renderable lifecycle state. ActualFirstPerson
+    // is the per-scene camera decision. Keeping these separate is important:
+    // a transient queued snapshot miss or a normal third-person scene must hide
+    // the body without repeatedly tearing down leaf registration.
+    std::atomic<bool> g_FirstPersonBodyPlayerReady{ false };
+    std::atomic<bool> g_FirstPersonBodyActualFirstPerson{ false };
+    std::atomic<std::uint64_t> g_FirstPersonBodyPlayerGeneration{ 1 };
     std::mutex g_FirstPersonBodyRenderableHookMutex;
 
     struct HooksFirstPersonBodyEyeSceneState
@@ -60,12 +69,16 @@ namespace
         Vector centerEyePosition{ 0.0f, 0.0f, 0.0f };
         float forwardMovementFraction = 0.0f;
         bool crouched = false;
+        bool bodyActive = false;
+        std::uint64_t playerGeneration = 0;
         int localPlayerIndex = -1;
         void* localPlayerRenderable = nullptr;
         void* activeWeaponRenderable = nullptr;
     };
 
-    thread_local HooksFirstPersonBodyEyeSceneState g_FirstPersonBodyProducerState{};
+    // Keep the two eye payloads distinct so a delayed left-eye consumer cannot
+    // observe the right eye overwriting the same TLS object.
+    thread_local HooksFirstPersonBodyEyeSceneState g_FirstPersonBodyProducerStates[2]{};
     std::atomic<HooksFirstPersonBodyEyeSceneState*> g_FirstPersonBodyPublishedState{ nullptr };
 
     bool HooksFirstPersonBodyExecutableAddress(void* address)
@@ -88,6 +101,7 @@ namespace
 
     void HooksFirstPersonBodyClearLocalRenderable()
     {
+        g_FirstPersonBodyPlayerReady.store(false, std::memory_order_release);
         g_FirstPersonBodyActiveWeaponRenderable.store(nullptr, std::memory_order_release);
         g_FirstPersonBodyLocalPlayerIndex.store(-1, std::memory_order_release);
         g_FirstPersonBodyLocalRenderable.store(nullptr, std::memory_order_release);
@@ -139,33 +153,63 @@ namespace
         }
     }
 
+    struct HooksFirstPersonBodyLocalState
+    {
+        int effects = 0x20;
+        std::uint8_t lifeState = 2;
+        std::uint16_t modelIndex = 0;
+        int team = 1;
+        int observerMode = 0;
+        int observerTarget = 0;
+        int viewEntity = 0;
+    };
+
+    bool HooksFirstPersonBodyHandleValid(int value)
+    {
+        const unsigned int handle = static_cast<unsigned int>(value);
+        if (handle == 0u || handle == 0xFFFFFFFFu)
+            return false;
+
+        const unsigned int entityIndex = handle & 0x0FFFu;
+        return entityIndex > 0u && entityIndex < 2048u;
+    }
+
     bool HooksFirstPersonBodyReadLocalStateSafe(
         C_BasePlayer* player,
-        int* outEffects,
-        std::uint8_t* outLifeState,
-        std::uint16_t* outModelIndex)
+        HooksFirstPersonBodyLocalState* outState)
     {
-        if (!player || !outEffects || !outLifeState || !outModelIndex)
+        if (!player || !outState)
             return false;
 
         __try
         {
             constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
             constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
+            constexpr std::ptrdiff_t kTeamOffset = 0xE4;
             constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
+            constexpr std::ptrdiff_t kViewEntityOffset = 0x142C;
+            constexpr std::ptrdiff_t kObserverModeOffset = 0x1450;
+            constexpr std::ptrdiff_t kObserverTargetOffset = 0x1454;
             const std::uint8_t* const playerBytes =
                 reinterpret_cast<const std::uint8_t*>(player);
-            *outModelIndex = *reinterpret_cast<const std::uint16_t*>(
+            outState->modelIndex = *reinterpret_cast<const std::uint16_t*>(
                 playerBytes + kModelIndexOffset);
-            *outEffects = *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
-            *outLifeState = *(playerBytes + kLifeStateOffset);
+            outState->effects =
+                *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
+            outState->team =
+                *reinterpret_cast<const int*>(playerBytes + kTeamOffset);
+            outState->lifeState = *(playerBytes + kLifeStateOffset);
+            outState->viewEntity =
+                *reinterpret_cast<const int*>(playerBytes + kViewEntityOffset);
+            outState->observerMode =
+                *reinterpret_cast<const int*>(playerBytes + kObserverModeOffset);
+            outState->observerTarget =
+                *reinterpret_cast<const int*>(playerBytes + kObserverTargetOffset);
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            *outEffects = 0x20;
-            *outLifeState = 2;
-            *outModelIndex = 0;
+            *outState = HooksFirstPersonBodyLocalState{};
             return false;
         }
     }
@@ -254,6 +298,8 @@ namespace
         __try
         {
             constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
+            constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
+            constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
             constexpr std::ptrdiff_t kSkinOffset = 0x664;
             constexpr std::ptrdiff_t kBodyOffset = 0x668;
             constexpr std::ptrdiff_t kHitboxSetOffset = 0x640;
@@ -261,6 +307,13 @@ namespace
 
             const std::uint8_t* const playerBytes =
                 reinterpret_cast<const std::uint8_t*>(player);
+            constexpr int kEffectNoDraw = 0x20;
+            const int effects =
+                *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
+            const std::uint8_t lifeState = *(playerBytes + kLifeStateOffset);
+            if ((effects & kEffectNoDraw) != 0 || lifeState != 0)
+                return false;
+
             const std::uint16_t modelIndex =
                 *reinterpret_cast<const std::uint16_t*>(
                     playerBytes + kModelIndexOffset);
@@ -338,9 +391,6 @@ namespace
             return false;
         }
 
-        g_FirstPersonBodyLocalPlayer.store(player, std::memory_order_release);
-        g_FirstPersonBodyLocalRenderable.store(renderable, std::memory_order_release);
-
         if (g_FirstPersonBodyRenderableHooksReady.load(std::memory_order_acquire))
         {
             const bool sameTargets =
@@ -361,19 +411,39 @@ namespace
                         getModelTarget,
                         drawModelTarget);
                 }
+                HooksFirstPersonBodyClearLocalRenderable();
+                return false;
             }
-            return sameTargets;
+
+            g_FirstPersonBodyLocalPlayer.store(player, std::memory_order_release);
+            g_FirstPersonBodyLocalRenderable.store(renderable, std::memory_order_release);
+            return true;
         }
 
         std::lock_guard<std::mutex> lock(g_FirstPersonBodyRenderableHookMutex);
         if (g_FirstPersonBodyRenderableHooksReady.load(std::memory_order_acquire))
+        {
+            const bool sameTargets =
+                g_FirstPersonBodyShouldDrawTarget.load(std::memory_order_acquire) == shouldDrawTarget &&
+                g_FirstPersonBodyGetModelTarget.load(std::memory_order_acquire) == getModelTarget &&
+                g_FirstPersonBodyDrawModelTarget.load(std::memory_order_acquire) == drawModelTarget;
+            if (!sameTargets)
+            {
+                HooksFirstPersonBodyClearLocalRenderable();
+                return false;
+            }
+
+            g_FirstPersonBodyLocalPlayer.store(player, std::memory_order_release);
+            g_FirstPersonBodyLocalRenderable.store(renderable, std::memory_order_release);
             return true;
+        }
 
         if (!Hooks::hkFirstPersonBodyRenderableShouldDraw.pTarget &&
             Hooks::hkFirstPersonBodyRenderableShouldDraw.createHook(
                 shouldDrawTarget,
                 reinterpret_cast<LPVOID>(&Hooks::dFirstPersonBodyRenderableShouldDraw)) != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
         if (!Hooks::hkFirstPersonBodyRenderableGetModel.pTarget &&
@@ -381,6 +451,7 @@ namespace
                 getModelTarget,
                 reinterpret_cast<LPVOID>(&Hooks::dFirstPersonBodyRenderableGetModel)) != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
 
@@ -389,26 +460,32 @@ namespace
                 drawModelTarget,
                 reinterpret_cast<LPVOID>(&Hooks::dFirstPersonBodyRenderableDrawModel)) != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
 
         if (!Hooks::hkFirstPersonBodyRenderableShouldDraw.isEnabled &&
             Hooks::hkFirstPersonBodyRenderableShouldDraw.enableHook() != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
         if (!Hooks::hkFirstPersonBodyRenderableGetModel.isEnabled &&
             Hooks::hkFirstPersonBodyRenderableGetModel.enableHook() != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
 
         if (!Hooks::hkFirstPersonBodyRenderableDrawModel.isEnabled &&
             Hooks::hkFirstPersonBodyRenderableDrawModel.enableHook() != 0)
         {
+            HooksFirstPersonBodyClearLocalRenderable();
             return false;
         }
 
+        g_FirstPersonBodyLocalPlayer.store(player, std::memory_order_release);
+        g_FirstPersonBodyLocalRenderable.store(renderable, std::memory_order_release);
         g_FirstPersonBodyShouldDrawTarget.store(shouldDrawTarget, std::memory_order_release);
         g_FirstPersonBodyGetModelTarget.store(getModelTarget, std::memory_order_release);
         g_FirstPersonBodyDrawModelTarget.store(drawModelTarget, std::memory_order_release);
@@ -426,85 +503,112 @@ namespace
     void HooksFirstPersonBodyUpdateLocalStateMainThread(C_BasePlayer* player)
     {
         static void* s_lastRenderable = nullptr;
-        static bool s_visibilityRefreshIssued = false;
+        static bool s_visibilityOverrideActive = false;
 
-        if (!player)
+        auto deactivate = [&](bool resetCameraEligibility)
+            {
+                const bool refreshNativeVisibility = s_visibilityOverrideActive;
+                HooksFirstPersonBodyClearLocalRenderable();
+                if (resetCameraEligibility)
+                {
+                    g_FirstPersonBodyActualFirstPerson.store(
+                        false, std::memory_order_release);
+                }
+                if (refreshNativeVisibility)
+                {
+                    g_FirstPersonBodyPlayerGeneration.fetch_add(
+                        1, std::memory_order_acq_rel);
+                    if (Hooks::m_Game)
+                        Hooks::m_Game->ClientCmd_Unrestricted("cl_updatevisibility\n");
+                }
+                s_lastRenderable = nullptr;
+                s_visibilityOverrideActive = false;
+            };
+
+        const bool featureActive =
+            Hooks::m_VR && Hooks::m_VR->m_IsVREnabled &&
+            Hooks::m_VR->m_FirstPersonBodyEnabled;
+        const bool inGame =
+            Hooks::m_Game && Hooks::m_Game->m_EngineClient &&
+            Hooks::m_Game->m_EngineClient->IsInGame();
+        if (!player || !featureActive || !inGame)
         {
-            HooksFirstPersonBodyClearLocalRenderable();
-            s_lastRenderable = nullptr;
-            s_visibilityRefreshIssued = false;
+            deactivate(true);
+            return;
+        }
+
+        HooksFirstPersonBodyLocalState localState{};
+        if (!HooksFirstPersonBodyReadLocalStateSafe(player, &localState))
+        {
+            deactivate(true);
+            return;
+        }
+
+        constexpr int kEffectNoDraw = 0x20;
+        const bool playerDrawableAndAlive =
+            (localState.effects & kEffectNoDraw) == 0 &&
+            localState.lifeState == 0 &&
+            localState.modelIndex != 0 &&
+            localState.team > 1 &&
+            localState.observerMode == 0 &&
+            !HooksFirstPersonBodyHandleValid(localState.viewEntity);
+        if (!playerDrawableAndAlive)
+        {
+            deactivate(true);
             return;
         }
 
         if (!HooksFirstPersonBodyEnsureRenderableHooks(player))
+        {
+            deactivate(false);
             return;
+        }
 
         int playerIndex = -1;
         void* activeWeaponRenderable = nullptr;
         __try
         {
-            if (Hooks::m_Game && Hooks::m_Game->m_EngineClient)
-                playerIndex = Hooks::m_Game->m_EngineClient->GetLocalPlayer();
+            playerIndex = Hooks::m_Game->m_EngineClient->GetLocalPlayer();
             C_BaseCombatWeapon* const activeWeapon = player->GetActiveWeapon();
             if (activeWeapon)
                 activeWeaponRenderable = activeWeapon->GetClientRenderable();
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
+            playerIndex = -1;
             activeWeaponRenderable = nullptr;
+        }
+
+        void* const renderable =
+            g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
+        if (playerIndex <= 0 || !renderable)
+        {
+            deactivate(true);
+            return;
+        }
+
+        const bool newGeneration =
+            !s_visibilityOverrideActive || renderable != s_lastRenderable;
+        if (newGeneration)
+        {
+            g_FirstPersonBodyPlayerGeneration.fetch_add(
+                1, std::memory_order_acq_rel);
         }
 
         g_FirstPersonBodyLocalPlayerIndex.store(playerIndex, std::memory_order_release);
         g_FirstPersonBodyActiveWeaponRenderable.store(
             activeWeaponRenderable, std::memory_order_release);
+        g_FirstPersonBodyPlayerReady.store(true, std::memory_order_release);
 
-        void* const renderable =
-            g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
-        if (!renderable)
-            return;
-
-        int effects = 0x20;
-        std::uint8_t lifeState = 2;
-        std::uint16_t modelIndex = 0;
-        if (!HooksFirstPersonBodyReadLocalStateSafe(
-                player,
-                &effects,
-                &lifeState,
-                &modelIndex))
-        {
-            return;
-        }
-
-        constexpr int kEffectNoDraw = 0x20;
-        const bool renderReady =
-            (effects & kEffectNoDraw) == 0 && lifeState == 0 && modelIndex != 0;
-        const bool featureActive =
-            Hooks::m_VR && Hooks::m_VR->m_IsVREnabled &&
-            Hooks::m_VR->m_FirstPersonBodyEnabled;
-
-        if (renderable != s_lastRenderable)
-        {
-            s_lastRenderable = renderable;
-            s_visibilityRefreshIssued = false;
-        }
-
-        // C_BaseEntity::UpdateVisibility owns both the split-screen visibility
-        // bits and leaf-system membership. RenderableChanged() only updates an
-        // existing leaf handle and cannot restore visibility bits that were
-        // cleared while the local player was dormant during creation. The
-        // built-in Source client command invokes UpdateVisibilityAllEntities on
-        // the game thread, which reaches our persistent ShouldDraw hook with the
-        // player alive and restores the native visibility/leaf state together.
-        if (featureActive && renderReady && Hooks::m_Game &&
-            !s_visibilityRefreshIssued)
-        {
+        // UpdateVisibility owns both split-screen visibility bits and leaf-system
+        // membership. Refresh exactly once when this feature starts owning a new
+        // live local-player renderable, and once on deactivation above to hand
+        // the renderable back to Source's native visibility result.
+        if (newGeneration)
             Hooks::m_Game->ClientCmd_Unrestricted("cl_updatevisibility\n");
-            s_visibilityRefreshIssued = true;
-        }
 
-        if (!featureActive || !renderReady)
-            s_visibilityRefreshIssued = false;
-
+        s_lastRenderable = renderable;
+        s_visibilityOverrideActive = true;
     }
 
 }

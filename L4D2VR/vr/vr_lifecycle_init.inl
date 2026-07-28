@@ -1086,8 +1086,17 @@ VR::VR(Game* game)
         m_Overlay->SetOverlayFlag(overlay, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     }
 
-    int windowWidth, windowHeight;
-    m_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    CRefPtr<IMatRenderContext> renderContext;
+    if (m_Game && m_Game->m_MaterialSystem)
+        renderContext = m_Game->m_MaterialSystem->GetRenderContext();
+    if (renderContext)
+        renderContext->GetWindowSize(windowWidth, windowHeight);
+    if (windowWidth <= 0)
+        windowWidth = static_cast<int>((std::max)(1u, m_RenderWidth));
+    if (windowHeight <= 0)
+        windowHeight = static_cast<int>((std::max)(1u, m_RenderHeight));
 
     const vr::HmdVector2_t mouseScaleHUD = { windowWidth, windowHeight };
     m_Overlay->SetOverlayMouseScale(m_HUDTopHandle, &mouseScaleHUD);

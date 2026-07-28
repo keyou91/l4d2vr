@@ -660,8 +660,11 @@ void VR::ProcessMenuInput()
 
     int windowWidth = 0;
     int windowHeight = 0;
-    if (m_Game && m_Game->m_MaterialSystem && m_Game->m_MaterialSystem->GetRenderContext())
-        m_Game->m_MaterialSystem->GetRenderContext()->GetWindowSize(windowWidth, windowHeight);
+    CRefPtr<IMatRenderContext> renderContext;
+    if (m_Game && m_Game->m_MaterialSystem)
+        renderContext = m_Game->m_MaterialSystem->GetRenderContext();
+    if (renderContext)
+        renderContext->GetWindowSize(windowWidth, windowHeight);
     if (windowWidth <= 0)
         windowWidth = static_cast<int>(m_RenderWidth);
     if (windowHeight <= 0)

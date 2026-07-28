@@ -77,6 +77,78 @@ namespace vr_vm_stabilize
         out.m[2][3] = tx * out.m[2][0] + ty * out.m[2][1] + tz * out.m[2][2];
     }
 
+    // Invert a general affine 3x4 transform. Unlike InvertTR, this remains
+    // correct when another plugin applies uniform or non-uniform model scale.
+    inline bool InvertAffine(const Mat3x4& in, Mat3x4& out)
+    {
+        double a[3][3]{};
+        double maxElement = 0.0;
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int column = 0; column < 3; ++column)
+            {
+                const double value = static_cast<double>(in.m[row][column]);
+                if (!std::isfinite(value))
+                    return false;
+                a[row][column] = value;
+                maxElement = (std::max)(maxElement, std::fabs(value));
+            }
+            if (!std::isfinite(static_cast<double>(in.m[row][3])))
+                return false;
+        }
+
+        if (maxElement <= 1.0e-12)
+            return false;
+
+        const double determinant =
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+            a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+            a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+        const double determinantTolerance =
+            (std::max)(1.0e-15, maxElement * maxElement * maxElement * 1.0e-9);
+        if (!std::isfinite(determinant) ||
+            std::fabs(determinant) <= determinantTolerance)
+        {
+            return false;
+        }
+
+        const double inverseDeterminant = 1.0 / determinant;
+        double inverse[3][3]{};
+        inverse[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * inverseDeterminant;
+        inverse[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * inverseDeterminant;
+        inverse[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * inverseDeterminant;
+        inverse[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * inverseDeterminant;
+        inverse[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * inverseDeterminant;
+        inverse[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * inverseDeterminant;
+        inverse[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * inverseDeterminant;
+        inverse[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * inverseDeterminant;
+        inverse[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * inverseDeterminant;
+
+        const double translation[3] = {
+            static_cast<double>(in.m[0][3]),
+            static_cast<double>(in.m[1][3]),
+            static_cast<double>(in.m[2][3]),
+        };
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int column = 0; column < 3; ++column)
+            {
+                if (!std::isfinite(inverse[row][column]))
+                    return false;
+                out.m[row][column] = static_cast<float>(inverse[row][column]);
+            }
+
+            const double inverseTranslation =
+                -(inverse[row][0] * translation[0] +
+                  inverse[row][1] * translation[1] +
+                  inverse[row][2] * translation[2]);
+            if (!std::isfinite(inverseTranslation))
+                return false;
+            out.m[row][3] = static_cast<float>(inverseTranslation);
+        }
+        return true;
+    }
+
     inline void Mul(const Mat3x4& a, const Mat3x4& b, Mat3x4& out)
     {
         // Rotation
@@ -102,49 +174,78 @@ namespace vr_vm_stabilize
             bones[i] = tmp;
         }
     }
-    // IMPORTANT for mat_queue_mode!=0:
-    // DrawModelExecute may queue commands that reference pCustomBoneToWorld later on another thread.
-    // If we pass a pointer to a temporary / thread_local scratch buffer, it can be overwritten before
-    // the queued command executes, causing severe ghosting / double images.
-    //
-    // So we allocate per-draw bone copies from a small ring of per-frame slots. Each slot is kept
-    // alive for kRing frames before being recycled. This makes the pointer stable long enough for
-    // the material queue to consume it.
-    struct BoneRingSlot
+    // L4D2 StudioRender synchronously copies ordinary heap bone matrices into
+    // Source RenderData before DrawModelExecute returns, including in q2. Keep
+    // scratch alive for the complete hook call, then rewind it. The previous
+    // 64-frame heap ring could grow without bound whenever m_RenderFrameSeq
+    // stopped advancing (for example while the game window was inactive).
+    struct StableBoneScratchStack
     {
-        uint64_t frame = 0;
-        std::vector<Mat3x4*> blocks;
+        static constexpr size_t kCapacity = 16384;
+        std::unique_ptr<Mat3x4[]> storage;
+        size_t cursor = 0;
+        unsigned int activeScopes = 0;
+    };
+
+    inline StableBoneScratchStack& GetStableBoneScratchStack()
+    {
+        static thread_local StableBoneScratchStack stack;
+        return stack;
+    }
+
+    class ScopedStableBoneScratch
+    {
+    public:
+        ScopedStableBoneScratch()
+            : m_Stack(&GetStableBoneScratchStack()),
+              m_Mark(m_Stack->cursor)
+        {
+            ++m_Stack->activeScopes;
+        }
+
+        ~ScopedStableBoneScratch()
+        {
+            if (!m_Stack)
+                return;
+            m_Stack->cursor = m_Mark;
+            if (m_Stack->activeScopes > 0)
+                --m_Stack->activeScopes;
+        }
+
+        ScopedStableBoneScratch(const ScopedStableBoneScratch&) = delete;
+        ScopedStableBoneScratch& operator=(
+            const ScopedStableBoneScratch&) = delete;
+
+    private:
+        StableBoneScratchStack* m_Stack = nullptr;
+        size_t m_Mark = 0;
     };
 
     inline Mat3x4* AllocStableBones(int numBones, uint32_t seqEven)
     {
+        (void)seqEven;
         if (numBones <= 0 || numBones > 512)
             return nullptr;
 
-        static constexpr uint32_t kRing = 64;
-        static BoneRingSlot s_slots[kRing];
-        static std::mutex s_mu;
-
-        const uint64_t frame = (uint64_t)(seqEven >> 1);
-        const uint32_t slot = (uint32_t)(frame % kRing);
-
-        std::lock_guard<std::mutex> lock(s_mu);
-        BoneRingSlot& s = s_slots[slot];
-        if (s.frame != frame)
-        {
-            for (Mat3x4* p : s.blocks)
-                delete[] p;
-            s.blocks.clear();
-            s.frame = frame;
-        }
-
-        Mat3x4* p = nullptr;
-        try { p = new Mat3x4[(size_t)numBones]; } catch (...) { p = nullptr; }
-        if (!p)
+        StableBoneScratchStack& stack = GetStableBoneScratchStack();
+        if (stack.activeScopes == 0)
             return nullptr;
 
-        s.blocks.push_back(p);
-        return p;
+        if (!stack.storage)
+        {
+            stack.storage.reset(
+                new (std::nothrow) Mat3x4[StableBoneScratchStack::kCapacity]);
+            if (!stack.storage)
+                return nullptr;
+        }
+
+        const size_t count = static_cast<size_t>(numBones);
+        if (stack.cursor > StableBoneScratchStack::kCapacity - count)
+            return nullptr;
+
+        Mat3x4* const result = stack.storage.get() + stack.cursor;
+        stack.cursor += count;
+        return result;
     }
     // DrawModelState_t is opaque here, but in Source the first pointer is typically studiohdr_t*.
     // We avoid hard-crashing by SEH-guarding reads and probing common studiohdr_t offsets for numbones.
@@ -15281,6 +15382,98 @@ namespace
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
     };
 
+    struct HooksFirstPersonBodyBoneBuffer
+    {
+        std::vector<vr_vm_stabilize::Mat3x4> bones;
+    };
+
+    // L4D2's StudioRender copies a non-RenderData pCustomBoneToWorld into Source
+    // RenderData before DrawModelExecute returns in both q0 and q2. The plugin
+    // scratch therefore only needs call lifetime. Keep a bounded pool to remain
+    // safe under theoretical nested model draws without tying reclamation to a
+    // render-frame counter or a separately acquired material call queue.
+    class HooksFirstPersonBodyBoneBufferPool
+    {
+    public:
+        static constexpr size_t kMaxBuffers = 32;
+
+        HooksFirstPersonBodyBoneBuffer* Acquire()
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            if (m_FreeCount > 0)
+            {
+                HooksFirstPersonBodyBoneBuffer* const result =
+                    m_Free[--m_FreeCount];
+                m_Free[m_FreeCount] = nullptr;
+                return result;
+            }
+
+            if (m_AllCount >= kMaxBuffers)
+                return nullptr;
+
+            std::unique_ptr<HooksFirstPersonBodyBoneBuffer> buffer(
+                new (std::nothrow) HooksFirstPersonBodyBoneBuffer());
+            if (!buffer)
+                return nullptr;
+
+            HooksFirstPersonBodyBoneBuffer* const result = buffer.get();
+            m_All[m_AllCount++] = std::move(buffer);
+            return result;
+        }
+
+        void Release(HooksFirstPersonBodyBoneBuffer* buffer)
+        {
+            if (!buffer)
+                return;
+
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            buffer->bones.clear();
+            if (m_FreeCount < kMaxBuffers)
+                m_Free[m_FreeCount++] = buffer;
+        }
+
+    private:
+        std::mutex m_Mutex;
+        std::unique_ptr<HooksFirstPersonBodyBoneBuffer> m_All[kMaxBuffers];
+        HooksFirstPersonBodyBoneBuffer* m_Free[kMaxBuffers]{};
+        size_t m_AllCount = 0;
+        size_t m_FreeCount = 0;
+    };
+
+    inline HooksFirstPersonBodyBoneBufferPool& HooksFirstPersonBodyGetBoneBufferPool()
+    {
+        static HooksFirstPersonBodyBoneBufferPool s_Pool;
+        return s_Pool;
+    }
+
+    class HooksFirstPersonBodyBoneBufferLease
+    {
+    public:
+        HooksFirstPersonBodyBoneBufferLease()
+            : m_Buffer(HooksFirstPersonBodyGetBoneBufferPool().Acquire())
+        {
+        }
+
+        ~HooksFirstPersonBodyBoneBufferLease()
+        {
+            HooksFirstPersonBodyGetBoneBufferPool().Release(m_Buffer);
+            m_Buffer = nullptr;
+        }
+
+        HooksFirstPersonBodyBoneBuffer* Get() const
+        {
+            return m_Buffer;
+        }
+
+        HooksFirstPersonBodyBoneBufferLease(
+            const HooksFirstPersonBodyBoneBufferLease&) = delete;
+        HooksFirstPersonBodyBoneBufferLease& operator=(
+            const HooksFirstPersonBodyBoneBufferLease&) = delete;
+
+    private:
+        HooksFirstPersonBodyBoneBuffer* m_Buffer = nullptr;
+    };
+
     inline bool HooksFirstPersonBodyFindBone(
         const std::vector<std::string>& boneNames,
         const std::vector<const char*>& preferredSuffixes,
@@ -15314,6 +15507,7 @@ namespace
     struct HooksFirstPersonBodyBoneLayout
     {
         const uint8_t* studioHdr = nullptr;
+        std::uint64_t playerGeneration = 0;
         bool attempted = false;
         bool valid = false;
         bool frozenPoseCaptured = false;
@@ -15337,17 +15531,21 @@ namespace
 
     inline bool HooksFirstPersonBodyBuildBoneLayout(
         void* drawState,
+        std::uint64_t playerGeneration,
         HooksFirstPersonBodyBoneLayout& layout)
     {
         const uint8_t* studioHdr = nullptr;
         if (!vr_vm_stabilize::TryGetStudioHdrFromDrawState(drawState, studioHdr) || !studioHdr)
             return false;
 
-        if (layout.studioHdr == studioHdr && layout.attempted)
+        if (layout.studioHdr == studioHdr &&
+            layout.playerGeneration == playerGeneration &&
+            layout.attempted)
             return layout.valid;
 
         layout = HooksFirstPersonBodyBoneLayout{};
         layout.studioHdr = studioHdr;
+        layout.playerGeneration = playerGeneration;
         layout.attempted = true;
 
         std::vector<std::string> boneNames;
@@ -15363,7 +15561,7 @@ namespace
                 stride,
                 numBonesOffset) ||
             layout.numBones <= 0 ||
-            layout.numBones > 512 ||
+            layout.numBones > 128 ||
             static_cast<int>(boneNames.size()) < layout.numBones ||
             static_cast<int>(layout.boneParents.size()) < layout.numBones)
         {
@@ -15548,9 +15746,17 @@ namespace
             return true;
         }
 
-        std::vector<vr_vm_stabilize::Mat3x4> frozenLocalPose(
-            static_cast<size_t>(layout.numBones),
-            vr_vm_stabilize::Identity());
+        std::vector<vr_vm_stabilize::Mat3x4> frozenLocalPose;
+        try
+        {
+            frozenLocalPose.assign(
+                static_cast<size_t>(layout.numBones),
+                vr_vm_stabilize::Identity());
+        }
+        catch (...)
+        {
+            return false;
+        }
 
         for (int bone = 0; bone < layout.numBones; ++bone)
         {
@@ -15585,7 +15791,8 @@ namespace
 
             vr_vm_stabilize::Mat3x4 inverseParent{};
             vr_vm_stabilize::Mat3x4 boneLocal{};
-            vr_vm_stabilize::InvertTR(parentWorld, inverseParent);
+            if (!vr_vm_stabilize::InvertAffine(parentWorld, inverseParent))
+                return false;
             vr_vm_stabilize::Mul(inverseParent, boneWorld, boneLocal);
             if (!HooksNativeViewmodelHandsOnlyMatrixFinite(boneLocal))
                 return false;
@@ -15631,35 +15838,64 @@ namespace
         return true;
     }
 
+    inline bool HooksFirstPersonBodyMaxBasisLength(
+        const vr_vm_stabilize::Mat3x4& matrix,
+        double& outLength)
+    {
+        outLength = 0.0;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const double x = static_cast<double>(matrix.m[0][axis]);
+            const double y = static_cast<double>(matrix.m[1][axis]);
+            const double z = static_cast<double>(matrix.m[2][axis]);
+            const double lengthSquared = x * x + y * y + z * z;
+            if (!std::isfinite(lengthSquared) || lengthSquared < 0.0)
+                return false;
+            outLength = (std::max)(outLength, std::sqrt(lengthSquared));
+        }
+        return std::isfinite(outLength);
+    }
+
     inline bool HooksFirstPersonBodyBuildAnchoredBones(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
         void* drawState,
         const void* pCustomBoneToWorld,
+        std::vector<vr_vm_stabilize::Mat3x4>& boneStorage,
         vr_vm_stabilize::Mat3x4*& outBones)
     {
         outBones = nullptr;
-        if (!vr || !bodyState || !drawState || !pCustomBoneToWorld ||
+        if (!vr || !bodyState || !bodyState->bodyActive ||
+            !drawState || !pCustomBoneToWorld ||
             !vr->m_FirstPersonBodyEnabled ||
+            bodyState->playerGeneration == 0 ||
+            bodyState->playerGeneration !=
+                g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) ||
             !HooksNativeViewmodelHandsOnlyVectorFinite(bodyState->centerEyePosition))
         {
             return false;
         }
 
         static thread_local HooksFirstPersonBodyBoneLayout s_layout{};
-        if (!HooksFirstPersonBodyBuildBoneLayout(drawState, s_layout))
+        if (!HooksFirstPersonBodyBuildBoneLayout(
+                drawState,
+                bodyState->playerGeneration,
+                s_layout))
             return false;
 
         const auto* sourceBones =
             reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
 
-        uint32_t seqEven = vr->m_RenderFrameSeq.load(std::memory_order_acquire);
-        seqEven &= ~1u;
-        if (seqEven == 0)
-            seqEven = 2;
+        try
+        {
+            boneStorage.resize(static_cast<size_t>(s_layout.numBones));
+        }
+        catch (...)
+        {
+            return false;
+        }
 
-        vr_vm_stabilize::Mat3x4* anchoredBones =
-            vr_vm_stabilize::AllocStableBones(s_layout.numBones, seqEven);
+        vr_vm_stabilize::Mat3x4* const anchoredBones = boneStorage.data();
         if (!anchoredBones)
             return false;
 
@@ -15923,6 +16159,52 @@ namespace
             s_layout.rightUpperArmBone,
             s_layout.rightForearmBone,
             s_layout.hideRightArmMask);
+
+        // Fail closed if a replacement model supplies a transform that our
+        // frozen-branch reconstruction amplifies. Rigid anchoring preserves
+        // basis lengths and arm trimming can only reduce them, so a large
+        // increase here is never intentional.
+        for (int bone = 0; bone < s_layout.numBones; ++bone)
+        {
+            const size_t index = static_cast<size_t>(bone);
+            vr_vm_stabilize::Mat3x4 source{};
+            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, source) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(source))
+            {
+                return false;
+            }
+
+            double sourceBasisLength = 0.0;
+            double outputBasisLength = 0.0;
+            if (!HooksFirstPersonBodyMaxBasisLength(source, sourceBasisLength) ||
+                !HooksFirstPersonBodyMaxBasisLength(
+                    anchoredBones[bone],
+                    outputBasisLength))
+            {
+                return false;
+            }
+
+            const bool intentionallyCollapsed =
+                (vr->m_FirstPersonBodyHideHead &&
+                    s_layout.hideHeadMask[index] != 0u) ||
+                (vr->m_FirstPersonBodyHideArms &&
+                    (s_layout.hideLeftArmMask[index] != 0u ||
+                     s_layout.hideRightArmMask[index] != 0u));
+            if (intentionallyCollapsed)
+            {
+                if (outputBasisLength > 1.0e-4)
+                    return false;
+                continue;
+            }
+
+            const double allowedBasisLength =
+                (std::max)(0.02, sourceBasisLength * 4.0);
+            if (outputBasisLength > 16.0 ||
+                outputBasisLength > allowedBasisLength)
+            {
+                return false;
+            }
+        }
 
         outBones = anchoredBones;
         return true;
@@ -16785,11 +17067,17 @@ C_BaseEntity* Hooks::dClientFindUseEntity(void* ecx, void* edx, float radius, fl
 
 void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld)
 {
+	vr_vm_stabilize::ScopedStableBoneScratch stableBoneScratchScope;
 	constexpr int kStudioShadowDepthTexture = 0x40000000;
 	HooksFirstPersonBodyEyeSceneState* const firstPersonBodyState =
 		g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
 	const bool firstPersonBodyEyeActive =
 		firstPersonBodyState != nullptr &&
+		firstPersonBodyState->bodyActive &&
+		firstPersonBodyState->playerGeneration ==
+			g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) &&
+		g_FirstPersonBodyPlayerReady.load(std::memory_order_acquire) &&
+		g_FirstPersonBodyActualFirstPerson.load(std::memory_order_acquire) &&
 		InterlockedCompareExchange(
 			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
 
@@ -16807,10 +17095,8 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 		}
 
 		const bool isLocalPlayerDraw =
-			(firstPersonBodyState->localPlayerIndex > 0 &&
-				info.entity_index == firstPersonBodyState->localPlayerIndex) ||
-			(firstPersonBodyState->localPlayerRenderable &&
-				info.pRenderable == firstPersonBodyState->localPlayerRenderable);
+			firstPersonBodyState->localPlayerRenderable &&
+			info.pRenderable == firstPersonBodyState->localPlayerRenderable;
 		if (isLocalPlayerDraw)
 		{
 			// Preserve Source's original shadow submission. HMD anchoring and bone
@@ -16821,12 +17107,30 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 				return;
 			}
 
+			HooksFirstPersonBodyBoneBufferLease bodyBufferLease;
+			HooksFirstPersonBodyBoneBuffer* const bodyBuffer =
+				bodyBufferLease.Get();
+			if (!bodyBuffer)
+			{
+				static std::atomic<bool> s_loggedBodyBufferCap{ false };
+				if (!s_loggedBodyBufferCap.exchange(
+						true, std::memory_order_acq_rel))
+				{
+					Game::logMsg(
+						"[VR][FirstPersonBody] body skipped: more than %u nested bone draws",
+						static_cast<unsigned int>(
+							HooksFirstPersonBodyBoneBufferPool::kMaxBuffers));
+				}
+				return;
+			}
+
 			vr_vm_stabilize::Mat3x4* anchoredBodyBones = nullptr;
 			if (!HooksFirstPersonBodyBuildAnchoredBones(
 				m_VR,
 				firstPersonBodyState,
 				state,
 				pCustomBoneToWorld,
+				bodyBuffer->bones,
 				anchoredBodyBones))
 			{
 				static std::atomic<bool> s_loggedBodyBoneFailure{ false };
@@ -17512,11 +17816,17 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
 		bool nativeHandsOnlyDrawn = false;
 		std::vector<HooksNativeViewmodelHandsOnlyClipSet> nativeHandsOnlyClipSets;
 		ICallQueue* nativeHandsOnlyCallQueue = nullptr;
+		CRefPtr<IMatRenderContext> nativeHandsOnlyRenderContext;
 		if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
 			nativeHandsOnlyQueueMode != 0 && m_Game && m_Game->m_MaterialSystem)
 		{
-			IMatRenderContext* renderContext = m_Game->m_MaterialSystem->GetRenderContext();
-			nativeHandsOnlyCallQueue = HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(renderContext);
+			// GetRenderContext returns an owned reference. Adopt it and retain
+			// the exact context through both clip-plane functor insertions.
+			nativeHandsOnlyRenderContext =
+				m_Game->m_MaterialSystem->GetRenderContext();
+			nativeHandsOnlyCallQueue =
+				HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
+					nativeHandsOnlyRenderContext);
 		}
 		if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
 			HooksNativeViewmodelHandsOnlyBuildSplitClipSets(
@@ -17705,7 +18015,10 @@ void Hooks::dPushRenderTargetAndViewport(void* ecx, void* edx, ITexture* pTextur
             int hudActualH = 0;
             DebugTextureFullSize(hudTexture, hudMapW, hudMapH, hudActualW, hudActualH);
 
-            IMatRenderContext* ctx = m_Game && m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+            CRefPtr<IMatRenderContext> contextRef;
+            if (m_Game && m_Game->m_MaterialSystem)
+                contextRef = m_Game->m_MaterialSystem->GetRenderContext();
+            IMatRenderContext* const ctx = contextRef;
             int windowW = 0;
             int windowH = 0;
             int backBufferW = 0;
@@ -17777,7 +18090,10 @@ void Hooks::dPushRenderTargetAndViewport(void* ecx, void* edx, ITexture* pTextur
         return hkPushRenderTargetAndViewport.fOriginal(ecx, pTexture, pDepthTexture, nViewX, nViewY, nViewW, nViewH);
     }
 
-    IMatRenderContext* renderContext = m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+    CRefPtr<IMatRenderContext> renderContextRef;
+    if (m_Game->m_MaterialSystem)
+        renderContextRef = m_Game->m_MaterialSystem->GetRenderContext();
+    IMatRenderContext* const renderContext = renderContextRef;
     if (!renderContext)
     {
         m_VR->HandleMissingRenderContext("Hooks::dPushRenderTargetAndViewport");
@@ -17824,7 +18140,10 @@ void Hooks::dPopRenderTargetAndViewport(void* ecx, void* edx)
 
     if (m_PushedHud)
     {
-        IMatRenderContext* renderContext = m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+        CRefPtr<IMatRenderContext> renderContextRef;
+        if (m_Game->m_MaterialSystem)
+            renderContextRef = m_Game->m_MaterialSystem->GetRenderContext();
+        IMatRenderContext* const renderContext = renderContextRef;
         if (renderContext)
         {
             renderContext->OverrideAlphaWriteEnable(false, true);
@@ -17873,7 +18192,10 @@ void Hooks::dVGui_Paint(void* ecx, void* edx, int mode)
 
     auto IsPaintingToNativeBackBuffer = [&]() -> bool
         {
-            IMatRenderContext* ctx = m_Game && m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+            CRefPtr<IMatRenderContext> contextRef;
+            if (m_Game && m_Game->m_MaterialSystem)
+                contextRef = m_Game->m_MaterialSystem->GetRenderContext();
+            IMatRenderContext* const ctx = contextRef;
             if (!ctx)
                 return false;
 
@@ -17889,7 +18211,10 @@ void Hooks::dVGui_Paint(void* ecx, void* edx, int mode)
             if (!m_VR->m_HudPaintedThisFrame.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
                 return;
 
-            IMatRenderContext* ctx = m_Game && m_Game->m_MaterialSystem ? m_Game->m_MaterialSystem->GetRenderContext() : nullptr;
+            CRefPtr<IMatRenderContext> contextRef;
+            if (m_Game && m_Game->m_MaterialSystem)
+                contextRef = m_Game->m_MaterialSystem->GetRenderContext();
+            IMatRenderContext* const ctx = contextRef;
             if (!ctx)
             {
                 m_VR->HandleMissingRenderContext("Hooks::dVGui_Paint");
