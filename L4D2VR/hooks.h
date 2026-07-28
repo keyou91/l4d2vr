@@ -106,6 +106,7 @@ typedef void(__thiscall* tDrawModelExecute)(void* thisptr, void* state, const Mo
 typedef bool(__thiscall* tFirstPersonBodyRenderableShouldDraw)(void* thisptr);
 typedef void* (__thiscall* tFirstPersonBodyRenderableGetModel)(void* thisptr);
 typedef int(__thiscall* tFirstPersonBodyRenderableDrawModel)(void* thisptr, int flags, const void* instance);
+typedef int(__thiscall* tFirstPersonBodyCamIsThirdPerson)(void* thisptr, int splitScreenSlot);
 typedef void(__thiscall* tPushRenderTargetAndViewport)(void* thisptr, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 typedef void(__thiscall* tPopRenderTargetAndViewport)(void* thisptr);
 typedef void(__thiscall* tVgui_Paint)(void* thisptr, int mode);
@@ -171,6 +172,7 @@ public:
 	static inline Hook<tFirstPersonBodyRenderableShouldDraw> hkFirstPersonBodyRenderableShouldDraw;
 	static inline Hook<tFirstPersonBodyRenderableGetModel> hkFirstPersonBodyRenderableGetModel;
 	static inline Hook<tFirstPersonBodyRenderableDrawModel> hkFirstPersonBodyRenderableDrawModel;
+	static inline Hook<tFirstPersonBodyCamIsThirdPerson> hkFirstPersonBodyCamIsThirdPerson;
 	static inline Hook<tPushRenderTargetAndViewport> hkPushRenderTargetAndViewport;
 	static inline Hook<tPopRenderTargetAndViewport> hkPopRenderTargetAndViewport;
 	static inline Hook<tVgui_Paint> hkVgui_Paint;
@@ -246,6 +248,7 @@ public:
 	static bool __fastcall dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx);
 	static void* __fastcall dFirstPersonBodyRenderableGetModel(void* ecx, void* edx);
 	static int __fastcall dFirstPersonBodyRenderableDrawModel(void* ecx, void* edx, int flags, const void* instance);
+	static int __fastcall dFirstPersonBodyCamIsThirdPerson(void* ecx, void* edx, int splitScreenSlot);
 	static void __fastcall dPushRenderTargetAndViewport(void* ecx, void* edx, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 	static void __fastcall dPopRenderTargetAndViewport(void* ecx, void* edx);
 	static void __fastcall dVGui_Paint(void* ecx, void* edx, int mode);

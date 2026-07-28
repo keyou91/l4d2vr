@@ -19,6 +19,8 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <memory>
+#include <array>
 #include <unordered_map>
 #include <cmath>
 #include <cfloat>
@@ -51,8 +53,14 @@ namespace
     std::atomic<void*> g_FirstPersonBodyShouldDrawTarget{ nullptr };
     std::atomic<void*> g_FirstPersonBodyGetModelTarget{ nullptr };
     std::atomic<void*> g_FirstPersonBodyDrawModelTarget{ nullptr };
+    std::atomic<void*> g_FirstPersonBodyInputObject{ nullptr };
     std::atomic<bool> g_FirstPersonBodyRenderableHooksReady{ false };
+    std::atomic<bool> g_FirstPersonBodyCamHookReady{ false };
+    std::atomic<bool> g_FirstPersonBodyEligible{ false };
+    std::atomic<int> g_FirstPersonBodyModelIndex{ 0 };
+    std::atomic<std::uint64_t> g_FirstPersonBodyRenderGeneration{ 1 };
     std::mutex g_FirstPersonBodyRenderableHookMutex;
+    thread_local unsigned int g_FirstPersonBodyForceNativeThirdPersonDepth = 0;
 
     struct HooksFirstPersonBodyEyeSceneState
     {
@@ -63,6 +71,7 @@ namespace
         int localPlayerIndex = -1;
         void* localPlayerRenderable = nullptr;
         void* activeWeaponRenderable = nullptr;
+        std::uint64_t stableBoneGeneration = 0;
     };
 
     thread_local HooksFirstPersonBodyEyeSceneState g_FirstPersonBodyProducerState{};
@@ -86,9 +95,39 @@ namespace
         return (memory.Protect & executableMask) != 0;
     }
 
+    bool HooksFirstPersonBodyValidateCamIsThirdPersonTarget(void* address)
+    {
+        if (!HooksFirstPersonBodyExecutableAddress(address))
+            return false;
+
+        __try
+        {
+            const unsigned char* const code =
+                reinterpret_cast<const unsigned char*>(address);
+            static const unsigned char kPrefix[] =
+                { 0x55, 0x8B, 0xEC, 0x56, 0x8B, 0xF1, 0xE8 };
+            static const unsigned char kFirstReturn[] =
+                { 0x84, 0xC0, 0x74, 0x07, 0x33, 0xC0, 0x5E, 0x5D, 0xC2, 0x04, 0x00 };
+            static const unsigned char kArgumentRead[] =
+                { 0x8B, 0x45, 0x08, 0x83, 0xF8, 0xFF };
+
+            return std::memcmp(code, kPrefix, sizeof(kPrefix)) == 0 &&
+                std::memcmp(code + 11, kFirstReturn, sizeof(kFirstReturn)) == 0 &&
+                std::memcmp(code + 22, kArgumentRead, sizeof(kArgumentRead)) == 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     void HooksFirstPersonBodyClearLocalRenderable()
     {
+        // Publish ineligible first so render workers stop consuming any pointers
+        // before the local entity/renderable references are cleared.
+        g_FirstPersonBodyEligible.store(false, std::memory_order_release);
         g_FirstPersonBodyActiveWeaponRenderable.store(nullptr, std::memory_order_release);
+        g_FirstPersonBodyModelIndex.store(0, std::memory_order_release);
         g_FirstPersonBodyLocalPlayerIndex.store(-1, std::memory_order_release);
         g_FirstPersonBodyLocalRenderable.store(nullptr, std::memory_order_release);
         g_FirstPersonBodyLocalPlayer.store(nullptr, std::memory_order_release);
@@ -139,35 +178,301 @@ namespace
         }
     }
 
-    bool HooksFirstPersonBodyReadLocalStateSafe(
-        C_BasePlayer* player,
-        int* outEffects,
-        std::uint8_t* outLifeState,
-        std::uint16_t* outModelIndex)
+    bool HooksFirstPersonBodyProbeInputCameraTargets(
+        void** outInputObject,
+        void** outPreviousTarget,
+        void** outCamIsThirdPersonTarget,
+        void** outNextTarget)
     {
-        if (!player || !outEffects || !outLifeState || !outModelIndex)
+        if (!outInputObject || !outPreviousTarget ||
+            !outCamIsThirdPersonTarget || !outNextTarget)
+        {
             return false;
+        }
+
+        *outInputObject = nullptr;
+        *outPreviousTarget = nullptr;
+        *outCamIsThirdPersonTarget = nullptr;
+        *outNextTarget = nullptr;
 
         __try
         {
-            constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
-            constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
-            constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
-            const std::uint8_t* const playerBytes =
-                reinterpret_cast<const std::uint8_t*>(player);
-            *outModelIndex = *reinterpret_cast<const std::uint16_t*>(
-                playerBytes + kModelIndexOffset);
-            *outEffects = *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
-            *outLifeState = *(playerBytes + kLifeStateOffset);
+            if (!Hooks::m_Game || !Hooks::m_Game->m_Offsets ||
+                !Hooks::m_Game->m_Offsets->g_pppInput.valid ||
+                Hooks::m_Game->m_Offsets->g_pppInput.address == 0)
+            {
+                return false;
+            }
+
+            CInput*** const inputStorage = reinterpret_cast<CInput***>(
+                static_cast<std::uintptr_t>(
+                    Hooks::m_Game->m_Offsets->g_pppInput.address));
+            CInput** const inputPointer = inputStorage ? *inputStorage : nullptr;
+            CInput* const inputObject = inputPointer ? *inputPointer : nullptr;
+            if (!inputObject)
+                return false;
+
+            void** const vtable = *reinterpret_cast<void***>(inputObject);
+            if (!vtable)
+                return false;
+
+            // Current L4D2 client.dll CInput layout, verified from the live vtable:
+            // #28 GetLastForwardMove, #29 CAM_Think,
+            // #30 CAM_IsThirdPerson(int), #31 CAM_GetCameraOffset.
+            constexpr size_t kCamThinkSlot = 29;
+            constexpr size_t kCamIsThirdPersonSlot = 30;
+            constexpr size_t kCamGetCameraOffsetSlot = 31;
+            *outInputObject = inputObject;
+            *outPreviousTarget = vtable[kCamThinkSlot];
+            *outCamIsThirdPersonTarget = vtable[kCamIsThirdPersonSlot];
+            *outNextTarget = vtable[kCamGetCameraOffsetSlot];
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            *outEffects = 0x20;
-            *outLifeState = 2;
-            *outModelIndex = 0;
+            *outInputObject = nullptr;
+            *outPreviousTarget = nullptr;
+            *outCamIsThirdPersonTarget = nullptr;
+            *outNextTarget = nullptr;
             return false;
         }
+    }
+
+    bool HooksFirstPersonBodyEnsureInputCameraHook()
+    {
+        if (g_FirstPersonBodyCamHookReady.load(std::memory_order_acquire))
+            return true;
+
+        void* inputObject = nullptr;
+        void* previousTarget = nullptr;
+        void* camIsThirdPersonTarget = nullptr;
+        void* nextTarget = nullptr;
+        void* signatureTarget = nullptr;
+        if (Hooks::m_Game && Hooks::m_Game->m_Offsets &&
+            Hooks::m_Game->m_Offsets->CInput_CAM_IsThirdPerson.valid &&
+            Hooks::m_Game->m_Offsets->CInput_CAM_IsThirdPerson.address != 0)
+        {
+            signatureTarget = reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(
+                    Hooks::m_Game->m_Offsets->CInput_CAM_IsThirdPerson.address));
+        }
+
+        if (!HooksFirstPersonBodyProbeInputCameraTargets(
+                &inputObject,
+                &previousTarget,
+                &camIsThirdPersonTarget,
+                &nextTarget) ||
+            !HooksFirstPersonBodyExecutableAddress(previousTarget) ||
+            !HooksFirstPersonBodyValidateCamIsThirdPersonTarget(
+                camIsThirdPersonTarget) ||
+            !HooksFirstPersonBodyExecutableAddress(nextTarget) ||
+            !signatureTarget ||
+            signatureTarget != camIsThirdPersonTarget ||
+            camIsThirdPersonTarget == previousTarget ||
+            camIsThirdPersonTarget == nextTarget)
+        {
+            static std::atomic<bool> s_loggedInputCameraProbeFailure{ false };
+            if (!s_loggedInputCameraProbeFailure.exchange(
+                    true, std::memory_order_acq_rel))
+            {
+                Game::logMsg(
+                    "[VR][FirstPersonBody] current IInput camera validation failed at slots 29/30/31 or RVA signature mismatch; body draw remains disabled");
+            }
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(g_FirstPersonBodyRenderableHookMutex);
+        if (g_FirstPersonBodyCamHookReady.load(std::memory_order_acquire))
+            return true;
+
+        if (!Hooks::hkFirstPersonBodyCamIsThirdPerson.pTarget &&
+            Hooks::hkFirstPersonBodyCamIsThirdPerson.createHook(
+                camIsThirdPersonTarget,
+                reinterpret_cast<LPVOID>(
+                    &Hooks::dFirstPersonBodyCamIsThirdPerson)) != 0)
+        {
+            return false;
+        }
+
+        if (!Hooks::hkFirstPersonBodyCamIsThirdPerson.isEnabled &&
+            Hooks::hkFirstPersonBodyCamIsThirdPerson.enableHook() != 0)
+        {
+            return false;
+        }
+
+        g_FirstPersonBodyInputObject.store(inputObject, std::memory_order_release);
+        g_FirstPersonBodyCamHookReady.store(true, std::memory_order_release);
+        Game::logMsg(
+            "[VR][FirstPersonBody] native player render-mode hook installed input=%p target=%p slot=30",
+            inputObject,
+            camIsThirdPersonTarget);
+        return true;
+    }
+
+    bool HooksFirstPersonBodyEyeSceneMatchesRenderable(void* renderable)
+    {
+        if (!renderable ||
+            InterlockedCompareExchange(
+                &g_FirstPersonBodyEyeSceneActive, 0, 0) == 0)
+        {
+            return false;
+        }
+
+        HooksFirstPersonBodyEyeSceneState* const state =
+            g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
+        return state && state->localPlayerRenderable == renderable;
+    }
+
+    struct HooksFirstPersonBodyLocalState
+    {
+        int effects = 0x20;
+        std::uint8_t lifeState = 2;
+        std::uint16_t modelIndex = 0;
+        int teamNumber = 0;
+        int health = 0;
+        int observerMode = 0;
+        int viewEntity = 0;
+        bool incapacitated = false;
+        bool hangingFromLedge = false;
+        bool fallingFromLedge = false;
+        int tongueOwner = 0;
+        bool hangingFromTongue = false;
+        int carryAttacker = 0;
+        int pummelAttacker = 0;
+        int pounceAttacker = 0;
+        int jockeyAttacker = 0;
+    };
+
+    bool HooksFirstPersonBodyHandleValid(int handleValue)
+    {
+        const unsigned int handle = static_cast<unsigned int>(handleValue);
+        if (handle == 0u || handle == 0xFFFFFFFFu)
+            return false;
+
+        const unsigned int entityIndex = handle & 0x0FFFu;
+        return entityIndex > 0u && entityIndex < 2048u;
+    }
+
+    bool HooksFirstPersonBodyReadLocalStateSafe(
+        C_BasePlayer* player,
+        HooksFirstPersonBodyLocalState* outState)
+    {
+        if (!player || !outState)
+            return false;
+
+        *outState = HooksFirstPersonBodyLocalState{};
+        __try
+        {
+            constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
+            constexpr std::ptrdiff_t kTeamNumberOffset = 0xE4;
+            constexpr std::ptrdiff_t kHealthOffset = 0xEC;
+            constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
+            constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
+            constexpr std::ptrdiff_t kViewEntityOffset = 0x142C;
+            constexpr std::ptrdiff_t kObserverModeOffset = 0x1450;
+            constexpr std::ptrdiff_t kIncapacitatedOffset = 0x1EA9;
+            constexpr std::ptrdiff_t kTongueOwnerOffset = 0x1F6C;
+            constexpr std::ptrdiff_t kHangingFromTongueOffset = 0x1F84;
+            constexpr std::ptrdiff_t kHangingFromLedgeOffset = 0x25EC;
+            constexpr std::ptrdiff_t kFallingFromLedgeOffset = 0x25ED;
+            constexpr std::ptrdiff_t kCarryAttackerOffset = 0x2714;
+            constexpr std::ptrdiff_t kPummelAttackerOffset = 0x2720;
+            constexpr std::ptrdiff_t kPounceAttackerOffset = 0x272C;
+            constexpr std::ptrdiff_t kJockeyAttackerOffset = 0x274C;
+
+            const std::uint8_t* const playerBytes =
+                reinterpret_cast<const std::uint8_t*>(player);
+            outState->effects = *reinterpret_cast<const int*>(
+                playerBytes + kEffectsOffset);
+            outState->teamNumber = *reinterpret_cast<const int*>(
+                playerBytes + kTeamNumberOffset);
+            outState->health = *reinterpret_cast<const int*>(
+                playerBytes + kHealthOffset);
+            outState->modelIndex = *reinterpret_cast<const std::uint16_t*>(
+                playerBytes + kModelIndexOffset);
+            outState->lifeState = *(playerBytes + kLifeStateOffset);
+            outState->viewEntity = *reinterpret_cast<const int*>(
+                playerBytes + kViewEntityOffset);
+            outState->observerMode = *reinterpret_cast<const int*>(
+                playerBytes + kObserverModeOffset);
+            outState->incapacitated =
+                *(playerBytes + kIncapacitatedOffset) != 0;
+            outState->tongueOwner = *reinterpret_cast<const int*>(
+                playerBytes + kTongueOwnerOffset);
+            outState->hangingFromTongue =
+                *(playerBytes + kHangingFromTongueOffset) != 0;
+            outState->hangingFromLedge =
+                *(playerBytes + kHangingFromLedgeOffset) != 0;
+            outState->fallingFromLedge =
+                *(playerBytes + kFallingFromLedgeOffset) != 0;
+            outState->carryAttacker = *reinterpret_cast<const int*>(
+                playerBytes + kCarryAttackerOffset);
+            outState->pummelAttacker = *reinterpret_cast<const int*>(
+                playerBytes + kPummelAttackerOffset);
+            outState->pounceAttacker = *reinterpret_cast<const int*>(
+                playerBytes + kPounceAttackerOffset);
+            outState->jockeyAttacker = *reinterpret_cast<const int*>(
+                playerBytes + kJockeyAttackerOffset);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *outState = HooksFirstPersonBodyLocalState{};
+            return false;
+        }
+    }
+
+    bool HooksFirstPersonBodyPlayerStateEligible(
+        const HooksFirstPersonBodyLocalState& state)
+    {
+        constexpr int kEffectNoDraw = 0x20;
+        constexpr int kSurvivorTeam = 2;
+
+        const bool controlledBySpecialInfected =
+            state.hangingFromTongue ||
+            HooksFirstPersonBodyHandleValid(state.tongueOwner) ||
+            HooksFirstPersonBodyHandleValid(state.carryAttacker) ||
+            HooksFirstPersonBodyHandleValid(state.pummelAttacker) ||
+            HooksFirstPersonBodyHandleValid(state.pounceAttacker) ||
+            HooksFirstPersonBodyHandleValid(state.jockeyAttacker);
+
+        return
+            state.teamNumber == kSurvivorTeam &&
+            state.lifeState == 0 &&
+            state.health > 0 &&
+            state.modelIndex != 0 &&
+            (state.effects & kEffectNoDraw) == 0 &&
+            state.observerMode == 0 &&
+            !HooksFirstPersonBodyHandleValid(state.viewEntity) &&
+            !state.incapacitated &&
+            !state.hangingFromLedge &&
+            !state.fallingFromLedge &&
+            !controlledBySpecialInfected;
+    }
+
+    bool HooksFirstPersonBodyViewStateEligible(const VR* vr)
+    {
+        return
+            vr &&
+            vr->m_IsVREnabled &&
+            vr->m_FirstPersonBodyEnabled &&
+            !vr->m_IsThirdPersonCamera &&
+            !vr->m_ThirdPersonDefault &&
+            vr->m_ThirdPersonHoldFrames <= 0 &&
+            !(vr->m_ThirdPersonRenderOnCustomWalk && vr->m_CustomWalkHeld) &&
+            !vr->m_TeleportVisualScoutActive;
+    }
+
+    bool HooksFirstPersonBodyStateEligible(
+        const HooksFirstPersonBodyLocalState& state,
+        const VR* vr)
+    {
+        // This combined test runs only on the game/update thread. Render workers
+        // consume g_FirstPersonBodyEligible and the immutable published model fields
+        // instead of repeatedly dereferencing the local player entity.
+        return
+            HooksFirstPersonBodyViewStateEligible(vr) &&
+            HooksFirstPersonBodyPlayerStateEligible(state);
     }
 
     bool HooksFirstPersonBodyReadForwardMovementFractionSafe(
@@ -237,82 +542,9 @@ namespace
         }
     }
 
-    bool HooksFirstPersonBodySubmitNativeStageModelSafe(
-        C_BasePlayer* player,
-        void* renderable,
-        int flags,
-        int* outResult)
-    {
-        if (!player || !renderable || !outResult || !Hooks::m_Game ||
-            !Hooks::m_Game->m_ModelInfo || !Hooks::m_Game->m_ModelRender)
-        {
-            return false;
-        }
-
-        *outResult = 0;
-
-        __try
-        {
-            constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
-            constexpr std::ptrdiff_t kSkinOffset = 0x664;
-            constexpr std::ptrdiff_t kBodyOffset = 0x668;
-            constexpr std::ptrdiff_t kHitboxSetOffset = 0x640;
-            constexpr int kInvalidModelInstance = 0xFFFF;
-
-            const std::uint8_t* const playerBytes =
-                reinterpret_cast<const std::uint8_t*>(player);
-            const std::uint16_t modelIndex =
-                *reinterpret_cast<const std::uint16_t*>(
-                    playerBytes + kModelIndexOffset);
-            if (modelIndex == 0)
-                return false;
-
-            void* const model = Hooks::m_Game->m_ModelInfo->GetModel(
-                static_cast<int>(modelIndex));
-            if (!model)
-                return false;
-
-            void** const vtable = *reinterpret_cast<void***>(renderable);
-            if (!vtable || !vtable[1] || !vtable[2])
-                return false;
-
-            using GetRenderOriginFn = const Vector& (__thiscall*)(void*);
-            using GetRenderAnglesFn = const QAngle& (__thiscall*)(void*);
-            GetRenderOriginFn const getRenderOrigin =
-                reinterpret_cast<GetRenderOriginFn>(vtable[1]);
-            GetRenderAnglesFn const getRenderAngles =
-                reinterpret_cast<GetRenderAnglesFn>(vtable[2]);
-
-            const Vector& renderOrigin = getRenderOrigin(renderable);
-            const QAngle& renderAngles = getRenderAngles(renderable);
-            const int localIndex =
-                g_FirstPersonBodyLocalPlayerIndex.load(std::memory_order_acquire);
-            if (localIndex <= 0)
-                return false;
-
-            *outResult = Hooks::m_Game->m_ModelRender->DrawModel(
-                flags,
-                renderable,
-                kInvalidModelInstance,
-                localIndex,
-                model,
-                renderOrigin,
-                renderAngles,
-                *reinterpret_cast<const int*>(playerBytes + kSkinOffset),
-                *reinterpret_cast<const int*>(playerBytes + kBodyOffset),
-                *reinterpret_cast<const int*>(playerBytes + kHitboxSetOffset));
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            *outResult = 0;
-            return false;
-        }
-    }
-
     bool HooksFirstPersonBodyEnsureRenderableHooks(C_BasePlayer* player)
     {
-        if (!player)
+        if (!player || !HooksFirstPersonBodyEnsureInputCameraHook())
         {
             HooksFirstPersonBodyClearLocalRenderable();
             return false;
@@ -428,16 +660,32 @@ namespace
         static void* s_lastRenderable = nullptr;
         static bool s_visibilityRefreshIssued = false;
 
-        if (!player)
+        auto clearPublishedState = [&]()
+            {
+                HooksFirstPersonBodyClearLocalRenderable();
+                s_lastRenderable = nullptr;
+                s_visibilityRefreshIssued = false;
+            };
+
+        if (!player || !Hooks::m_VR)
         {
-            HooksFirstPersonBodyClearLocalRenderable();
-            s_lastRenderable = nullptr;
-            s_visibilityRefreshIssued = false;
+            clearPublishedState();
+            return;
+        }
+
+        HooksFirstPersonBodyLocalState localState{};
+        if (!HooksFirstPersonBodyReadLocalStateSafe(player, &localState) ||
+            !HooksFirstPersonBodyStateEligible(localState, Hooks::m_VR))
+        {
+            clearPublishedState();
             return;
         }
 
         if (!HooksFirstPersonBodyEnsureRenderableHooks(player))
+        {
+            clearPublishedState();
             return;
+        }
 
         int playerIndex = -1;
         void* activeWeaponRenderable = nullptr;
@@ -451,36 +699,28 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
+            playerIndex = -1;
             activeWeaponRenderable = nullptr;
         }
 
-        g_FirstPersonBodyLocalPlayerIndex.store(playerIndex, std::memory_order_release);
-        g_FirstPersonBodyActiveWeaponRenderable.store(
-            activeWeaponRenderable, std::memory_order_release);
-
         void* const renderable =
             g_FirstPersonBodyLocalRenderable.load(std::memory_order_acquire);
-        if (!renderable)
-            return;
-
-        int effects = 0x20;
-        std::uint8_t lifeState = 2;
-        std::uint16_t modelIndex = 0;
-        if (!HooksFirstPersonBodyReadLocalStateSafe(
-                player,
-                &effects,
-                &lifeState,
-                &modelIndex))
+        if (!renderable || playerIndex <= 0)
         {
+            clearPublishedState();
             return;
         }
 
-        constexpr int kEffectNoDraw = 0x20;
-        const bool renderReady =
-            (effects & kEffectNoDraw) == 0 && lifeState == 0 && modelIndex != 0;
-        const bool featureActive =
-            Hooks::m_VR && Hooks::m_VR->m_IsVREnabled &&
-            Hooks::m_VR->m_FirstPersonBodyEnabled;
+        // Close the publication gate while updating the per-player render snapshot.
+        g_FirstPersonBodyEligible.store(false, std::memory_order_release);
+        g_FirstPersonBodyLocalPlayerIndex.store(playerIndex, std::memory_order_release);
+        g_FirstPersonBodyActiveWeaponRenderable.store(
+            activeWeaponRenderable, std::memory_order_release);
+        g_FirstPersonBodyModelIndex.store(
+            static_cast<int>(localState.modelIndex), std::memory_order_release);
+        // Eligible is published last. Render workers that observe true also see
+        // the matching player/renderable/index/weapon pointers above.
+        g_FirstPersonBodyEligible.store(true, std::memory_order_release);
 
         if (renderable != s_lastRenderable)
         {
@@ -495,16 +735,11 @@ namespace
         // built-in Source client command invokes UpdateVisibilityAllEntities on
         // the game thread, which reaches our persistent ShouldDraw hook with the
         // player alive and restores the native visibility/leaf state together.
-        if (featureActive && renderReady && Hooks::m_Game &&
-            !s_visibilityRefreshIssued)
+        if (Hooks::m_Game && !s_visibilityRefreshIssued)
         {
             Hooks::m_Game->ClientCmd_Unrestricted("cl_updatevisibility\n");
             s_visibilityRefreshIssued = true;
         }
-
-        if (!featureActive || !renderReady)
-            s_visibilityRefreshIssued = false;
-
     }
 
 }
