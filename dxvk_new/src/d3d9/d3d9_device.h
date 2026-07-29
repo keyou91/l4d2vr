@@ -1195,6 +1195,11 @@ namespace dxvk {
     // surfaces are transitioned and published to OpenVR.
     void DrawQueuedEyeSubmitOverlays(VR* vr);
 
+    // Builds a side-by-side, single-sample depth atlas for ReShade's native
+    // OpenVR Vulkan effect runtime. The work is appended to the existing DXVK
+    // command stream and never performs a CPU readback or GPU wait.
+    void UpdateReShadeVrDepthAtlas(VR* vr);
+
   private:
 
     template<bool AllowFlush = true, typename Cmd>
@@ -1498,6 +1503,13 @@ namespace dxvk {
 
     D3D9Adapter*                    m_adapter;
     Rc<DxvkDevice>                  m_dxvkDevice;
+
+    Rc<DxvkImage>                   m_reShadeVrDepthAtlas;
+    Rc<DxvkImageView>               m_reShadeVrDepthAtlasView;
+    VkExtent3D                      m_reShadeVrDepthEyeExtent = { 0u, 0u, 0u };
+    VkFormat                        m_reShadeVrDepthFormat = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits           m_reShadeVrDepthSourceSamples = VK_SAMPLE_COUNT_1_BIT;
+    bool                            m_reShadeVrDepthMismatchLogged = false;
 
     D3D9MemoryAllocator             m_memoryAllocator;
 

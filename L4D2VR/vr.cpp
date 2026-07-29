@@ -34,6 +34,7 @@
 #include <regex>
 #include <vector>
 #include <d3d9_vr.h>
+#include <d3d9_reshade_vr.h>
 
 #pragma comment(lib, "Winmm.lib")
 #pragma comment(lib, "Winhttp.lib")

@@ -290,6 +290,7 @@
     <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_vertex_declaration.h" />
     <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_volume.h" />
     <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_vr.h" />
+    <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_reshade_vr.h" />
     <ClInclude Include="..\dxvk_new\src\d3d9\shaders\d3d9_convert_common.h" />
     <ClInclude Include="..\dxvk_new\src\dxbc\dxbc_analysis.h" />
     <ClInclude Include="..\dxvk_new\src\dxbc\dxbc_chunk_isgn.h" />
@@ -491,6 +492,7 @@
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_vertex_declaration.cpp" />
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_volume.cpp" />
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_vr.cpp" />
+    <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_reshade_vr.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_analysis.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_chunk_isgn.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_chunk_shex.cpp" />

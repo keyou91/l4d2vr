@@ -29,6 +29,7 @@
 #include "L4D2VR/vr.h"
 #include "L4D2VR/sdk/sdk.h"
 #include "d3d9_vr.h"
+#include "d3d9_reshade_vr.h"
 
 #include <algorithm>
 #include <atomic>
@@ -800,6 +801,232 @@ namespace dxvk {
 
     }
 
+    static bool VrGetReShadeDepthRegion(
+            const vr::VRTextureBounds_t& bounds,
+            const VkExtent3D&             imageExtent,
+                  VkOffset3D&             offset,
+                  VkExtent3D&             extent) {
+        const float u0 = std::clamp((std::min)(bounds.uMin, bounds.uMax), 0.0f, 1.0f);
+        const float u1 = std::clamp((std::max)(bounds.uMin, bounds.uMax), 0.0f, 1.0f);
+        const float v0 = std::clamp((std::min)(bounds.vMin, bounds.vMax), 0.0f, 1.0f);
+        const float v1 = std::clamp((std::max)(bounds.vMin, bounds.vMax), 0.0f, 1.0f);
+
+        const int32_t left = static_cast<int32_t>(std::floor(u0 * imageExtent.width));
+        const int32_t top = static_cast<int32_t>(std::floor(v0 * imageExtent.height));
+        const int32_t right = static_cast<int32_t>(std::ceil(u1 * imageExtent.width));
+        const int32_t bottom = static_cast<int32_t>(std::ceil(v1 * imageExtent.height));
+        if (right <= left || bottom <= top)
+            return false;
+
+        offset = { left, top, 0 };
+        extent = {
+            static_cast<uint32_t>(right - left),
+            static_cast<uint32_t>(bottom - top),
+            1u
+        };
+        return true;
+    }
+
+    void D3D9DeviceEx::UpdateReShadeVrDepthAtlas(VR* vr) {
+        if (!vr || !vr->m_ReShadeVRCompat || !D3D9ReShadeVrIsReady() ||
+            !vr->m_D9LeftEyeDepthSurface || !vr->m_D9RightEyeDepthSurface)
+            return;
+
+        auto* leftTexture = static_cast<D3D9Surface*>(vr->m_D9LeftEyeDepthSurface)->GetCommonTexture();
+        auto* rightTexture = static_cast<D3D9Surface*>(vr->m_D9RightEyeDepthSurface)->GetCommonTexture();
+        if (!leftTexture || !rightTexture)
+            return;
+
+        const Rc<DxvkImage>& leftImage = leftTexture->GetImage();
+        const Rc<DxvkImage>& rightImage = rightTexture->GetImage();
+        if (!leftImage || !rightImage)
+            return;
+
+        const DxvkImageCreateInfo& leftInfo = leftImage->info();
+        const DxvkImageCreateInfo& rightInfo = rightImage->info();
+        VkOffset3D leftOffset = { };
+        VkOffset3D rightOffset = { };
+        VkExtent3D leftExtent = { };
+        VkExtent3D rightExtent = { };
+
+        const bool validPair =
+            leftInfo.type == VK_IMAGE_TYPE_2D &&
+            rightInfo.type == VK_IMAGE_TYPE_2D &&
+            leftInfo.format == rightInfo.format &&
+            leftInfo.sampleCount == rightInfo.sampleCount &&
+            VrGetReShadeDepthRegion(vr->m_TextureBounds[0], leftInfo.extent, leftOffset, leftExtent) &&
+            VrGetReShadeDepthRegion(vr->m_TextureBounds[1], rightInfo.extent, rightOffset, rightExtent) &&
+            leftExtent.width == rightExtent.width &&
+            leftExtent.height == rightExtent.height;
+
+        if (!validPair) {
+            if (!m_reShadeVrDepthMismatchLogged) {
+                Logger::warn("L4D2VR ReShade VR: left/right eye depth resources or OpenVR bounds do not match");
+                m_reShadeVrDepthMismatchLogged = true;
+            }
+            return;
+        }
+
+        if (!m_reShadeVrDepthAtlas) {
+            DxvkImageCreateInfo atlasInfo;
+            atlasInfo.type = VK_IMAGE_TYPE_2D;
+            atlasInfo.format = leftInfo.format;
+            atlasInfo.flags = 0u;
+            atlasInfo.sampleCount = VK_SAMPLE_COUNT_1_BIT;
+            atlasInfo.extent = { leftExtent.width * 2u, leftExtent.height, 1u };
+            atlasInfo.numLayers = 1u;
+            atlasInfo.mipLevels = 1u;
+            atlasInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            atlasInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT |
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                               VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            atlasInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT |
+                               VK_ACCESS_SHADER_READ_BIT |
+                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            atlasInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            atlasInfo.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            atlasInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            atlasInfo.debugName = "L4D2VR ReShade stereo depth atlas";
+
+            try {
+                m_reShadeVrDepthAtlas = m_dxvkDevice->createImage(
+                    atlasInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                if (!m_reShadeVrDepthAtlas) {
+                    Logger::warn("L4D2VR ReShade VR: failed to create the stereo depth atlas");
+                    return;
+                }
+
+                DxvkImageViewKey viewInfo = { };
+                viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                viewInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+                viewInfo.format = atlasInfo.format;
+                viewInfo.aspects = VK_IMAGE_ASPECT_DEPTH_BIT;
+                viewInfo.mipIndex = 0u;
+                viewInfo.mipCount = 1u;
+                viewInfo.layerIndex = 0u;
+                viewInfo.layerCount = 1u;
+                viewInfo.packedSwizzle = 0u;
+                m_reShadeVrDepthAtlasView = m_reShadeVrDepthAtlas->createView(viewInfo);
+                if (!m_reShadeVrDepthAtlasView ||
+                    m_reShadeVrDepthAtlasView->handle() == VK_NULL_HANDLE) {
+                    Logger::warn("L4D2VR ReShade VR: failed to create the stereo depth shader view");
+                    m_reShadeVrDepthAtlasView = nullptr;
+                    m_reShadeVrDepthAtlas = nullptr;
+                    return;
+                }
+            } catch (const DxvkError& e) {
+                m_reShadeVrDepthAtlasView = nullptr;
+                m_reShadeVrDepthAtlas = nullptr;
+                Logger::warn(str::format(
+                    "L4D2VR ReShade VR: stereo depth atlas creation failed: ",
+                    e.message()));
+                return;
+            }
+
+            m_reShadeVrDepthEyeExtent = leftExtent;
+            m_reShadeVrDepthFormat = leftInfo.format;
+            m_reShadeVrDepthSourceSamples = leftInfo.sampleCount;
+            m_reShadeVrDepthMismatchLogged = false;
+
+            D3D9ReShadeVrPublishDepth(
+                m_dxvkDevice->handle(),
+                m_reShadeVrDepthAtlasView->handle(),
+                atlasInfo.extent.width,
+                atlasInfo.extent.height);
+
+            Logger::info(str::format(
+                "L4D2VR ReShade VR: created GPU stereo depth atlas ",
+                atlasInfo.extent.width, "x", atlasInfo.extent.height,
+                " format=", atlasInfo.format,
+                " sourceSamples=", leftInfo.sampleCount));
+        } else if (m_reShadeVrDepthEyeExtent.width != leftExtent.width ||
+                   m_reShadeVrDepthEyeExtent.height != leftExtent.height ||
+                   m_reShadeVrDepthFormat != leftInfo.format ||
+                   m_reShadeVrDepthSourceSamples != leftInfo.sampleCount) {
+            if (!m_reShadeVrDepthMismatchLogged) {
+                Logger::warn("L4D2VR ReShade VR: depth resources changed after atlas creation; restart is required");
+                m_reShadeVrDepthMismatchLogged = true;
+            }
+            return;
+        }
+
+        const Rc<DxvkImage> atlas = m_reShadeVrDepthAtlas;
+        const VkFormat format = leftInfo.format;
+        const VkSampleCountFlagBits samples = leftInfo.sampleCount;
+        EmitCs([
+            atlas,
+            leftImage,
+            rightImage,
+            leftOffset,
+            rightOffset,
+            eyeExtent = leftExtent,
+            format,
+            samples
+        ] (DxvkContext* ctx) {
+            VkImageSubresourceLayers srcSubresource = { };
+            srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            srcSubresource.mipLevel = 0u;
+            srcSubresource.baseArrayLayer = 0u;
+            srcSubresource.layerCount = 1u;
+
+            VkImageSubresourceLayers dstSubresource = srcSubresource;
+            const VkOffset3D leftDestination = { 0, 0, 0 };
+            const VkOffset3D rightDestination = {
+                static_cast<int32_t>(eyeExtent.width), 0, 0
+            };
+
+            VkImageLayout atlasWriteLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (samples == VK_SAMPLE_COUNT_1_BIT) {
+                ctx->copyImage(
+                    atlas, dstSubresource, leftDestination,
+                    leftImage, srcSubresource, leftOffset,
+                    eyeExtent);
+                ctx->copyImage(
+                    atlas, dstSubresource, rightDestination,
+                    rightImage, srcSubresource, rightOffset,
+                    eyeExtent);
+                atlasWriteLayout = atlas->pickLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            } else {
+                VkImageResolve leftRegion = { };
+                leftRegion.srcSubresource = srcSubresource;
+                leftRegion.srcOffset = leftOffset;
+                leftRegion.dstSubresource = dstSubresource;
+                leftRegion.dstOffset = leftDestination;
+                leftRegion.extent = eyeExtent;
+
+                VkImageResolve rightRegion = leftRegion;
+                rightRegion.srcOffset = rightOffset;
+                rightRegion.dstOffset = rightDestination;
+
+                ctx->resolveImage(
+                    atlas, leftImage, leftRegion, format,
+                    VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                    VK_RESOLVE_MODE_NONE);
+                ctx->resolveImage(
+                    atlas, rightImage, rightRegion, format,
+                    VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                    VK_RESOLVE_MODE_NONE);
+                atlasWriteLayout = atlas->pickLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            }
+
+            VkImageSubresourceRange atlasRange = { };
+            atlasRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            atlasRange.baseMipLevel = 0u;
+            atlasRange.levelCount = 1u;
+            atlasRange.baseArrayLayer = 0u;
+            atlasRange.layerCount = 1u;
+            ctx->transformImage(
+                atlas,
+                atlasRange,
+                atlasWriteLayout,
+                atlas->pickLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        });
+    }
+
     void D3D9DeviceEx::DrawQueuedEyeSubmitOverlays(VR* vr) {
         if (!vr)
             return;
@@ -977,6 +1204,9 @@ namespace dxvk {
 
 
     D3D9DeviceEx::~D3D9DeviceEx() {
+        if (m_dxvkDevice)
+            D3D9ReShadeVrClearDepth(m_dxvkDevice->handle());
+
         // Avoids hanging when in this state, see comment
         // in DxvkDevice::~DxvkDevice.
         if (this_thread::isInModuleDetachment())
@@ -5320,11 +5550,21 @@ namespace dxvk {
         desc.IsAttachmentOnly = TRUE;
         desc.IsLockable = IsLockableDepthStencilFormat(desc.Format);
 
-        if (g_Game && g_Game->m_VR
-            && (g_Game->m_VR->m_CreatingTextureID == VR::Texture_LeftEye
-                || g_Game->m_VR->m_CreatingTextureID == VR::Texture_RightEye)) {
-            dxvk::Logger::info(str::format("Creating depth/stencil surface with MSAA ", g_Game->m_VR->m_AntiAliasing));
-            desc.MultiSample = MapToMultisampleType(g_Game->m_VR->m_AntiAliasing);
+        VR* vr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
+        const VR::TextureID creatingTextureId = vr ? vr->m_CreatingTextureID : VR::Texture_None;
+        const bool creatingVrEyeDepth =
+            creatingTextureId == VR::Texture_LeftEye ||
+            creatingTextureId == VR::Texture_RightEye;
+
+        if (creatingVrEyeDepth) {
+            dxvk::Logger::info(str::format("Creating depth/stencil surface with MSAA ", vr->m_AntiAliasing));
+            desc.MultiSample = MapToMultisampleType(vr->m_AntiAliasing);
+
+            // ReShade receives depth through a GPU-only atlas. Sampling the exact eye
+            // depth images is required for multisample resolves and does not make them
+            // CPU-lockable or introduce a readback path.
+            if (vr->m_ReShadeVRCompat)
+                desc.IsAttachmentOnly = FALSE;
         }
 
         if (FAILED(D3D9CommonTexture::NormalizeTextureProperties(this, D3DRTYPE_SURFACE, &desc)))
@@ -5335,6 +5575,24 @@ namespace dxvk {
             m_initializer->InitTexture(surface->GetCommonTexture());
             *ppSurface = surface.ref();
             m_losableResourceCounter++;
+
+            if (vr && vr->m_ReShadeVRCompat && creatingVrEyeDepth) {
+                IDirect3DSurface9*& capturedDepth =
+                    creatingTextureId == VR::Texture_LeftEye
+                    ? vr->m_D9LeftEyeDepthSurface
+                    : vr->m_D9RightEyeDepthSurface;
+
+                if (capturedDepth != *ppSurface) {
+                    // The persistent atlas can keep the same Vulkan view across a D3D9
+                    // reset, but ReShade may have rebuilt or replaced its DEPTH
+                    // descriptors meanwhile. Rebind once on the next VR effect pass.
+                    D3D9ReShadeVrInvalidateBinding();
+                    if (capturedDepth)
+                        capturedDepth->Release();
+                    capturedDepth = *ppSurface;
+                    capturedDepth->AddRef();
+                }
+            }
 
             return D3D_OK;
         }

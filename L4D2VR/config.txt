@@ -23,6 +23,7 @@ LedgeGuardMinMoveSpeed=1
 LedgeGuardDebugLog=false
 LedgeGuardDebugLogHz=2
 AntiAliasing=0
+ReShadeVRCompat=false
 EyeRenderTargetMatchProjectionAspect=false
 
 ThirdPersonCameraFollowHmd=true

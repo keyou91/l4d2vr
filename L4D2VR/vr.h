@@ -283,6 +283,7 @@ public:
 	uint32_t m_RenderWidth;
 	uint32_t m_RenderHeight;
 	uint32_t m_AntiAliasing = 0;
+	bool m_ReShadeVRCompat = false;
 	bool m_EyeRenderTargetMatchProjectionAspect = false;
 	float m_Aspect;
 	float m_Fov;
@@ -1048,6 +1049,8 @@ public:
 
 	IDirect3DSurface9* m_D9LeftEyeSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeSurface = nullptr;
+	IDirect3DSurface9* m_D9LeftEyeDepthSurface = nullptr;
+	IDirect3DSurface9* m_D9RightEyeDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9HUDSurface = nullptr;

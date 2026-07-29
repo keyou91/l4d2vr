@@ -89,6 +89,114 @@ namespace
         return value;
     }
 
+    struct ReShadeVrBoundsAlignmentInfo
+    {
+        uint32_t leftWidth = 0;
+        uint32_t leftHeight = 0;
+        uint32_t rightWidth = 0;
+        uint32_t rightHeight = 0;
+        uint32_t commonWidth = 0;
+        uint32_t commonHeight = 0;
+    };
+
+    inline bool AlignReShadeVrEyeBounds(
+        vr::VRTextureBounds_t (&bounds)[2],
+        uint32_t textureWidth,
+        uint32_t textureHeight,
+        ReShadeVrBoundsAlignmentInfo& info)
+    {
+        if (textureWidth == 0 || textureHeight == 0)
+            return false;
+
+        struct PixelRegion
+        {
+            uint32_t left = 0;
+            uint32_t top = 0;
+            uint32_t right = 0;
+            uint32_t bottom = 0;
+        };
+
+        auto getRegion = [&](const vr::VRTextureBounds_t& eyeBounds, PixelRegion& region)
+            {
+                const float u0 = std::clamp((std::min)(eyeBounds.uMin, eyeBounds.uMax), 0.0f, 1.0f);
+                const float u1 = std::clamp((std::max)(eyeBounds.uMin, eyeBounds.uMax), 0.0f, 1.0f);
+                const float v0 = std::clamp((std::min)(eyeBounds.vMin, eyeBounds.vMax), 0.0f, 1.0f);
+                const float v1 = std::clamp((std::max)(eyeBounds.vMin, eyeBounds.vMax), 0.0f, 1.0f);
+
+                region.left = (std::min)(
+                    textureWidth,
+                    static_cast<uint32_t>(std::floor(u0 * textureWidth)));
+                region.top = (std::min)(
+                    textureHeight,
+                    static_cast<uint32_t>(std::floor(v0 * textureHeight)));
+                region.right = (std::min)(
+                    textureWidth,
+                    static_cast<uint32_t>(std::ceil(u1 * textureWidth)));
+                region.bottom = (std::min)(
+                    textureHeight,
+                    static_cast<uint32_t>(std::ceil(v1 * textureHeight)));
+                return region.right > region.left && region.bottom > region.top;
+            };
+
+        PixelRegion regions[2];
+        if (!getRegion(bounds[0], regions[0]) || !getRegion(bounds[1], regions[1]))
+            return false;
+
+        info.leftWidth = regions[0].right - regions[0].left;
+        info.leftHeight = regions[0].bottom - regions[0].top;
+        info.rightWidth = regions[1].right - regions[1].left;
+        info.rightHeight = regions[1].bottom - regions[1].top;
+        info.commonWidth = (std::min)(info.leftWidth, info.rightWidth);
+        info.commonHeight = (std::min)(info.leftHeight, info.rightHeight);
+        if (info.commonWidth == 0 || info.commonHeight == 0)
+            return false;
+
+        auto cropAxisToCommonExtent = [](uint32_t& low, uint32_t& high, uint32_t commonExtent)
+            {
+                const uint32_t trim = (high - low) - commonExtent;
+                low += trim / 2u;
+                high = low + commonExtent;
+            };
+
+        for (PixelRegion& region : regions)
+        {
+            cropAxisToCommonExtent(region.left, region.right, info.commonWidth);
+            cropAxisToCommonExtent(region.top, region.bottom, info.commonHeight);
+        }
+
+        auto writeQuantizedAxis = [](float& first, float& second, uint32_t low, uint32_t high, uint32_t size)
+            {
+                const bool reversed = first > second;
+                // Stay a quarter pixel inside the selected integer region. This makes
+                // ReShade's floor/ceil region calculation deterministic despite float
+                // round-off, while changing the compositor crop by less than one pixel.
+                const float normalizedLow =
+                    (static_cast<float>(low) + 0.25f) / static_cast<float>(size);
+                const float normalizedHigh =
+                    (static_cast<float>(high) - 0.25f) / static_cast<float>(size);
+                first = reversed ? normalizedHigh : normalizedLow;
+                second = reversed ? normalizedLow : normalizedHigh;
+            };
+
+        for (size_t eye = 0; eye < 2; ++eye)
+        {
+            writeQuantizedAxis(
+                bounds[eye].uMin,
+                bounds[eye].uMax,
+                regions[eye].left,
+                regions[eye].right,
+                textureWidth);
+            writeQuantizedAxis(
+                bounds[eye].vMin,
+                bounds[eye].vMax,
+                regions[eye].top,
+                regions[eye].bottom,
+                textureHeight);
+        }
+
+        return true;
+    }
+
     // NOTE: This file uses a tiny 5x7 glyph set for UI labels (LC/RC, item abbreviations, etc.).
     // For player names (teammates / aim target), we also support UTF-8 via a GDI fallback renderer
     // so Chinese/JP/KR/etc names can display correctly on the HUD overlay.
@@ -979,6 +1087,8 @@ VR::VR(Game* game)
 
     const uint32_t recommendedRenderWidth = m_RenderWidth;
     const uint32_t recommendedRenderHeight = m_RenderHeight;
+    m_ReShadeVRCompat =
+        ReadEarlyConfigBool("ReShadeVRCompat", m_ReShadeVRCompat);
     m_EyeRenderTargetMatchProjectionAspect =
         ReadEarlyConfigBool("EyeRenderTargetMatchProjectionAspect", m_EyeRenderTargetMatchProjectionAspect);
     m_FirstPersonBodyEnabled =
@@ -1019,6 +1129,15 @@ VR::VR(Game* game)
         ? static_cast<float>(m_RenderWidth) / static_cast<float>(m_RenderHeight)
         : 0.0f;
 
+    ReShadeVrBoundsAlignmentInfo reShadeBoundsAlignment;
+    const bool reShadeBoundsAligned =
+        !m_ReShadeVRCompat ||
+        AlignReShadeVrEyeBounds(
+            m_TextureBounds,
+            m_RenderWidth,
+            m_RenderHeight,
+            reShadeBoundsAlignment);
+
     Game::logMsg(
         "[VR][Projection] recommendedRT=%ux%u finalRT=%ux%u matchProjectionAspect=%d projectionAspect=%.6f recommendedAspect=%.6f finalAspect=%.6f fov=%.3f rawL=(%.4f %.4f %.4f %.4f) rawR=(%.4f %.4f %.4f %.4f)",
         recommendedRenderWidth,
@@ -1032,6 +1151,26 @@ VR::VR(Game* game)
         m_Fov,
         l_left, l_right, l_top, l_bottom,
         r_left, r_right, r_top, r_bottom);
+    if (m_ReShadeVRCompat)
+    {
+        Game::logMsg(
+            "[VR][ReShadeCompat] eye regions aligned=%d left=%ux%u right=%ux%u common=%ux%u boundsL=(%.6f %.6f %.6f %.6f) boundsR=(%.6f %.6f %.6f %.6f)",
+            reShadeBoundsAligned ? 1 : 0,
+            reShadeBoundsAlignment.leftWidth,
+            reShadeBoundsAlignment.leftHeight,
+            reShadeBoundsAlignment.rightWidth,
+            reShadeBoundsAlignment.rightHeight,
+            reShadeBoundsAlignment.commonWidth,
+            reShadeBoundsAlignment.commonHeight,
+            m_TextureBounds[0].uMin,
+            m_TextureBounds[0].uMax,
+            m_TextureBounds[0].vMin,
+            m_TextureBounds[0].vMax,
+            m_TextureBounds[1].uMin,
+            m_TextureBounds[1].uMax,
+            m_TextureBounds[1].vMin,
+            m_TextureBounds[1].vMax);
+    }
 
     InstallApplicationManifest("manifest.vrmanifest");
     SetActionManifest("action_manifest.json");
@@ -1040,6 +1179,9 @@ VR::VR(Game* game)
 
     while (!g_D3DVR9)
         Sleep(10);
+
+    if (m_ReShadeVRCompat)
+        m_ReShadeVRCompat = L4D2VR_InitializeReShadeVRBridge();
 
     RefreshBackBufferTexture(true);
     m_Overlay = vr::VROverlay();

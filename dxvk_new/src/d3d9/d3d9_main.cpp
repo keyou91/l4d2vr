@@ -2,6 +2,7 @@
 
 #include "d3d9_interface.h"
 #include "d3d9_shader_validator.h"
+#include "d3d9_reshade_vr.h"
 
 #include "d3d9_annotation.h"
 
@@ -27,6 +28,8 @@ namespace dxvk {
 extern "C" {
 
   DLLEXPORT IDirect3D9* __stdcall Direct3DCreate9(UINT nSDKVersion) {
+    dxvk::D3D9ReShadeVrPrepareConfiguration();
+
     IDirect3D9Ex* pDirect3D = nullptr;
     dxvk::CreateD3D9(false, &pDirect3D);
 
@@ -34,6 +37,7 @@ extern "C" {
   }
 
   DLLEXPORT HRESULT __stdcall Direct3DCreate9Ex(UINT nSDKVersion, IDirect3D9Ex** ppDirect3D9Ex) {
+    dxvk::D3D9ReShadeVrPrepareConfiguration();
     return dxvk::CreateD3D9(true, ppDirect3D9Ex);
   }
 

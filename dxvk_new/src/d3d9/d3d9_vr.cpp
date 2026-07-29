@@ -85,6 +85,15 @@ namespace dxvk {
       auto* tex = static_cast<D3D9Surface*>(pSurface)->GetCommonTexture();
       const auto& image = tex->GetImage();
 
+      VR* vr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
+      if (vr && vr->m_ReShadeVRCompat) {
+        IDirect3DSurface9* rightEyeSurface = vr->m_D9RightEyeSubmitSurface
+          ? vr->m_D9RightEyeSubmitSurface
+          : vr->m_D9RightEyeSurface;
+        if (pSurface == rightEyeSurface)
+          m_device->UpdateReShadeVrDepthAtlas(vr);
+      }
+
       VkImageSubresourceRange subresources = {
         VK_IMAGE_ASPECT_COLOR_BIT,
         0, image->info().mipLevels,

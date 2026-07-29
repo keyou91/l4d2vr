@@ -14,6 +14,7 @@ d3d9_src = [
   'd3d9_main.cpp',
   'd3d9_interface.cpp',
   'd3d9_vr.cpp',
+  'd3d9_reshade_vr.cpp',
   'd3d9_adapter.cpp',
   'd3d9_monitor.cpp',
   'd3d9_device.cpp',

@@ -399,6 +399,9 @@
     <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_vr.h">
       <Filter>dxvk</Filter>
     </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\d3d9\d3d9_reshade_vr.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
     <ClInclude Include="..\dxvk_new\src\d3d9\shaders\d3d9_convert_common.h">
       <Filter>dxvk</Filter>
     </ClInclude>
@@ -969,6 +972,9 @@
       <Filter>dxvk</Filter>
     </ClCompile>
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_vr.cpp">
+      <Filter>dxvk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_reshade_vr.cpp">
       <Filter>dxvk</Filter>
     </ClCompile>
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_analysis.cpp">

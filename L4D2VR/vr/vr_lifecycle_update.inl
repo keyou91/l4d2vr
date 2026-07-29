@@ -2149,6 +2149,10 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
 
     SafeReleaseD3D(m_D9LeftEyeSurface);
     SafeReleaseD3D(m_D9RightEyeSurface);
+    if (m_D9LeftEyeDepthSurface || m_D9RightEyeDepthSurface)
+        dxvk::D3D9ReShadeVrInvalidateBinding();
+    SafeReleaseD3D(m_D9LeftEyeDepthSurface);
+    SafeReleaseD3D(m_D9RightEyeDepthSurface);
     SafeReleaseD3D(m_D9LeftEyeSubmitSurface);
     SafeReleaseD3D(m_D9RightEyeSubmitSurface);
     SafeReleaseD3D(m_D9HUDSurface);
