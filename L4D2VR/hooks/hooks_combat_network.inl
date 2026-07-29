@@ -21,50 +21,6 @@ void __fastcall Hooks::dEndFrame(void* ecx, void* edx)
 
 	hkEndFrame.fOriginal(ecx);
 
-	// Do not run scope lens CPU/GPU post-processing from IMaterialSystem::EndFrame in
-	// queued rendering. Source can return from EndFrame while the material worker is
-	// still issuing DXVK D3D9 draw commands; touching the scope surface here can race
-	// D3D9DeviceEx::BindTexture/EmitCs. The pending flag is consumed from VR::Update(),
-	// which is called by the DXVK Present path after its queued-render idle point.
-
-	if (m_VR && m_Game && m_Game->GetMatQueueMode() != 0 && m_VR->m_ReShadeVRCompat)
-	{
-		const uint32_t pendingReady = m_VR->m_ReShadeVRCompatPendingRenderReady.exchange(0, std::memory_order_acq_rel);
-		if (pendingReady != 0)
-		{
-			uint32_t renderPoseToken = m_VR->m_ReShadeVRCompatPendingRenderPoseToken.exchange(0, std::memory_order_acq_rel);
-			const uint32_t pendingFrameSeq = m_VR->m_ReShadeVRCompatPendingRenderFrameSeq.exchange(0, std::memory_order_acq_rel);
-			const uint32_t pendingDuplicatePose = m_VR->m_ReShadeVRCompatPendingDuplicatePose.exchange(0, std::memory_order_acq_rel);
-			if (renderPoseToken == 0)
-				renderPoseToken = m_VR->m_SubmitPoseToken.load(std::memory_order_acquire);
-
-			m_VR->PublishRenderCompletedFrame(
-				renderPoseToken,
-				pendingFrameSeq,
-				pendingDuplicatePose != 0,
-				"end-frame-fallback");
-			const uint32_t completedFrameId = m_VR->m_RenderCompletedFrameId.load(std::memory_order_acquire);
-
-			if (m_VR->m_RenderPipelineDebugLog)
-			{
-				static thread_local std::chrono::steady_clock::time_point s_lastReShadeEndFrameCompleteLog{};
-				if (!ShouldThrottleLog(s_lastReShadeEndFrameCompleteLog, m_VR->m_RenderPipelineDebugLogHz))
-				{
-					Game::logMsg("[VR][Queued][RenderCompleteEndFrame] tid=%lu q=%d completed=%u frameSeq=%u renderPose=%u poseSeq=%u submitPose=%u lastSubmitted=%u renderedNew=%d",
-						GetCurrentThreadId(),
-						m_Game->GetMatQueueMode(),
-						completedFrameId,
-						pendingFrameSeq,
-						renderPoseToken,
-						m_VR->m_PoseWaiterSeq.load(std::memory_order_acquire),
-						m_VR->m_SubmitPoseToken.load(std::memory_order_acquire),
-						m_VR->m_LastSubmittedFrameId.load(std::memory_order_acquire),
-						m_VR->m_RenderedNewFrame.load(std::memory_order_acquire) ? 1 : 0);
-				}
-			}
-		}
-	}
-
 	if (logQueuedEndFrame)
 	{
 		static thread_local std::chrono::steady_clock::time_point s_lastMaterialEndFrameLog{};

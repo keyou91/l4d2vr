@@ -914,12 +914,6 @@ namespace
             std::lock_guard<std::mutex> poseLock(vr->m_RenderCompletedHmdPoseMutex);
             vr->m_RenderCompletedHmdPoseValid = false;
         }
-        vr->m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
-        vr->m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
-        vr->m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
-        vr->m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
-        vr->m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
-        vr->m_ReShadeVRCompatPendingDuplicatePose.store(0, std::memory_order_release);
         vr->m_LastSubmittedPoseToken.store(0, std::memory_order_release);
         vr->m_SubmitInFlight.store(false, std::memory_order_release);
         vr->m_QueuedSubmitStaleStreak.store(0, std::memory_order_release);
@@ -993,7 +987,6 @@ bool VR::SampleAutoFlashlightScreenLuma(float& outCenterMedianLuma, float& outCe
             return false;
 
         // Sample the raw eye RT and apply its SteamVR bounds during the GPU downsample.
-        // The raw eye RT is the stable source in both normal and ReShade-compat paths.
         if (m_D9LeftEyeSurface)
         {
             src = m_D9LeftEyeSurface;
@@ -1669,14 +1662,6 @@ void VR::Update()
 
     const bool queuedAtFrameStart = (m_Game && (m_Game->GetMatQueueMode() != 0));
 
-    const uint32_t updateThreadId = static_cast<uint32_t>(::GetCurrentThreadId());
-    const uint32_t renderThreadIdAtUpdate = m_RenderThreadId.load(std::memory_order_acquire);
-    const bool suppressQueuedReShadeSubmitOnRenderThread =
-        queuedAtFrameStart &&
-        m_ReShadeVRCompat &&
-        renderThreadIdAtUpdate != 0 &&
-        renderThreadIdAtUpdate == updateThreadId;
-
     UpdateDesktopMirrorOverlayHideEffective(this, queuedAtFrameStart);
     if (!queuedAtFrameStart)
         SubmitVRTextures();
@@ -1710,10 +1695,6 @@ void VR::Update()
                 std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
                 m_RenderCompletedHmdPoseValid = false;
             }
-            m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
-            m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
-            m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
-            m_ReShadeVRCompatPendingDuplicatePose.store(0, std::memory_order_release);
             m_RenderedNewFrame.store(false, std::memory_order_release);
             m_SubmitInFlight.store(false, std::memory_order_release);
             m_QueuedSubmitStaleStreak.store(0, std::memory_order_release);
@@ -1739,7 +1720,7 @@ void VR::Update()
         // Continue using the last known poses so smoothing and aim helpers stay active.
     }
 
-    if (queuedAtFrameStart && !suppressQueuedReShadeSubmitOnRenderThread)
+    if (queuedAtFrameStart)
     {
         SubmitVRTextures();
 
@@ -1770,20 +1751,6 @@ void VR::Update()
             }
         }
     }
-    else if (suppressQueuedReShadeSubmitOnRenderThread && m_RenderPipelineDebugLog)
-    {
-        static thread_local std::chrono::steady_clock::time_point s_lastQueuedReShadeUpdateSubmitSkipLog{};
-        if (!ShouldThrottle(s_lastQueuedReShadeUpdateSubmitSkipLog, m_RenderPipelineDebugLogHz))
-        {
-            Game::logMsg("[VR][Queued][ReShadeUpdateSubmitSkip] tid=%lu renderTid=%u completed=%u submitted=%u renderedNew=%d",
-                ::GetCurrentThreadId(),
-                renderThreadIdAtUpdate,
-                m_RenderCompletedFrameId.load(std::memory_order_acquire),
-                m_LastSubmittedFrameId.load(std::memory_order_acquire),
-                m_RenderedNewFrame.load(std::memory_order_acquire) ? 1 : 0);
-        }
-    }
-
     // Auto ResetPosition shortly after a level finishes loading.
 
     {
@@ -2144,12 +2111,6 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
     m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
-    m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
-    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingDuplicatePose.store(0, std::memory_order_release);
     m_LastSubmittedFrameId.store(0, std::memory_order_release);
     m_SubmitPoseToken.store(0, std::memory_order_release);
     m_LastSubmittedPoseToken.store(0, std::memory_order_release);
@@ -2321,14 +2282,13 @@ void VR::CreateVRTextures()
 
     // Queued rendering needs a stable consumer pair: Source writes leftEye0/rightEye0,
     // then its completion functor snapshots both into these submit RTs. OpenVR never
-    // reads the raw eye pair while Source is already building the next frame.
-    // ReShade/MSAA use the same pair for crop pre-bake / resolve respectively.
+    // reads the raw eye pair while Source is already building the next frame. MSAA also
+    // uses the pair as its resolve target.
     const bool queuedEyeIsolationRequested =
         m_AutoMatQueueMode ||
         (m_Game && m_Game->GetMatQueueMode() != 0);
     const bool useDedicatedEyeSubmitTextures =
         queuedEyeIsolationRequested ||
-        m_ReShadeVRCompat ||
         m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16;
     if (useDedicatedEyeSubmitTextures)
     {
@@ -2445,12 +2405,6 @@ void VR::CreateVRTextures()
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
     m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
-    m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
-    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
-    m_ReShadeVRCompatPendingDuplicatePose.store(0, std::memory_order_release);
     m_LastSubmittedFrameId.store(0, std::memory_order_release);
     m_SubmitPoseToken.store(0, std::memory_order_release);
     m_LastSubmittedPoseToken.store(0, std::memory_order_release);
@@ -2521,7 +2475,6 @@ void VR::InvalidateSourceRenderQueueMarkers()
     m_SourceRenderQueueOwnershipUncertain.store(false, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
     m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
-    m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     {
         std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
         m_RenderCompletedHmdPoseValid = false;
@@ -2800,7 +2753,6 @@ void VR::PublishSourceQueueCompletedFrame(
     m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
 
     const bool canSnapshotQueuedEyes =
-        !m_ReShadeVRCompat &&
         g_D3DVR9 != nullptr &&
         m_CreatedVRTextures.load(std::memory_order_acquire) &&
         m_CreatingTextureID == Texture_None &&
@@ -2912,14 +2864,13 @@ void VR::PublishSourceQueueCompletedFrame(
                     m_DesktopMirrorEye,
                     static_cast<unsigned int>(desktopMirrorHr));
             }
-            const uint32_t publishedFrameId = PublishRenderCompletedFrame(
+            PublishRenderCompletedFrame(
                 renderPoseToken,
                 renderFrameSeq,
                 allowDuplicatePoseSubmit,
                 "source-queue-snapshot",
                 sourceQueueMarkerId,
                 renderHmdPose);
-            m_PostPresentSubmitOverlayFrameId.store(publishedFrameId, std::memory_order_release);
             return;
         }
 
@@ -2949,20 +2900,6 @@ void VR::PublishSourceQueueCompletedFrame(
                 static_cast<unsigned int>(rightTransferHr),
                 static_cast<unsigned int>(submissionReadyHr));
         }
-        return;
-    }
-
-    if (m_ReShadeVRCompat)
-    {
-        // ReShade publishes the Source completion here; Present owns its dedicated
-        // resolve/pre-bake transaction before the pair becomes submit-ready.
-        PublishRenderCompletedFrame(
-            renderPoseToken,
-            renderFrameSeq,
-            allowDuplicatePoseSubmit,
-            "source-queue-direct",
-            sourceQueueMarkerId,
-            renderHmdPose);
         return;
     }
 
@@ -3140,24 +3077,8 @@ void VR::SubmitVRTextures()
     if (renderedNewFrame || inGame)
         m_MenuBlankSubmitted = false;
 
-    static const vr::VRTextureBounds_t fullEyeSubmitBounds{ 0.0f, 0.0f, 1.0f, 1.0f };
-
-    const bool reshadeSubmitPrebakedToFullBounds =
-        m_ReShadeVRCompat &&
-        m_D9LeftEyeSubmitSurface != nullptr &&
-        m_D9RightEyeSubmitSurface != nullptr;
-
-    // Normal path: submit the raw eye textures with SteamVR's asymmetric per-eye crop.
-    // ReShade/OpenVR compatibility path: the D3D9 Present path has already copied the
-    // cropped part of each eye texture into a dedicated full-frame submit texture, so
-    // submit with full bounds. This avoids ALVR/ReShade dropping the first eye while
-    // preserving the same effective projection crop as the normal path.
-    const vr::VRTextureBounds_t* leftEyeSubmitBounds = reshadeSubmitPrebakedToFullBounds
-        ? &fullEyeSubmitBounds
-        : &(m_TextureBounds)[0];
-    const vr::VRTextureBounds_t* rightEyeSubmitBounds = reshadeSubmitPrebakedToFullBounds
-        ? &fullEyeSubmitBounds
-        : &(m_TextureBounds)[1];
+    const vr::VRTextureBounds_t* leftEyeSubmitBounds = &(m_TextureBounds)[0];
+    const vr::VRTextureBounds_t* rightEyeSubmitBounds = &(m_TextureBounds)[1];
 
     if (m_QueuedSourceMarkerDebugLog && queued && sceneReadyForStaleResubmit)
     {
@@ -3530,8 +3451,7 @@ void VR::SubmitVRTextures()
     if (queued &&
         sceneReadyForStaleResubmit &&
         m_QueuedRenderPoseFromTracking &&
-        m_QueuedSubmitUseRenderPoseToken &&
-        !m_ReShadeVRCompat)
+        m_QueuedSubmitUseRenderPoseToken)
     {
         std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
         if (m_RenderCompletedHmdPoseValid)
@@ -3624,10 +3544,8 @@ void VR::SubmitVRTextures()
                 rightTexture == &m_VKRightEye.m_VRTexture;
             const bool preparedQueuedEyePair =
                 queued && sceneEyePair &&
-                !m_ReShadeVRCompat &&
                 m_QueuedEyeSubmitIsolationReady.load(std::memory_order_acquire);
             if (queued && sceneReadyForStaleResubmit && sceneEyePair &&
-                !m_ReShadeVRCompat &&
                 !preparedQueuedEyePair)
             {
                 return false;
@@ -3642,8 +3560,7 @@ void VR::SubmitVRTextures()
                     poseToken = lockedRenderPoseToken;
 
                 if (sceneReadyForStaleResubmit &&
-                    m_QueuedRenderPoseFromTracking &&
-                    !m_ReShadeVRCompat)
+                    m_QueuedRenderPoseFromTracking)
                 {
                     std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
                     if (m_RenderCompletedHmdPoseValid)
@@ -3667,9 +3584,9 @@ void VR::SubmitVRTextures()
                 }
             }
 
-            // Queued normal eyes were copied, transitioned and flushed before their
-            // completion generation was published. Other paths (single-threaded raw
-            // eyes and the ReShade resolve path) still prepare their layout here.
+            // Queued eyes were copied, transitioned and flushed before their completion
+            // generation was published. Single-threaded raw eyes still prepare their
+            // layout here.
             if (g_D3DVR9 && sceneEyePair && !preparedQueuedEyePair)
             {
                 IDirect3DSurface9* leftSurface = m_D9LeftEyeSubmitSurface

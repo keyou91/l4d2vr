@@ -3007,27 +3007,6 @@ void VR::ParseConfigFile()
     m_QueuedSourceMarkerDebugLogHz = std::clamp(getFloat("QueuedSourceMarkerDebugLogHz", m_QueuedSourceMarkerDebugLogHz), 0.0f, 60.0f);
     m_RightEyeCopyFromLeft = getBool("RightEyeCopyFromLeft", m_RightEyeCopyFromLeft);
 
-    // ReShade compatibility: ReShade's D3D9 runtime can leave the device/backbuffer state in
-    // a state that is valid for flat desktop Present but invalid for our per-eye VR RT chain.
-    // This enables a guarded path around each eye render and avoids submitting VR after a
-    // post-Present idle wait that includes ReShade's desktop backbuffer work.
-    const bool oldReShadeVRCompat = m_ReShadeVRCompat;
-    m_ReShadeVRCompat = getBool("ReShadeVRCompat", m_ReShadeVRCompat);
-    // ReShade injects D3D work outside Source's known producer windows and therefore
-    // retains the conservative all-call lock. Normal queued rendering uses DXVK's
-    // scoped exclusive transactions instead of locking every draw call.
-    L4D2VR_D3D9_SetForceDeviceLock(m_ReShadeVRCompat ? 1 : 0);
-    if (oldReShadeVRCompat != m_ReShadeVRCompat)
-    {
-        m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
-        m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
-        m_ReShadeVRCompatPendingRenderPoseToken.store(0, std::memory_order_release);
-        m_ReShadeVRCompatPendingRenderFrameSeq.store(0, std::memory_order_release);
-        m_ReShadeVRCompatPendingDuplicatePose.store(0, std::memory_order_release);
-        m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
-    }
-    if (m_Compositor && oldReShadeVRCompat != m_ReShadeVRCompat)
-        ConfigureExplicitTiming();
 
     // Bullet FX alignment: fine-tune client-side tracer/impact visuals.
     // Units: meters in aim-ray space (X=forward, Y=right, Z=up). Visual-only.

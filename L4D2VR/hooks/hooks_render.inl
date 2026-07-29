@@ -411,8 +411,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
 	// Normal queued rendering uses Source call-queue markers to own the device for
 	// complete render-command intervals. The activity gate remains a fallback for
-	// calls outside a proven interval. ReShade still retains the all-call lock.
-	L4D2VR_D3D9_SetForceDeviceLock(m_VR->m_ReShadeVRCompat ? 1 : 0);
+	// calls outside a proven interval.
 	struct SourceRenderQueueBuildScope
 	{
 		VR* vr = nullptr;
@@ -440,7 +439,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		VR* vr = nullptr;
 		IMatRenderContext* context = nullptr;
 		bool trackQueueTail = false;
-		bool allowSourceFrameOwnership = false;
 		bool headAcquireAttempted = false;
 		bool sourceFrameAcquireQueued = false;
 		bool tailReleaseQueued = false;
@@ -448,18 +446,16 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		SourceRenderExecutionScope(
 			VR* owner,
 			IMatRenderContext* renderContext,
-			bool queued,
-			bool allowSourceFrameOwnership)
+			bool queued)
 			: vr(owner),
 			context(renderContext),
-			trackQueueTail(queued && owner && renderContext),
-			allowSourceFrameOwnership(allowSourceFrameOwnership)
+			trackQueueTail(queued && owner && renderContext)
 		{
 		}
 
 		void QueueHeadAcquire()
 		{
-			if (headAcquireAttempted || !trackQueueTail || !allowSourceFrameOwnership)
+			if (headAcquireAttempted || !trackQueueTail)
 				return;
 
 			headAcquireAttempted = true;
@@ -503,8 +499,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	SourceRenderExecutionScope sourceRenderExecutionScope(
 		m_VR,
 		rndrContext,
-		queueMode != 0,
-		!m_VR->m_ReShadeVRCompat);
+		queueMode != 0);
 	const bool inGameForWindowState =
 		m_Game && m_Game->m_EngineClient && m_Game->m_EngineClient->IsInGame();
 	const bool vrWindowDrawable = DebugIsCurrentProcessMainWindowDrawable();
@@ -1315,8 +1310,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				(queueMode != 0) &&
 				m_VR->m_QueuedRenderPoseFromTracking &&
 				m_VR->m_QueuedSubmitUseRenderPoseToken &&
-				m_VR->m_System &&
-				!m_VR->m_ReShadeVRCompat;
+				m_VR->m_System;
 			bool havePoses = false;
 			if (useTrackingRenderPose)
 			{
@@ -2851,10 +2845,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	hudRight.origin = rightEyeView.origin;
 	hudRight.angles = renderViewAngles;
 
-	std::unique_lock<std::recursive_mutex> reshadeQueuedSurfaceLock;
-	if (queueMode != 0 && m_VR->m_ReShadeVRCompat)
-		reshadeQueuedSurfaceLock = std::unique_lock<std::recursive_mutex>(m_VR->m_ReShadeVRCompatSurfaceMutex);
-
 	// The queued clean desktop-mirror RenderView path was removed deliberately.
 	// Queued mode fills desktopMirrorClean0 from its completed submit snapshot instead.
 
@@ -2863,7 +2853,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		(leftEyeView.origin.y + rightEyeView.origin.y) * 0.5f,
 		(leftEyeView.origin.z + rightEyeView.origin.z) * 0.5f);
 
-	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture, LPDIRECT3DSURFACE9 reshadeSurface,
+	auto renderEyeScene = [&](int eyeIndex, ITexture* eyeTexture,
 		CViewSetup& eyeView, CViewSetup& eyeHud, bool drawPreViewLaser)
 		{
 			struct EyeRenderTargetScope
@@ -2962,7 +2952,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				eyeIndex,
 				sharedCenterOrigin,
 				eyeView.origin);
-			ScopedReShadeVRCompatD3D9StateGuard reshadeGuard(m_VR, reshadeSurface);
 			if (drawPreViewLaser && m_VR->m_IsVREnabled)
 				m_VR->RenderDrawGameLaserSight(localPlayer);
 			if (m_VR->m_IsVREnabled)
@@ -3132,7 +3121,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	sourceRenderExecutionScope.QueueHeadAcquire();
 	const auto stereoSceneStartTime = std::chrono::steady_clock::now();
 	{
-		renderEyeScene(1, m_VR->m_LeftEyeTexture, m_VR->m_D9LeftEyeSurface, leftEyeView, hudLeft, true);
+		renderEyeScene(1, m_VR->m_LeftEyeTexture, leftEyeView, hudLeft, true);
 		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye == 0)
 			m_VR->CopyEyeToDesktopMirrorTexture(0);
 		if (copyRightEyeFromLeft)
@@ -3144,7 +3133,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	{
 		if (!rightEyeCopiedFromLeft)
 		{
-			renderEyeScene(2, m_VR->m_RightEyeTexture, m_VR->m_D9RightEyeSurface, rightEyeView, hudRight, false);
+			renderEyeScene(2, m_VR->m_RightEyeTexture, rightEyeView, hudRight, false);
 		}
 		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye != 0)
 			m_VR->CopyEyeToDesktopMirrorTexture(1);
@@ -3388,33 +3377,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			return;
 		}
 
-		if (m_VR->m_ReShadeVRCompat)
-		{
-			// Fallback for contexts that unexpectedly expose no Source call queue.
-			// ReShade resolves eye RTs after Present, so retain the older EndFrame gate.
-			m_VR->m_ReShadeVRCompatPendingRenderPoseToken.store(renderPoseTokenUsed, std::memory_order_release);
-			m_VR->m_ReShadeVRCompatPendingRenderFrameSeq.store(renderFrameSeq, std::memory_order_release);
-			m_VR->m_ReShadeVRCompatPendingDuplicatePose.store(renderPoseAllowDuplicateSubmit ? 1u : 0u, std::memory_order_release);
-			m_VR->m_ReShadeVRCompatPendingRenderReady.store(1, std::memory_order_release);
-
-			if (m_VR->m_RenderPipelineDebugLog)
-			{
-				static thread_local std::chrono::steady_clock::time_point s_lastRenderPendingLog{};
-				if (!ShouldThrottleLog(s_lastRenderPendingLog, m_VR->m_RenderPipelineDebugLogHz))
-				{
-					Game::logMsg("[VR][Queued][RenderCompletePendingFallback] tid=%lu q=%d completed=%u frameSeq=%u renderPose=%u poseSeq=%u submitPose=%u lastSubmitted=%u renderedNew=%d",
-						GetCurrentThreadId(), queueMode,
-						m_VR->m_RenderCompletedFrameId.load(std::memory_order_acquire),
-						renderFrameSeq,
-						renderPoseTokenUsed,
-						m_VR->m_PoseWaiterSeq.load(std::memory_order_acquire),
-						m_VR->m_SubmitPoseToken.load(std::memory_order_acquire),
-						m_VR->m_LastSubmittedFrameId.load(std::memory_order_acquire),
-						m_VR->m_RenderedNewFrame.load(std::memory_order_acquire) ? 1 : 0);
-				}
-			}
-			return;
-		}
 
 		// Without a usable Source call queue there is no execution-order proof that the
 		// queued stereo commands have finished. Keep reprojecting the last stable submit

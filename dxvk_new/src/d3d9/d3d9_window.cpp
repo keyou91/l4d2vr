@@ -2,10 +2,6 @@
 
 #include "d3d9_swapchain.h"
 
-#include "L4D2VR/game.h"
-#include "L4D2VR/vr.h"
-#include "L4D2VR/sdk/sdk.h"
-
 namespace dxvk
 {
 
@@ -21,27 +17,6 @@ namespace dxvk
 
   static dxvk::recursive_mutex g_windowProcMapMutex;
   static std::unordered_map<HWND, D3D9WindowData> g_windowProcMap;
-
-  static bool L4D2VRShouldKeepWindowAliveOnDeactivate() {
-    return g_Game
-      && g_Game->m_VR
-      && g_Game->m_VR->m_ReShadeVRCompat
-      && g_Game->m_VR->m_CreatedVRTextures.load(std::memory_order_acquire)
-      && g_Game->m_EngineClient
-      && g_Game->m_EngineClient->IsInGame();
-  }
-
-  static void L4D2VRLogDeactivateBypassOnce(HWND window) {
-    static DWORD s_lastLogMs = 0;
-    DWORD nowMs = GetTickCount();
-    if (nowMs - s_lastLogMs < 1000)
-      return;
-    s_lastLogMs = nowMs;
-
-    if (g_Game && g_Game->m_VR && g_Game->m_VR->m_RenderPipelineDebugLog) {
-      Game::logMsg("[VR][Queued][ReShadeWindowDeactivateBypass] hwnd=0x%p reason=ReShadeVRCompat", window);
-    }
-  }
 
   D3D9WindowMessageFilter::D3D9WindowMessageFilter(HWND window, bool filter)
     : m_window(window) {
@@ -88,8 +63,6 @@ namespace dxvk
       D3DDEVICE_CREATION_PARAMETERS create_parms;
       device->GetCreationParameters(&create_parms);
 
-      const bool l4d2vrKeepWindowAlive = !wparam && L4D2VRShouldKeepWindowAliveOnDeactivate();
-
       if (!(create_parms.BehaviorFlags & D3DCREATE_NOWINDOWCHANGES)) {
         D3D9WindowMessageFilter filter(window);
         if (wparam && !windowData.activateProcessed) {
@@ -102,21 +75,14 @@ namespace dxvk
           SetWindowPos(window, nullptr, rect.left, rect.top, params.BackBufferWidth, params.BackBufferHeight,
                        SWP_NOACTIVATE | SWP_NOZORDER);
         }
-        else if (!wparam) {
-          if (l4d2vrKeepWindowAlive) {
-            L4D2VRLogDeactivateBypassOnce(window);
-          }
-          else if (IsWindowVisible(window)) {
-            ShowWindow(window, SW_MINIMIZE);
-          }
+        else if (!wparam && IsWindowVisible(window)) {
+          ShowWindow(window, SW_MINIMIZE);
         }
       }
 
-      if (!l4d2vrKeepWindowAlive &&
-        ((wparam && !windowData.activateProcessed)
-        || (!wparam && !windowData.deactivateProcessed))) {
+      if ((wparam && !windowData.activateProcessed)
+       || (!wparam && !windowData.deactivateProcessed))
         device->NotifyWindowActivated(window, wparam);
-      }
 
       SetActivateProcessed(window, !!wparam);
     }

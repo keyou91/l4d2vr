@@ -1109,54 +1109,6 @@ static inline QAngle BuildVRAudioListenerAngles(VR* vr, const Vector& fallbackAn
 	return listenerAngles;
 }
 
-class ScopedReShadeVRCompatD3D9StateGuard
-{
-public:
-	ScopedReShadeVRCompatD3D9StateGuard(VR* vr, IDirect3DSurface9* expectedRenderTarget)
-		: m_vr(vr)
-	{
-		if (!m_vr || !m_vr->m_ReShadeVRCompat || !expectedRenderTarget)
-			return;
-
-		if (FAILED(expectedRenderTarget->GetDevice(&m_device)) || !m_device)
-			return;
-
-		// Do not wrap Source's RenderView in a D3DSBT_ALL state block.
-		// Source's material system keeps its own shadow state cache; applying a raw
-		// D3D9 state block after RenderView desynchronizes that cache. Custom model
-		// shaders/proxy materials then skip rebinding textures/constants and can render
-		// as black silhouettes, especially when ReShade is also hooked into D3D9.
-		//
-		// The compatibility requirement is narrower: at the start of each VR eye,
-		// make sure the external runtime has not left the device bound to the desktop
-		// swapchain/backbuffer. Re-assert only the eye render target and viewport here
-		// and let Source own all material/shader/render-state transitions.
-		m_device->SetRenderTarget(0, expectedRenderTarget);
-
-		D3DVIEWPORT9 eyeViewport{};
-		eyeViewport.X = 0;
-		eyeViewport.Y = 0;
-		eyeViewport.Width = m_vr->m_RenderWidth;
-		eyeViewport.Height = m_vr->m_RenderHeight;
-		eyeViewport.MinZ = 0.0f;
-		eyeViewport.MaxZ = 1.0f;
-		m_device->SetViewport(&eyeViewport);
-	}
-
-	~ScopedReShadeVRCompatD3D9StateGuard()
-	{
-		if (m_device)
-		{
-			m_device->Release();
-			m_device = nullptr;
-		}
-	}
-
-private:
-	VR* m_vr = nullptr;
-	IDirect3DDevice9* m_device = nullptr;
-};
-
 // ------------------------------------------------------------
 // Engine third-person camera smoothing
 //

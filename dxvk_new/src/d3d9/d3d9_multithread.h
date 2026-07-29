@@ -7,8 +7,6 @@
 
 namespace dxvk {
 
-  extern std::atomic<bool> g_l4d2vrForceDeviceLock;
-
   /**
    * \brief Device lock
    *
@@ -119,14 +117,12 @@ namespace dxvk {
         return D3D9DeviceLock(m_mutex);
 
       for (;;) {
-        if (g_l4d2vrForceDeviceLock.load(std::memory_order_acquire)
-         || m_sourceFrameActive.load(std::memory_order_acquire)
+        if (m_sourceFrameActive.load(std::memory_order_acquire)
          || m_exclusiveRequests.load(std::memory_order_acquire) != 0)
           return AcquireExclusiveLock();
 
         m_unprotectedActivity.fetch_add(1, std::memory_order_acq_rel);
-        if (!g_l4d2vrForceDeviceLock.load(std::memory_order_acquire)
-         && !m_sourceFrameActive.load(std::memory_order_acquire)
+        if (!m_sourceFrameActive.load(std::memory_order_acquire)
          && m_exclusiveRequests.load(std::memory_order_acquire) == 0)
           return D3D9DeviceLock::Activity(m_unprotectedActivity);
 

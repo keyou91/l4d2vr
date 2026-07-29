@@ -40,7 +40,6 @@ class C_BasePlayer;
 class C_WeaponCSBase;
 
 bool L4D2VR_ApplyRecommendedVideoSettings();
-extern "C" void L4D2VR_D3D9_SetForceDeviceLock(int enabled);
 class CUserCmd;
 struct IDirect3DDevice9;
 struct IDirect3DTexture9;
@@ -2242,28 +2241,6 @@ public:
 	// Runtime effective value. External mirror code can keep reading this field.
 	bool m_DesktopMirrorHidePluginOverlays = true;
 	bool m_DesktopMirrorCleanRenderingPass = false;
-
-	// ReShadeVRCompat=true/false
-	// When enabled, the VR render path uses conservative per-eye D3D9 RT binding,
-	// forces DXVK D3D9 device locking for ReShade + Source queued rendering, submits
-	// full-eye texture bounds, and disables application-managed explicit compositor
-	// timing. This is intended only for real SteamVR/ALVR HMDs with ReShade loaded.
-	bool m_ReShadeVRCompat = false;
-	// ReShade + mat_queue_mode 2 needs an additional coarse guard around eye RT writes,
-	// post-Present resolve, and SteamVR submit. Per-call D3D9 locking is not enough here:
-	// the Present thread can otherwise resolve half-written eye textures when complex
-	// scenes make the queued render worker lag behind.
-	mutable std::recursive_mutex m_ReShadeVRCompatSurfaceMutex;
-	std::atomic<uint32_t> m_ReShadeVRCompatResolvedFrameId{ 0 };
-	// Raw D3D overlays must be composited into a submit snapshot at most once.
-	std::atomic<uint32_t> m_PostPresentSubmitOverlayFrameId{ 0 };
-	// In Source queued rendering, RenderView can return before MaterialSystem::EndFrame
-	// has flushed all D3D work. ReShadeVRCompat resolves eye RTs after Present, so only
-	// publish a completed stereo frame after EndFrame has finished.
-	std::atomic<uint32_t> m_ReShadeVRCompatPendingRenderReady{ 0 };
-	std::atomic<uint32_t> m_ReShadeVRCompatPendingRenderPoseToken{ 0 };
-	std::atomic<uint32_t> m_ReShadeVRCompatPendingRenderFrameSeq{ 0 };
-	std::atomic<uint32_t> m_ReShadeVRCompatPendingDuplicatePose{ 0 };
 
 
 	bool m_FlashlightEnhancementEnabled = false;

@@ -1123,18 +1123,6 @@ void VR::ConfigureExplicitTiming()
     if (!m_Compositor)
         return;
 
-    // ReShade's real-HMD path hooks OpenVR/Vulkan submits. With application-managed
-    // explicit timing, some runtimes/add-ons can consume the first eye submit as an
-    // incomplete frame, which shows up as a blank left eye while the right eye survives.
-    // In compatibility mode, let the runtime manage timing itself.
-    if (m_ReShadeVRCompat)
-    {
-        m_Compositor->SetExplicitTimingMode(vr::VRCompositorTimingMode_Implicit);
-        m_CompositorExplicitTiming = false;
-        m_CompositorNeedsHandoff = false;
-        return;
-    }
-
     m_Compositor->SetExplicitTimingMode(
         vr::VRCompositorTimingMode_Explicit_ApplicationPerformsPostPresentHandoff);
 
