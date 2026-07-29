@@ -3290,18 +3290,20 @@ void VR::ParseConfigFile()
     m_DesktopMirrorHidePluginOverlaysRequested =
         getBool("DesktopMirrorHidePluginOverlays",
             getBool("m_DesktopMirrorHidePluginOverlays", m_DesktopMirrorHidePluginOverlaysRequested));
-    // Keep requested/effective state separate. The clean mirror target is single-thread
-    // only. In queued/multicore mode the regular eye is mirrored directly so we do not
-    // insert an extra clean world RenderView into Source's shared shadow RTT pipeline.
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
+    // Keep requested/effective state separate. The legacy flag remains single-thread-only
+    // because it controls the extra clean Source eye path. Queued/multicore mode still
+    // allocates desktopMirrorClean0, but fills it from the completed selected-eye submit
+    // snapshot immediately before the DXVK item-label / aim-line draws.
     const bool desktopMirrorTexturesReady = m_CreatedVRTextures.load(std::memory_order_acquire);
     const bool desktopMirrorCleanTargetReady = (m_DesktopMirrorTexture != nullptr);
-    const bool desktopMirrorCleanCopySafe = !m_Game || m_Game->GetMatQueueMode() == 0;
+    const bool desktopMirrorLegacyCleanPassSafe = !m_Game || m_Game->GetMatQueueMode() == 0;
     m_DesktopMirrorHidePluginOverlays =
         m_DesktopMirrorEnabled &&
         m_DesktopMirrorHidePluginOverlaysRequested &&
         desktopMirrorCleanTargetReady &&
-        desktopMirrorCleanCopySafe;
-    if (m_DesktopMirrorEnabled && m_DesktopMirrorHidePluginOverlaysRequested && desktopMirrorCleanCopySafe && desktopMirrorTexturesReady && !m_DesktopMirrorTexture)
+        desktopMirrorLegacyCleanPassSafe;
+    if (m_DesktopMirrorEnabled && m_DesktopMirrorHidePluginOverlaysRequested && desktopMirrorTexturesReady && !m_DesktopMirrorTexture)
     {
         std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
         m_CreatedVRTextures.store(false, std::memory_order_release);

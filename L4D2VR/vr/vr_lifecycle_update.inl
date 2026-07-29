@@ -907,6 +907,7 @@ namespace
 
         vr->m_RenderedNewFrame.store(false, std::memory_order_release);
         vr->m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+        vr->m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
         vr->m_RenderCompletedPoseToken.store(0, std::memory_order_release);
         vr->m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
         {
@@ -939,18 +940,17 @@ namespace
         if (!vr)
             return;
 
-        // The user-facing setting is a request; the runtime flag is true only when the
-        // clean desktop mirror target exists and rendering is single-threaded. Queued mode
-        // must not insert a separate clean world RenderView: the two VR eye passes already
-        // exercise Source's shared shadow RTT path heavily, and the extra pass can corrupt
-        // persistent shadow output after a scene-pressure spike.
+        // The legacy runtime flag remains single-thread-only because it controls the extra
+        // clean Source eye path and several overlay-suppression paths. Queued mode only needs
+        // the same texture allocated: its completion transaction fills desktopMirrorClean0
+        // from the selected submit eye before the DXVK item-label / aim-line draws.
 
         const bool requested = vr->m_DesktopMirrorEnabled && vr->m_DesktopMirrorHidePluginOverlaysRequested;
         const bool texturesReady = vr->m_CreatedVRTextures.load(std::memory_order_acquire);
         const bool cleanTargetReady = (vr->m_DesktopMirrorTexture != nullptr);
-        const bool cleanCopySafe = !queuedRendering;
-        const bool effective = requested && cleanTargetReady && cleanCopySafe;
-        const bool needRecreate = requested && cleanCopySafe && texturesReady && !vr->m_DesktopMirrorTexture;
+        const bool legacyCleanPassSafe = !queuedRendering;
+        const bool effective = requested && cleanTargetReady && legacyCleanPassSafe;
+        const bool needRecreate = requested && texturesReady && !vr->m_DesktopMirrorTexture;
 
         const bool changed = (vr->m_DesktopMirrorHidePluginOverlays != effective);
         vr->m_DesktopMirrorHidePluginOverlays = effective;
@@ -967,9 +967,10 @@ namespace
 
         if ((changed || needRecreate) && vr->m_RenderPipelineDebugLog)
         {
-            Game::logMsg("[VR][DesktopMirror] HidePluginOverlays requested=%d effective=%d queue=%d; recreate=%d cleanTarget=%d",
+            Game::logMsg("[VR][DesktopMirror] HidePluginOverlays requested=%d legacyEffective=%d queue=%d; recreate=%d cleanTarget=%d queuedPreOverlayReady=%d",
                 requested ? 1 : 0, effective ? 1 : 0, queuedRendering ? 1 : 0,
-                needRecreate ? 1 : 0, vr->m_DesktopMirrorTexture ? 1 : 0);
+                needRecreate ? 1 : 0, vr->m_DesktopMirrorTexture ? 1 : 0,
+                vr->m_QueuedDesktopMirrorPreOverlayReady.load(std::memory_order_acquire) ? 1 : 0);
         }
     }
 }
@@ -1696,6 +1697,7 @@ void VR::Update()
                 // submit-snapshot policy was active. Let the next RenderView recreate
                 // the full target set before publishing another queued frame.
                 m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+                m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
                 m_CreatedVRTextures.store(false, std::memory_order_release);
             }
         }
@@ -2141,6 +2143,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_RenderCompletedPoseToken.store(0, std::memory_order_release);
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
     m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
     m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
@@ -2268,16 +2271,39 @@ void VR::CreateVRTextures()
 
     LogVAS("before CreateVRTextures");
 
-    int windowWidth = 0;
-    int windowHeight = 0;
+    int materialWindowWidth = 0;
+    int materialWindowHeight = 0;
     CRefPtr<IMatRenderContext> renderContext;
     renderContext = m_Game->m_MaterialSystem->GetRenderContext();
     if (renderContext)
-        renderContext->GetWindowSize(windowWidth, windowHeight);
+        renderContext->GetWindowSize(materialWindowWidth, materialWindowHeight);
 
     int backBufferWidth = 0;
     int backBufferHeight = 0;
     m_Game->m_MaterialSystem->GetBackBufferDimensions(backBufferWidth, backBufferHeight);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    HWND gameWindow = FindFocusMainWindow();
+    if (gameWindow)
+    {
+        RECT clientRect{};
+        if (GetClientRect(gameWindow, &clientRect))
+        {
+            windowWidth = static_cast<int>(clientRect.right - clientRect.left);
+            windowHeight = static_cast<int>(clientRect.bottom - clientRect.top);
+        }
+    }
+
+    // DXVK intentionally exposes the square VR eye size as Source's logical D3D9
+    // backbuffer (for example 4040x4040), while VGUI still lays out native HUD
+    // elements in the real desktop client area (for example 1920x1080). If vrHUD
+    // inherits the logical backbuffer size, only its upper-left client-sized region
+    // is painted and the later full-texture desktop composite shrinks the HUD into
+    // that corner. Size the capture target to the coordinate space VGUI actually uses.
+    if (windowWidth <= 0)
+        windowWidth = materialWindowWidth;
+    if (windowHeight <= 0)
+        windowHeight = materialWindowHeight;
     if (windowWidth <= 0)
         windowWidth = backBufferWidth;
     if (windowHeight <= 0)
@@ -2321,15 +2347,14 @@ void VR::CreateVRTextures()
 
     const bool createDesktopMirrorCleanTarget =
         m_DesktopMirrorEnabled &&
-        m_DesktopMirrorHidePluginOverlaysRequested &&
-        (!m_Game || m_Game->GetMatQueueMode() == 0);
+        m_DesktopMirrorHidePluginOverlaysRequested;
     m_DesktopMirrorHidePluginOverlays = false;
     if (createDesktopMirrorCleanTarget)
     {
-        // Full-size clean eye RTT for desktop mirroring. This is intentionally not
-        // submitted to SteamVR. It is used only by the single-threaded cheap post-eye
-        // D3D copy path. Queued/multicore rendering mirrors the regular eye directly;
-        // it must not add an extra clean world RenderView.
+        // Full-size clean eye RTT for desktop mirroring; never submitted to SteamVR.
+        // Single-thread mode uses the legacy clean-eye path. Queued mode copies the
+        // selected completed submit eye into this target immediately before DXVK draws
+        // item labels and the D3D aim line, without adding another world RenderView.
         m_CreatingTextureID = Texture_DesktopMirror;
         m_DesktopMirrorTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
             "desktopMirrorClean0",
@@ -2339,7 +2364,9 @@ void VR::CreateVRTextures()
             eyeFormat,
             MATERIAL_RT_DEPTH_SEPARATE,
             TEXTUREFLAGS_NOMIP);
-        m_DesktopMirrorHidePluginOverlays = (m_DesktopMirrorTexture != nullptr);
+        const bool queuedRendering = m_Game && m_Game->GetMatQueueMode() != 0;
+        m_DesktopMirrorHidePluginOverlays =
+            !queuedRendering && (m_DesktopMirrorTexture != nullptr);
     }
 
     m_CreatingTextureID = Texture_HUD;
@@ -2359,8 +2386,9 @@ void VR::CreateVRTextures()
             hudActualH = m_HUDTexture->GetActualHeight();
         }
 
-        Game::logMsg("[VR][DesktopHUD][CreateRT] tid=%lu win=%dx%d bb=%dx%d eye=%ux%u hudTex=%s map=%dx%d actual=%dx%d format=%d",
-            GetCurrentThreadId(), windowWidth, windowHeight, backBufferWidth, backBufferHeight,
+        Game::logMsg("[VR][DesktopHUD][CreateRT] tid=%lu client=%dx%d materialWin=%dx%d bb=%dx%d eye=%ux%u hudTex=%s map=%dx%d actual=%dx%d format=%d",
+            GetCurrentThreadId(), windowWidth, windowHeight,
+            materialWindowWidth, materialWindowHeight, backBufferWidth, backBufferHeight,
             m_RenderWidth, m_RenderHeight,
             m_HUDTexture ? m_HUDTexture->GetName() : "<null>",
             hudMapW, hudMapH, hudActualW, hudActualH, static_cast<int>(backBufferFormat));
@@ -2416,6 +2444,7 @@ void VR::CreateVRTextures()
     m_RenderCompletedPoseToken.store(0, std::memory_order_release);
     m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
     m_ReShadeVRCompatResolvedFrameId.store(0, std::memory_order_release);
     m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     m_ReShadeVRCompatPendingRenderReady.store(0, std::memory_order_release);
@@ -2491,6 +2520,7 @@ void VR::InvalidateSourceRenderQueueMarkers()
     m_SourceRenderQueueAuxPendingCount.store(0, std::memory_order_release);
     m_SourceRenderQueueOwnershipUncertain.store(false, std::memory_order_release);
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
     m_PostPresentSubmitOverlayFrameId.store(0, std::memory_order_release);
     {
         std::lock_guard<std::mutex> poseLock(m_RenderCompletedHmdPoseMutex);
@@ -2767,6 +2797,7 @@ void VR::PublishSourceQueueCompletedFrame(
         return;
 
     m_SourceRenderQueueOwnershipUncertain.store(false, std::memory_order_release);
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
 
     const bool canSnapshotQueuedEyes =
         !m_ReShadeVRCompat &&
@@ -2784,11 +2815,17 @@ void VR::PublishSourceQueueCompletedFrame(
         HRESULT deviceHr = m_D9LeftEyeSurface->GetDevice(&device);
         HRESULT leftHr = E_FAIL;
         HRESULT rightHr = E_FAIL;
+        HRESULT desktopMirrorHr = S_FALSE;
         HRESULT overlayHr = E_FAIL;
         HRESULT leftTransferHr = E_FAIL;
         HRESULT rightTransferHr = E_FAIL;
         HRESULT submissionReadyHr = E_FAIL;
         HRESULT lockHr = E_FAIL;
+        const bool desktopMirrorSnapshotRequested =
+            m_DesktopMirrorEnabled &&
+            m_DesktopMirrorHidePluginOverlaysRequested &&
+            m_ShadowTweaksEnabled &&
+            m_D9DesktopMirrorSurface != nullptr;
 
         if (SUCCEEDED(deviceHr) && device)
         {
@@ -2808,6 +2845,23 @@ void VR::PublishSourceQueueCompletedFrame(
                     D3DTEXF_NONE);
                 if (SUCCEEDED(leftHr) && SUCCEEDED(rightHr))
                 {
+                    // Preserve the selected eye before the DXVK-only overlays below.
+                    // This is one GPU copy inside the existing producer transaction; it
+                    // adds no Source RenderView and no extra queue wait.
+                    if (desktopMirrorSnapshotRequested)
+                    {
+                        IDirect3DSurface9* desktopSource =
+                            (m_DesktopMirrorEye == 0)
+                            ? m_D9LeftEyeSubmitSurface
+                            : m_D9RightEyeSubmitSurface;
+                        desktopMirrorHr = desktopSource
+                            ? device->StretchRect(
+                                desktopSource, nullptr,
+                                m_D9DesktopMirrorSurface, nullptr,
+                                D3DTEXF_NONE)
+                            : E_POINTER;
+                    }
+
                     // Item labels and the D3D aim line are part of this exact snapshot
                     // generation. Drawing them later from Present would invalidate the
                     // prepared layout/visibility proof and force a main-thread CS drain.
@@ -2844,6 +2898,20 @@ void VR::PublishSourceQueueCompletedFrame(
             SUCCEEDED(submissionReadyHr))
         {
             m_QueuedEyeSubmitIsolationReady.store(true, std::memory_order_release);
+            m_QueuedDesktopMirrorPreOverlayReady.store(
+                desktopMirrorSnapshotRequested && SUCCEEDED(desktopMirrorHr),
+                std::memory_order_release);
+            if (desktopMirrorSnapshotRequested && FAILED(desktopMirrorHr) &&
+                (m_RenderPipelineDebugLog || m_QueuedSourceMarkerDebugLog))
+            {
+                Game::logMsg("[VR][Queued][DesktopMirrorPreOverlayDrop] tid=%lu epoch=%u marker=%u frameSeq=%u eye=%d hr=0x%08X",
+                    GetCurrentThreadId(),
+                    sourceQueueEpoch,
+                    sourceQueueMarkerId,
+                    renderFrameSeq,
+                    m_DesktopMirrorEye,
+                    static_cast<unsigned int>(desktopMirrorHr));
+            }
             const uint32_t publishedFrameId = PublishRenderCompletedFrame(
                 renderPoseToken,
                 renderFrameSeq,
@@ -2858,6 +2926,7 @@ void VR::PublishSourceQueueCompletedFrame(
         // A half-copied pair is never consumable. Retire the ownership marker so the
         // queue cannot wedge permanently, but do not publish a new render generation.
         m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+        m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
         m_RenderedNewFrame.store(false, std::memory_order_release);
         m_SourceRenderQueueMarkerCompletedId.store(sourceQueueMarkerId, std::memory_order_release);
         if (m_RenderFrameReadyEvent)
@@ -2865,7 +2934,7 @@ void VR::PublishSourceQueueCompletedFrame(
 
         if (m_RenderPipelineDebugLog || m_QueuedSourceMarkerDebugLog)
         {
-            Game::logMsg("[VR][Queued][SnapshotDrop] tid=%lu epoch=%u marker=%u frameSeq=%u device=0x%08X lock=0x%08X left=0x%08X right=0x%08X overlay=0x%08X xferL=0x%08X xferR=0x%08X ready=0x%08X",
+            Game::logMsg("[VR][Queued][SnapshotDrop] tid=%lu epoch=%u marker=%u frameSeq=%u device=0x%08X lock=0x%08X left=0x%08X right=0x%08X desktop=0x%08X overlay=0x%08X xferL=0x%08X xferR=0x%08X ready=0x%08X",
                 GetCurrentThreadId(),
                 sourceQueueEpoch,
                 sourceQueueMarkerId,
@@ -2874,6 +2943,7 @@ void VR::PublishSourceQueueCompletedFrame(
                 static_cast<unsigned int>(lockHr),
                 static_cast<unsigned int>(leftHr),
                 static_cast<unsigned int>(rightHr),
+                static_cast<unsigned int>(desktopMirrorHr),
                 static_cast<unsigned int>(overlayHr),
                 static_cast<unsigned int>(leftTransferHr),
                 static_cast<unsigned int>(rightTransferHr),
@@ -2900,6 +2970,7 @@ void VR::PublishSourceQueueCompletedFrame(
     // publish. In particular, never associate a newer pose/frame id with pixels left
     // in the submit pair by an older successful snapshot.
     m_QueuedEyeSubmitIsolationReady.store(false, std::memory_order_release);
+    m_QueuedDesktopMirrorPreOverlayReady.store(false, std::memory_order_release);
     m_RenderedNewFrame.store(false, std::memory_order_release);
     m_SourceRenderQueueMarkerCompletedId.store(sourceQueueMarkerId, std::memory_order_release);
     if (m_RenderFrameReadyEvent)

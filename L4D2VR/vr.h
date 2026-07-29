@@ -1128,6 +1128,10 @@ public:
 	// completion marker is published. Source may then render the next frame into the
 	// raw eye RTs while OpenVR consumes this stable snapshot.
 	std::atomic<bool> m_QueuedEyeSubmitIsolationReady{ false };
+	// When the desktop mirror requests a clean image in queued mode, the selected
+	// submit eye is copied here before item-label / D3D aim-line draws. Present may
+	// consume desktopMirrorClean0 only after this flag is published with the pair.
+	std::atomic<bool> m_QueuedDesktopMirrorPreOverlayReady{ false };
 	// The marker id alone cannot describe ownership while dRenderView is still building
 	// a queued frame: the marker is appended only at the end of the command stream. Keep
 	// the producer phase visible to Present so it cannot touch the single-buffered eye
@@ -2224,9 +2228,10 @@ public:
 	//   DesktopMirrorLinearFilter=true/false
 	//   DesktopMirrorHidePluginOverlays=true/false
 	// When hiding plugin overlays, the selected eye is mirrored through desktopMirrorClean0
-	// before VR-only post overlays are drawn. This clean target is single-thread only.
-	// Queued/multicore rendering mirrors the regular eye directly: inserting another clean
-	// world RenderView can destabilize Source's shared shadow RTT state under scene pressure.
+	// before VR-only post overlays are drawn. Single-thread mode uses its legacy clean-eye
+	// path. Queued/multicore mode copies the completed selected-eye submit snapshot into
+	// desktopMirrorClean0 immediately before item-label / D3D aim-line draws; it never inserts
+	// another world RenderView into Source's shared shadow RTT pipeline.
 	bool m_DesktopMirrorEnabled = true;
 	int  m_DesktopMirrorEye = 1; // 0 = left eye, 1 = right eye
 	bool m_DesktopMirrorKeepAspect = true;

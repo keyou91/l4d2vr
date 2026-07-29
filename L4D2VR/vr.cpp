@@ -10844,9 +10844,10 @@ bool VR::CopyEyeToDesktopMirrorTexture(int eyeIndex)
     if (eyeIndex < 0 || eyeIndex > 1)
         return false;
 
-    // Queued/multicore rendering updates desktopMirrorClean0 through a separate
-    // clean Source RenderView pass. Direct D3D9 copies/draws here can collide with
-    // DXVK's queued command stream, so this low-cost copy path is single-threaded only.
+    // Queued/multicore rendering updates desktopMirrorClean0 inside the Source completion
+    // transaction, after the selected eye is snapshotted and before DXVK draws its overlays.
+    // Direct copies from this caller can collide with that command stream, so this legacy
+    // low-cost copy path remains single-threaded only.
     if (m_Game && m_Game->GetMatQueueMode() != 0)
         return false;
 

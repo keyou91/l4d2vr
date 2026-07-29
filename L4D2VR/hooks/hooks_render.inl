@@ -2800,9 +2800,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 	// Queued render: draw aim line from the render-thread snapshot so it stays glued to the hand/gun.
 	// IMPORTANT: must run after we compute m_SetupOrigin / m_ThirdPersonRenderCenter for this frame.
-	// DesktopMirrorHidePluginOverlays is intentionally single-thread only. Running an extra
-	// clean Source RenderView in queued mode adds another world pass on top of both VR eyes
-	// and can destabilize Source's shared shadow RTT state under scene pressure.
+	// The legacy clean Source-eye path is intentionally single-thread only. Queued mode
+	// captures its clean desktop image from the completed selected-eye submit snapshot
+	// immediately before DXVK draws item labels and the D3D aim line.
 	const bool desktopMirrorHidePluginOverlaysSingleCopyActive =
 		m_VR->m_IsVREnabled &&
 		m_VR->m_DesktopMirrorEnabled &&
@@ -2856,7 +2856,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		reshadeQueuedSurfaceLock = std::unique_lock<std::recursive_mutex>(m_VR->m_ReShadeVRCompatSurfaceMutex);
 
 	// The queued clean desktop-mirror RenderView path was removed deliberately.
-	// Queued mode mirrors the regular eye; only single-thread mode uses desktopMirrorClean0.
+	// Queued mode fills desktopMirrorClean0 from its completed submit snapshot instead.
 
 	const Vector sharedCenterOrigin(
 		(leftEyeView.origin.x + rightEyeView.origin.x) * 0.5f,

@@ -903,7 +903,14 @@ namespace dxvk {
                 queuedDesktopTransaction = device->LockDeviceExclusive();
 
             IDirect3DSurface9* source = nullptr;
-            if (vr->m_DesktopMirrorHidePluginOverlays && vr->m_D9DesktopMirrorSurface)
+            const bool useQueuedPreOverlaySnapshot =
+                vr->m_Game &&
+                vr->m_Game->GetMatQueueMode() != 0 &&
+                !vr->m_ReShadeVRCompat &&
+                vr->m_DesktopMirrorHidePluginOverlaysRequested &&
+                vr->m_QueuedDesktopMirrorPreOverlayReady.load(std::memory_order_acquire);
+            if ((vr->m_DesktopMirrorHidePluginOverlays || useQueuedPreOverlaySnapshot) &&
+                vr->m_D9DesktopMirrorSurface)
                 source = vr->m_D9DesktopMirrorSurface;
             else if (vr->m_DesktopMirrorEye == 0)
                 source = vr->m_D9LeftEyeSubmitSurface ? vr->m_D9LeftEyeSubmitSurface : vr->m_D9LeftEyeSurface;
@@ -5277,8 +5284,20 @@ namespace dxvk {
                     std::unique_lock<TextureStateMutex> desktopSnapshotLock(
                         vr->m_TextureMutex,
                         std::try_to_lock);
+                    bool queuedCleanMirrorReady = false;
+                    if (desktopSnapshotLock.owns_lock())
+                    {
+                        const bool queuedCleanMirrorRequested =
+                            !vr->m_ReShadeVRCompat &&
+                            vr->m_DesktopMirrorHidePluginOverlaysRequested;
+                        queuedCleanMirrorReady =
+                            !queuedCleanMirrorRequested ||
+                            (vr->m_D9DesktopMirrorSurface &&
+                                vr->m_QueuedDesktopMirrorPreOverlayReady.load(std::memory_order_acquire));
+                    }
                     if (desktopSnapshotLock.owns_lock() &&
-                        vr->m_QueuedEyeSubmitIsolationReady.load(std::memory_order_acquire))
+                        vr->m_QueuedEyeSubmitIsolationReady.load(std::memory_order_acquire) &&
+                        queuedCleanMirrorReady)
                     {
                         VrMirrorEyeToDesktopBackBuffer(this, vr, pDestRect, hDestWindowOverride);
                     }
