@@ -341,6 +341,179 @@ namespace vr_vm_stabilize
         return false;
     }
 
+    inline bool TryGetStudioMaterialNamesFromDrawState(
+        void* drawState,
+        std::vector<std::string>& outNames,
+        std::vector<std::string>* outDirectories = nullptr)
+    {
+        outNames.clear();
+        if (outDirectories)
+            outDirectories->clear();
+
+        const uint8_t* studioHdr = nullptr;
+        if (!TryGetStudioHdrFromDrawState(drawState, studioHdr))
+            return false;
+
+        // L4D2's 32-bit studiohdr_t keeps the raw texture table at these
+        // stable offsets for all supported header versions.
+        constexpr int kStudioId = 0x54534449; // "IDST"
+        constexpr size_t kLengthOffset = 0x4C;
+        constexpr size_t kTextureCountOffset = 0xCC;
+        constexpr size_t kTextureTableOffset = 0xD0;
+        constexpr size_t kTextureDirectoryCountOffset = 0xD4;
+        constexpr size_t kTextureDirectoryTableOffset = 0xD8;
+        constexpr size_t kTextureEntrySize = 64;
+        constexpr int kMaxStudioLength = 64 * 1024 * 1024;
+        constexpr int kMaxTextureCount = 256;
+        constexpr int kMaxTextureDirectoryCount = 64;
+
+        int id = 0;
+        int version = 0;
+        int studioLength = 0;
+        int textureCount = 0;
+        int textureTableOffset = 0;
+        int textureDirectoryCount = 0;
+        int textureDirectoryTableOffset = 0;
+        if (!SafeRead(studioHdr + 0x00, id) ||
+            !SafeRead(studioHdr + 0x04, version) ||
+            !SafeRead(studioHdr + kLengthOffset, studioLength) ||
+            !SafeRead(studioHdr + kTextureCountOffset, textureCount) ||
+            !SafeRead(studioHdr + kTextureTableOffset, textureTableOffset) ||
+            !SafeRead(
+                studioHdr + kTextureDirectoryCountOffset,
+                textureDirectoryCount) ||
+            !SafeRead(
+                studioHdr + kTextureDirectoryTableOffset,
+                textureDirectoryTableOffset))
+        {
+            return false;
+        }
+
+        if (id != kStudioId ||
+            version < 44 ||
+            version > 60 ||
+            studioLength <= static_cast<int>(kTextureTableOffset + sizeof(int)) ||
+            studioLength > kMaxStudioLength ||
+            textureCount <= 0 ||
+            textureCount > kMaxTextureCount ||
+            textureTableOffset <= 0)
+        {
+            return false;
+        }
+
+        const size_t studioLengthBytes = static_cast<size_t>(studioLength);
+        const size_t textureTable = static_cast<size_t>(textureTableOffset);
+        const size_t textureCountBytes = static_cast<size_t>(textureCount);
+        if (textureTable >= studioLengthBytes ||
+            textureCountBytes >
+                (studioLengthBytes - textureTable) / kTextureEntrySize)
+        {
+            return false;
+        }
+
+        outNames.reserve(textureCountBytes);
+        for (int i = 0; i < textureCount; ++i)
+        {
+            const size_t textureEntryOffset =
+                textureTable +
+                static_cast<size_t>(i) * kTextureEntrySize;
+            int textureNameOffset = 0;
+            if (!SafeRead(
+                    studioHdr + textureEntryOffset,
+                    textureNameOffset) ||
+                textureNameOffset <= 0)
+            {
+                continue;
+            }
+
+            const size_t relativeNameOffset =
+                static_cast<size_t>(textureNameOffset);
+            if (relativeNameOffset >=
+                studioLengthBytes - textureEntryOffset)
+            {
+                continue;
+            }
+
+            const size_t absoluteNameOffset =
+                textureEntryOffset + relativeNameOffset;
+            const size_t maxNameLength = (std::min)(
+                static_cast<size_t>(128),
+                studioLengthBytes - absoluteNameOffset);
+            std::string textureName;
+            if (!TryReadCStringSafe(
+                    reinterpret_cast<const char*>(
+                        studioHdr + absoluteNameOffset),
+                    textureName,
+                    maxNameLength))
+            {
+                continue;
+            }
+
+            outNames.push_back(std::move(textureName));
+        }
+
+        if (outDirectories &&
+            textureDirectoryCount > 0 &&
+            textureDirectoryCount <= kMaxTextureDirectoryCount &&
+            textureDirectoryTableOffset > 0)
+        {
+            const size_t directoryTable =
+                static_cast<size_t>(textureDirectoryTableOffset);
+            const size_t directoryCount =
+                static_cast<size_t>(textureDirectoryCount);
+            if (directoryTable < studioLengthBytes &&
+                directoryCount <=
+                    (studioLengthBytes - directoryTable) / sizeof(int))
+            {
+                outDirectories->reserve(directoryCount);
+                for (int i = 0; i < textureDirectoryCount; ++i)
+                {
+                    int directoryNameOffset = 0;
+                    if (!SafeRead(
+                            studioHdr +
+                                directoryTable +
+                                static_cast<size_t>(i) * sizeof(int),
+                            directoryNameOffset) ||
+                        directoryNameOffset <= 0 ||
+                        static_cast<size_t>(directoryNameOffset) >=
+                            studioLengthBytes)
+                    {
+                        continue;
+                    }
+
+                    const size_t absoluteNameOffset =
+                        static_cast<size_t>(directoryNameOffset);
+                    const size_t maxNameLength = (std::min)(
+                        static_cast<size_t>(256),
+                        studioLengthBytes - absoluteNameOffset);
+                    std::string directoryName;
+                    if (!TryReadCStringSafe(
+                            reinterpret_cast<const char*>(
+                                studioHdr + absoluteNameOffset),
+                            directoryName,
+                            maxNameLength))
+                    {
+                        continue;
+                    }
+
+                    std::replace(
+                        directoryName.begin(),
+                        directoryName.end(),
+                        '\\',
+                        '/');
+                    if (!directoryName.empty() &&
+                        directoryName.back() != '/')
+                    {
+                        directoryName.push_back('/');
+                    }
+                    outDirectories->push_back(std::move(directoryName));
+                }
+            }
+        }
+
+        return !outNames.empty();
+    }
+
     inline std::string ToLowerAscii(std::string value)
     {
         for (char& c : value)
@@ -15382,6 +15555,698 @@ namespace
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
     };
 
+    inline bool HooksFirstPersonBodyGetModelNameSafe(
+        IModelInfo* modelInfo,
+        const model_t* model,
+        const char*& modelName)
+    {
+        modelName = nullptr;
+        if (!modelInfo || !model)
+            return false;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            modelName = modelInfo->GetModelName(
+                const_cast<model_t*>(model));
+            return modelName && *modelName;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            modelName = nullptr;
+            return false;
+        }
+#else
+        modelName = modelInfo->GetModelName(const_cast<model_t*>(model));
+        return modelName && *modelName;
+#endif
+    }
+
+    inline IMaterial* HooksWorldModelClothingFindMaterialSafe(
+        IMaterialSystem* materialSystem,
+        const char* materialName)
+    {
+        if (!materialSystem || !materialName || !*materialName)
+            return nullptr;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            return materialSystem->FindMaterial(
+                materialName,
+                "Model textures",
+                false,
+                nullptr);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return nullptr;
+        }
+#else
+        return materialSystem->FindMaterial(
+            materialName,
+            "Model textures",
+            false,
+            nullptr);
+#endif
+    }
+
+    inline bool HooksWorldModelClothingIsUsableMaterialSafe(
+        IMaterial* material)
+    {
+        if (!material)
+            return false;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            return !material->IsErrorMaterial();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        return !material->IsErrorMaterial();
+#endif
+    }
+
+    inline bool HooksFirstPersonBodySetMaterialNoDrawSafe(
+        IMaterial* material,
+        bool noDraw)
+    {
+        if (!material)
+            return false;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            material->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, noDraw);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        material->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, noDraw);
+        return true;
+#endif
+    }
+
+    inline bool HooksFirstPersonBodyAddMaterialRefSafe(IMaterial* material)
+    {
+        if (!material)
+            return false;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            material->IncrementReferenceCount();
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        material->IncrementReferenceCount();
+        return true;
+#endif
+    }
+
+    inline void HooksFirstPersonBodyReleaseMaterialRefSafe(IMaterial* material)
+    {
+        if (!material)
+            return;
+
+#if defined(_MSC_VER)
+        __try
+        {
+            material->DecrementReferenceCount();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+#else
+        material->DecrementReferenceCount();
+#endif
+    }
+
+    inline std::string HooksFirstPersonBodyNormalizeMaterialBaseName(
+        const std::string& rawName)
+    {
+        std::string result = rawName;
+        std::transform(
+            result.begin(),
+            result.end(),
+            result.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::replace(result.begin(), result.end(), '\\', '/');
+
+        const size_t slash = result.find_last_of('/');
+        if (slash != std::string::npos)
+            result.erase(0, slash + 1);
+
+        constexpr char kVmtExtension[] = ".vmt";
+        constexpr size_t kVmtExtensionLength = sizeof(kVmtExtension) - 1;
+        if (result.size() > kVmtExtensionLength &&
+            result.compare(
+                result.size() - kVmtExtensionLength,
+                kVmtExtensionLength,
+                kVmtExtension) == 0)
+        {
+            result.resize(result.size() - kVmtExtensionLength);
+        }
+        return result;
+    }
+
+    inline bool HooksWorldModelClothingGetCharacterName(
+        IModelInfo* modelInfo,
+        const model_t* model,
+        std::string& characterName)
+    {
+        characterName.clear();
+        const char* rawModelName = nullptr;
+        if (!HooksFirstPersonBodyGetModelNameSafe(
+                modelInfo,
+                model,
+                rawModelName))
+        {
+            return false;
+        }
+
+        std::string modelName = rawModelName;
+        std::transform(
+            modelName.begin(),
+            modelName.end(),
+            modelName.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::replace(modelName.begin(), modelName.end(), '\\', '/');
+
+        struct CharacterModel
+        {
+            const char* modelName;
+            const char* characterName;
+        };
+        static constexpr CharacterModel kCharacterModels[] = {
+            { "models/survivors/survivor_biker.mdl", "francis" },
+            { "models/survivors/survivor_coach.mdl", "coach" },
+            { "models/survivors/survivor_gambler.mdl", "nick" },
+            { "models/survivors/survivor_manager.mdl", "louis" },
+            { "models/survivors/survivor_mechanic.mdl", "ellis" },
+            { "models/survivors/survivor_namvet.mdl", "bill" },
+            { "models/survivors/survivor_producer.mdl", "rochelle" },
+            { "models/survivors/survivor_teenangst.mdl", "zoey" },
+        };
+        for (const CharacterModel& characterModel : kCharacterModels)
+        {
+            if (modelName == characterModel.modelName)
+            {
+                characterName = characterModel.characterName;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    inline std::string HooksWorldModelClothingNormalizeMaterialPath(
+        const std::string& rawName)
+    {
+        std::string result = rawName;
+        std::transform(
+            result.begin(),
+            result.end(),
+            result.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::replace(result.begin(), result.end(), '\\', '/');
+
+        constexpr char kMaterialsPrefix[] = "materials/";
+        constexpr size_t kMaterialsPrefixLength =
+            sizeof(kMaterialsPrefix) - 1;
+        if (result.compare(
+                0,
+                kMaterialsPrefixLength,
+                kMaterialsPrefix) == 0)
+        {
+            result.erase(0, kMaterialsPrefixLength);
+        }
+
+        constexpr char kVmtExtension[] = ".vmt";
+        constexpr size_t kVmtExtensionLength = sizeof(kVmtExtension) - 1;
+        if (result.size() > kVmtExtensionLength &&
+            result.compare(
+                result.size() - kVmtExtensionLength,
+                kVmtExtensionLength,
+                kVmtExtension) == 0)
+        {
+            result.resize(result.size() - kVmtExtensionLength);
+        }
+        return result;
+    }
+
+    inline void HooksMaybeLogLocalPlayerModelMaterialsOnce(
+        Game* game,
+        void* drawState,
+        const ModelRenderInfo_t& info,
+        bool shadowDepthDraw)
+    {
+        static std::atomic<bool> s_Logged{ false };
+        if (s_Logged.load(std::memory_order_acquire) ||
+            shadowDepthDraw ||
+            !game ||
+            !game->m_EngineClient ||
+            !game->m_ModelInfo ||
+            !info.pModel ||
+            info.entity_index <= 0 ||
+            info.entity_index != game->m_EngineClient->GetLocalPlayer() ||
+            !info.pModel)
+        {
+            return;
+        }
+
+        std::string characterName;
+        if (!HooksWorldModelClothingGetCharacterName(
+                game->m_ModelInfo,
+                info.pModel,
+                characterName))
+        {
+            return;
+        }
+
+        std::vector<std::string> materialNames;
+        if (!vr_vm_stabilize::TryGetStudioMaterialNamesFromDrawState(
+                drawState,
+                materialNames))
+        {
+            return;
+        }
+
+        std::string joinedMaterialNames;
+        for (const std::string& materialName : materialNames)
+        {
+            if (!joinedMaterialNames.empty())
+                joinedMaterialNames += ",";
+            joinedMaterialNames += materialName;
+        }
+        if (joinedMaterialNames.empty() ||
+            s_Logged.exchange(true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+
+        const char* modelName = "<unknown>";
+        const char* resolvedModelName = nullptr;
+        if (HooksFirstPersonBodyGetModelNameSafe(
+                game->m_ModelInfo,
+                info.pModel,
+                resolvedModelName))
+        {
+            modelName = resolvedModelName;
+        }
+
+        Game::logMsg(
+            "[VR][PlayerModelMaterials] character=%s model=%s count=%u materials=%s",
+            characterName.c_str(),
+            modelName,
+            static_cast<unsigned int>(materialNames.size()),
+            joinedMaterialNames.c_str());
+    }
+
+    inline bool HooksFirstPersonBodyCollectHiddenMaterials(
+        VR* vr,
+        Game* game,
+        void* drawState,
+        const model_t* model,
+        std::vector<IMaterial*>& hiddenMaterials)
+    {
+        hiddenMaterials.clear();
+        if (!vr ||
+            !game ||
+            !game->m_ModelInfo ||
+            !drawState ||
+            !model ||
+            !vr->m_ClothingMaterials ||
+            vr->m_HiddenMaterialNames.empty())
+        {
+            return false;
+        }
+
+        std::string characterName;
+        if (!HooksWorldModelClothingGetCharacterName(
+                game->m_ModelInfo,
+                model,
+                characterName))
+        {
+            return false;
+        }
+
+        if (!game->m_MaterialSystem)
+        {
+            return false;
+        }
+
+        std::vector<std::string> configuredMaterialNames;
+        for (const VR::HiddenMaterialNameRule& rule :
+            vr->m_HiddenMaterialNames)
+        {
+            if (rule.characterName != characterName ||
+                rule.materialName.empty())
+            {
+                continue;
+            }
+
+            if (std::find(
+                    configuredMaterialNames.begin(),
+                    configuredMaterialNames.end(),
+                    rule.materialName) == configuredMaterialNames.end())
+            {
+                configuredMaterialNames.push_back(rule.materialName);
+            }
+        }
+        if (configuredMaterialNames.empty())
+            return false;
+
+        // Read the current model's own texture table and search directories.
+        // This avoids the unsafe model-info material-enumeration ABI while also
+        // ensuring a rule cannot affect a different character that happens to
+        // reuse the same material base name.
+        std::vector<std::string> modelMaterialNames;
+        std::vector<std::string> modelMaterialDirectories;
+        if (!vr_vm_stabilize::TryGetStudioMaterialNamesFromDrawState(
+                drawState,
+                modelMaterialNames,
+                &modelMaterialDirectories))
+        {
+            return false;
+        }
+
+        auto addResolvedMaterial =
+            [&](const std::string& rawMaterialPath) -> bool {
+            const std::string materialPath =
+                HooksWorldModelClothingNormalizeMaterialPath(
+                    rawMaterialPath);
+            if (materialPath.empty())
+                return false;
+
+            IMaterial* material =
+                HooksWorldModelClothingFindMaterialSafe(
+                    game->m_MaterialSystem,
+                    materialPath.c_str());
+            if (!HooksWorldModelClothingIsUsableMaterialSafe(material))
+                return false;
+
+            if (std::find(
+                    hiddenMaterials.begin(),
+                    hiddenMaterials.end(),
+                    material) == hiddenMaterials.end())
+            {
+                hiddenMaterials.push_back(material);
+            }
+            return true;
+        };
+
+        for (const std::string& modelMaterialName : modelMaterialNames)
+        {
+            const std::string materialBaseName =
+                HooksFirstPersonBodyNormalizeMaterialBaseName(
+                    modelMaterialName);
+            if (materialBaseName.empty() ||
+                std::find(
+                    configuredMaterialNames.begin(),
+                    configuredMaterialNames.end(),
+                    materialBaseName) == configuredMaterialNames.end())
+            {
+                continue;
+            }
+
+            const std::string normalizedModelMaterialPath =
+                HooksWorldModelClothingNormalizeMaterialPath(
+                    modelMaterialName);
+            const bool modelMaterialContainsPath =
+                normalizedModelMaterialPath.find('/') != std::string::npos;
+            if (modelMaterialContainsPath &&
+                addResolvedMaterial(normalizedModelMaterialPath))
+            {
+                continue;
+            }
+
+            bool resolved = false;
+            for (const std::string& materialDirectory :
+                modelMaterialDirectories)
+            {
+                if (addResolvedMaterial(
+                        materialDirectory + modelMaterialName))
+                {
+                    resolved = true;
+                    break;
+                }
+            }
+
+            if (!resolved)
+                addResolvedMaterial(normalizedModelMaterialPath);
+        }
+
+        return !hiddenMaterials.empty();
+    }
+
+    class HooksFirstPersonBodyMaterialHideRegistry
+    {
+    public:
+        void Acquire(
+            const std::vector<IMaterial*>& materials,
+            std::vector<IMaterial*>& acquiredMaterials)
+        {
+            acquiredMaterials.clear();
+            if (materials.empty())
+                return;
+
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            for (IMaterial* material : materials)
+            {
+                if (!material ||
+                    std::find(
+                        acquiredMaterials.begin(),
+                        acquiredMaterials.end(),
+                        material) != acquiredMaterials.end())
+                {
+                    continue;
+                }
+
+                auto existing = m_Entries.find(material);
+                if (existing != m_Entries.end())
+                {
+                    ++existing->second.pendingDraws;
+                    HooksFirstPersonBodySetMaterialNoDrawSafe(material, true);
+                    acquiredMaterials.push_back(material);
+                    continue;
+                }
+
+                if (!HooksFirstPersonBodyAddMaterialRefSafe(material))
+                {
+                    continue;
+                }
+
+                if (!HooksFirstPersonBodySetMaterialNoDrawSafe(material, true))
+                {
+                    HooksFirstPersonBodyReleaseMaterialRefSafe(material);
+                    continue;
+                }
+
+                Entry entry{};
+                // A configured visible model material is restored after this
+                // scoped draw. Avoid the unstable GetMaterialVarFlag ABI call.
+                entry.originalNoDraw = false;
+                entry.pendingDraws = 1;
+                m_Entries.emplace(material, entry);
+                acquiredMaterials.push_back(material);
+            }
+        }
+
+        void Release(const std::vector<IMaterial*>& materials)
+        {
+            if (materials.empty())
+                return;
+
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            for (IMaterial* material : materials)
+            {
+                const auto existing = m_Entries.find(material);
+                if (existing == m_Entries.end())
+                    continue;
+
+                if (existing->second.pendingDraws > 1)
+                {
+                    --existing->second.pendingDraws;
+                    continue;
+                }
+
+                const bool restored = HooksFirstPersonBodySetMaterialNoDrawSafe(
+                    material,
+                    existing->second.originalNoDraw);
+                (void)restored;
+                HooksFirstPersonBodyReleaseMaterialRefSafe(material);
+                m_Entries.erase(existing);
+            }
+        }
+
+    private:
+        struct Entry
+        {
+            bool originalNoDraw = false;
+            size_t pendingDraws = 0;
+        };
+
+        std::mutex m_Mutex;
+        std::unordered_map<IMaterial*, Entry> m_Entries;
+    };
+
+    inline HooksFirstPersonBodyMaterialHideRegistry&
+        HooksFirstPersonBodyGetMaterialHideRegistry()
+    {
+        static HooksFirstPersonBodyMaterialHideRegistry s_Registry;
+        return s_Registry;
+    }
+
+    class HooksFirstPersonBodyMaterialHideLease
+    {
+    public:
+        explicit HooksFirstPersonBodyMaterialHideLease(
+            const std::vector<IMaterial*>& materials)
+        {
+            HooksFirstPersonBodyGetMaterialHideRegistry().Acquire(
+                materials,
+                m_AcquiredMaterials);
+        }
+
+        ~HooksFirstPersonBodyMaterialHideLease()
+        {
+            HooksFirstPersonBodyGetMaterialHideRegistry().Release(
+                m_AcquiredMaterials);
+        }
+
+        bool Active() const
+        {
+            return !m_AcquiredMaterials.empty();
+        }
+
+        std::vector<IMaterial*> Detach()
+        {
+            return std::move(m_AcquiredMaterials);
+        }
+
+        HooksFirstPersonBodyMaterialHideLease(
+            const HooksFirstPersonBodyMaterialHideLease&) = delete;
+        HooksFirstPersonBodyMaterialHideLease& operator=(
+            const HooksFirstPersonBodyMaterialHideLease&) = delete;
+
+    private:
+        std::vector<IMaterial*> m_AcquiredMaterials;
+    };
+
+    class HooksFirstPersonBodyQueuedMaterialReleaseFunctor final : public CFunctor
+    {
+    public:
+        explicit HooksFirstPersonBodyQueuedMaterialReleaseFunctor(
+            std::vector<IMaterial*>&& materials)
+            : m_Materials(std::move(materials))
+        {
+        }
+
+        ~HooksFirstPersonBodyQueuedMaterialReleaseFunctor() override
+        {
+            Restore();
+        }
+
+        int AddRef() override
+        {
+            return static_cast<int>(
+                m_RefCount.fetch_add(1, std::memory_order_acq_rel) + 1);
+        }
+
+        int Release() override
+        {
+            const long remaining =
+                m_RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining == 0)
+                delete this;
+            return static_cast<int>(remaining);
+        }
+
+        void operator()() override
+        {
+            Restore();
+        }
+
+    private:
+        void Restore()
+        {
+            if (m_Restored)
+                return;
+
+            HooksFirstPersonBodyGetMaterialHideRegistry().Release(m_Materials);
+            m_Materials.clear();
+            m_Restored = true;
+        }
+
+        std::atomic<long> m_RefCount{ 0 };
+        std::vector<IMaterial*> m_Materials;
+        bool m_Restored = false;
+    };
+
+    class HooksWorldModelClothingQueuedReleaseGuard
+    {
+    public:
+        HooksWorldModelClothingQueuedReleaseGuard(
+            HooksFirstPersonBodyMaterialHideLease& lease,
+            int queueMode,
+            ICallQueue* callQueue)
+            : m_Lease(lease),
+              m_QueueMode(queueMode),
+              m_CallQueue(callQueue)
+        {
+        }
+
+        ~HooksWorldModelClothingQueuedReleaseGuard()
+        {
+            if (!m_Lease.Active() || m_QueueMode == 0)
+                return;
+
+            if (m_CallQueue)
+            {
+                std::vector<IMaterial*> queuedMaterials = m_Lease.Detach();
+                auto* releaseFunctor =
+                    new (std::nothrow)
+                        HooksFirstPersonBodyQueuedMaterialReleaseFunctor(
+                            std::move(queuedMaterials));
+                if (releaseFunctor)
+                {
+                    m_CallQueue->QueueFunctor(releaseFunctor);
+                }
+                else
+                {
+                    HooksFirstPersonBodyGetMaterialHideRegistry().Release(
+                        queuedMaterials);
+                }
+                return;
+            }
+
+            // No Source call queue was exposed. The lease destructor below
+            // restores the material immediately as a safe submission-time
+            // fallback; this diagnostic is intentionally silent.
+        }
+
+        HooksWorldModelClothingQueuedReleaseGuard(
+            const HooksWorldModelClothingQueuedReleaseGuard&) = delete;
+        HooksWorldModelClothingQueuedReleaseGuard& operator=(
+            const HooksWorldModelClothingQueuedReleaseGuard&) = delete;
+
+    private:
+        HooksFirstPersonBodyMaterialHideLease& m_Lease;
+        int m_QueueMode = 0;
+        ICallQueue* m_CallQueue = nullptr;
+    };
+
     struct HooksFirstPersonBodyBoneBuffer
     {
         std::vector<vr_vm_stabilize::Mat3x4> bones;
@@ -17069,6 +17934,49 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 {
 	vr_vm_stabilize::ScopedStableBoneScratch stableBoneScratchScope;
 	constexpr int kStudioShadowDepthTexture = 0x40000000;
+	const bool shadowDepthDraw =
+		(info.flags & kStudioShadowDepthTexture) != 0;
+
+	HooksMaybeLogLocalPlayerModelMaterialsOnce(
+		m_Game,
+		state,
+		info,
+		shadowDepthDraw);
+
+	std::vector<IMaterial*> hiddenWorldModelMaterials;
+	const bool hasHiddenWorldModelMaterials =
+		!shadowDepthDraw &&
+		HooksFirstPersonBodyCollectHiddenMaterials(
+			m_VR,
+			m_Game,
+			state,
+			info.pModel,
+			hiddenWorldModelMaterials);
+
+	CMatRenderContextPtr worldModelMaterialContext;
+	ICallQueue* worldModelMaterialCallQueue = nullptr;
+	const int worldModelMaterialQueueMode =
+		(m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+	if (hasHiddenWorldModelMaterials &&
+		worldModelMaterialQueueMode != 0 &&
+		m_Game &&
+		m_Game->m_MaterialSystem)
+	{
+		worldModelMaterialContext =
+			m_Game->m_MaterialSystem->GetRenderContext();
+		worldModelMaterialCallQueue =
+			HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
+				worldModelMaterialContext);
+	}
+
+	HooksFirstPersonBodyMaterialHideLease worldModelMaterialHideLease(
+		hiddenWorldModelMaterials);
+	HooksWorldModelClothingQueuedReleaseGuard
+		worldModelMaterialQueuedReleaseGuard(
+			worldModelMaterialHideLease,
+			worldModelMaterialQueueMode,
+			worldModelMaterialCallQueue);
+
 	HooksFirstPersonBodyEyeSceneState* const firstPersonBodyState =
 		g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
 	const bool firstPersonBodyEyeActive =

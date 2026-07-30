@@ -1464,6 +1464,15 @@ public:
 	bool m_FirstPersonBodyEnabled = true;
 	bool m_FirstPersonBodyHideHead = true;
 	bool m_FirstPersonBodyHideArms = true;
+	struct HiddenMaterialNameRule
+	{
+		std::string characterName;
+		std::string materialName;
+	};
+	// Hide material slots only when both the survivor character and material
+	// base name match an explicit rule.
+	bool m_ClothingMaterials = true;
+	std::vector<HiddenMaterialNameRule> m_HiddenMaterialNames;
 	// Visible upper-arm length retained below each shoulder before the rest is collapsed.
 	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
 	// HMD-yaw-local meters: X=forward, Y=right, Z=up.

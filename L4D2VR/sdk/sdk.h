@@ -704,7 +704,7 @@ public:
 	virtual void			AlphaModulate(float alpha) = 0;
 	virtual void			ColorModulate(float r, float g, float b) = 0;
 	virtual void			SetMaterialVarFlag(MaterialVarFlags_t flag, bool on) = 0;
-	virtual bool			GetMaterialVarFlag(void) const = 0;
+	virtual bool			GetMaterialVarFlag(MaterialVarFlags_t flag) const = 0;
 
 	// Gets material reflectivity
 	virtual void			GetReflectivity(Vector& reflect) = 0;

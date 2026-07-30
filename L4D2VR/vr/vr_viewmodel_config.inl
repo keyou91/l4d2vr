@@ -1300,6 +1300,97 @@ void VR::ParseConfigFile()
     m_FirstPersonBodyHideArms = getBool(
         "FirstPersonBodyHideArms",
         m_FirstPersonBodyHideArms);
+    m_ClothingMaterials = getBool(
+        "ClothingMaterials",
+        m_ClothingMaterials);
+    if (hasConfigKey("HiddenMaterialNames"))
+    {
+        const std::vector<std::string> hiddenMaterialRules =
+            getStringList("HiddenMaterialNames");
+        m_HiddenMaterialNames.clear();
+        for (const std::string& rawRule : hiddenMaterialRules)
+        {
+            const size_t separator = rawRule.find(':');
+            if (separator == std::string::npos ||
+                separator == 0 ||
+                separator + 1 >= rawRule.size() ||
+                rawRule.find(':', separator + 1) != std::string::npos)
+            {
+                continue;
+            }
+
+            std::string characterName = rawRule.substr(0, separator);
+            std::string materialName = rawRule.substr(separator + 1);
+            trim(characterName);
+            trim(materialName);
+            std::transform(
+                characterName.begin(),
+                characterName.end(),
+                characterName.begin(),
+                [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+            std::transform(
+                materialName.begin(),
+                materialName.end(),
+                materialName.begin(),
+                [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+            std::replace(materialName.begin(), materialName.end(), '\\', '/');
+            const size_t slash = materialName.find_last_of('/');
+            if (slash != std::string::npos)
+                materialName.erase(0, slash + 1);
+            if (materialName.size() > 4 &&
+                materialName.compare(
+                    materialName.size() - 4,
+                    4,
+                    ".vmt") == 0)
+            {
+                materialName.resize(materialName.size() - 4);
+            }
+
+            static constexpr const char* kValidCharacterNames[] = {
+                "bill",
+                "coach",
+                "ellis",
+                "francis",
+                "louis",
+                "nick",
+                "rochelle",
+                "zoey",
+            };
+            const bool validCharacter =
+                std::find(
+                    std::begin(kValidCharacterNames),
+                    std::end(kValidCharacterNames),
+                    characterName) != std::end(kValidCharacterNames);
+            if (!validCharacter ||
+                materialName.empty() ||
+                materialName.size() > 128)
+            {
+                continue;
+            }
+
+            const auto duplicate = std::find_if(
+                m_HiddenMaterialNames.begin(),
+                m_HiddenMaterialNames.end(),
+                [&](const HiddenMaterialNameRule& existing) {
+                    return
+                        existing.characterName == characterName &&
+                        existing.materialName == materialName;
+                });
+            if (duplicate == m_HiddenMaterialNames.end())
+            {
+                m_HiddenMaterialNames.push_back(
+                    HiddenMaterialNameRule{
+                        std::move(characterName),
+                        std::move(materialName) });
+            }
+            if (m_HiddenMaterialNames.size() >= 64)
+                break;
+        }
+    }
     m_FirstPersonBodyVisibleUpperArmLengthMeters = std::clamp(
         getFloat(
             "FirstPersonBodyVisibleUpperArmLengthMeters",
