@@ -410,3 +410,4 @@ FodyWeavers.xsd
 *.exe
 /L4D2VR/special_infected_featuresa.cpp
 /.vmt
+*.dll
