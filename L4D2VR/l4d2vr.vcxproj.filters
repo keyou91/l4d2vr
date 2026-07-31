@@ -30,6 +30,9 @@
     <ClInclude Include="game.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="vr_pose_protocol.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="vr_hands\vr_hand_asset_loader.h">
       <Filter>Source Files\vr_hands</Filter>
     </ClInclude>
@@ -1361,6 +1364,9 @@
       <Filter>Source Files\hook</Filter>
     </None>
     <None Include="hooks\hooks_misc.inl">
+      <Filter>Source Files\hook</Filter>
+    </None>
+    <None Include="hooks\hooks_world_pose.inl">
       <Filter>Source Files\hook</Filter>
     </None>
     <None Include="hooks\hooks_throwables.inl">

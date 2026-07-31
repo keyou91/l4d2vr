@@ -23,6 +23,13 @@ Hooks::Hooks(Game* game)
 	hkServerFireTerrorBullets.enableHook();
 	hkClientFireTerrorBullets.enableHook();
 	hkProcessUsercmds.enableHook();
+	if (hkServerGameClientsClientCommand.pTarget)
+	{
+		hkServerGameClientsClientCommand.enableHook();
+		Game::logMsg(
+			"[VR][WorldPose] built-in listen-server relay hook enabled target=%p",
+			hkServerGameClientsClientCommand.pTarget);
+	}
 	hkReadUsercmd.enableHook();
 	hkWriteUsercmdDeltaToBuffer.enableHook();
 	hkWriteUsercmd.enableHook();
@@ -197,6 +204,20 @@ int Hooks::initSourceHooks()
 
 	LPVOID ProcessUsercmdsAddr = (LPVOID)(m_Game->m_Offsets->ProcessUsercmds.address);
 	hkProcessUsercmds.createHook(ProcessUsercmdsAddr, &dProcessUsercmds);
+
+	if (m_Game->m_ServerGameClients)
+	{
+		void** serverGameClientsVtable =
+			*reinterpret_cast<void***>(m_Game->m_ServerGameClients);
+		if (serverGameClientsVtable && serverGameClientsVtable[5])
+		{
+			// ServerGameClients003 slot 5:
+			// ClientCommand(edict_t*, const CCommand&).
+			hkServerGameClientsClientCommand.createHook(
+				serverGameClientsVtable[5],
+				&dServerGameClientsClientCommand);
+		}
+	}
 
 	LPVOID ReadUserCmdAddr = (LPVOID)(m_Game->m_Offsets->ReadUserCmd.address);
 	hkReadUsercmd.createHook(ReadUserCmdAddr, &dReadUsercmd);

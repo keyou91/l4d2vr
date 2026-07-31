@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <array>
+#include <atomic>
+#include <mutex>
 #include <string>
 #include <cstdarg>
 #include <Windows.h>
@@ -91,6 +93,23 @@ struct ObjectPullServerState
     char sourceClassName[128]{};
 };
 
+struct VRTrackedPoseLocal
+{
+    Vector position = { 0.f, 0.f, 0.f };
+    QAngle angles = { 0.f, 0.f, 0.f };
+};
+
+struct VRPoseFrame
+{
+    bool valid = false;
+    std::uint8_t validMask = 0u;
+    std::uint16_t sequence = 0u;
+    std::uint64_t receivedTickMs = 0u;
+    VRTrackedPoseLocal hmd{};
+    VRTrackedPoseLocal leftHand{};
+    VRTrackedPoseLocal rightHand{};
+};
+
 struct Player
 {
     C_BasePlayer* pPlayer = nullptr;
@@ -128,6 +147,28 @@ struct Player
     // cannot relaunch the entity immediately after native pickup.
     int objectPullLastPickedUpEntityIndex = 0;
     int objectPullLastPickupTick = 0;
+
+    // Observer-side VR world-model pose history. Positions and rotations remain
+    // in sender body-yaw-local space; DrawModelExecute resolves them against the
+    // current rendered player origin/yaw before applying IK.
+    VRPoseFrame previousWorldPose{};
+    VRPoseFrame latestWorldPose{};
+    float worldPoseBlendWeight = 0.0f;
+    std::uint64_t worldPoseBlendTickMs = 0u;
+    int worldPoseUserID = -1;
+};
+
+struct VRPoseRelayServerClient
+{
+    edict_t* entity = nullptr;
+    std::int16_t edictSerial = 0;
+    bool protocolSupported = false;
+    bool haveSequence = false;
+    std::uint16_t lastSequence = 0;
+    std::uint64_t lastDecodeTickUs = 0u;
+    std::uint64_t lastUploadTickMs = 0u;
+    std::uint64_t lastAckTickMs = 0u;
+    int ackAttempts = 0;
 };
 
 // === Main Game System ===
@@ -149,6 +190,10 @@ public:
     IVDebugOverlay* m_DebugOverlay = nullptr;
     IGameEventManager2* m_GameEventManager = nullptr;
     void* m_Cvar = nullptr;
+    // Present in a listen-server process and used to issue commands to a
+    // specific connected client without loading a second plugin module.
+    void* m_ServerPluginHelpers = nullptr;
+    void* m_ServerGameClients = nullptr;
 
     // === Module Base Addresses ===
     uintptr_t m_BaseEngine = 0;
@@ -173,6 +218,14 @@ public:
     // Matches Source's MAX_PLAYERS (65) to cover the full player index range.
     static constexpr size_t kMaxPlayers = 65;
     std::array<Player, kMaxPlayers> m_PlayersVRInfo;
+    mutable std::mutex m_VRPoseMutex;
+    std::atomic<bool> m_VRPoseServerCapable{ false };
+    std::atomic<bool> m_VRPoseHelloSent{ false };
+    std::uint64_t m_VRPoseLastLocalPublishTickMs = 0u;
+    std::uint16_t m_VRPoseLocalSequence = 0u;
+    std::recursive_mutex m_BuiltinVRPoseRelayMutex;
+    std::array<VRPoseRelayServerClient, kMaxPlayers>
+        m_BuiltinVRPoseRelayClients{};
 
     // === Weapon / Viewmodel State ===
     bool m_IsMeleeWeaponActive = false;
@@ -196,6 +249,7 @@ public:
     int GetMatQueueMode() const;
 
     // === Command Execution ===
+    void ServerCmd(const char* szCmdString, bool reliable = true);
     void ClientCmd(const char* szCmdString);
     void ClientCmd_Unrestricted(const char* szCmdString);
     void* FindConVar(const char* name) const;
@@ -235,6 +289,32 @@ public:
     // === Player Utilities ===
     bool IsValidPlayerIndex(int index) const;
     void ResetAllPlayerVRInfo();
+
+    // === Multiplayer VR world-model poses ===
+    void ResetVRPoseServerSession();
+    void HandleVRPoseServerAck(int protocolVersion);
+    void ObserveBuiltinVRPoseRelayClient(
+        int playerIndex,
+        edict_t* entity);
+    bool HandleBuiltinVRPoseRelayCommand(
+        edict_t* entity,
+        const void* sourceCommand);
+    void PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer);
+    bool ReceiveVRPosePayload(
+        int playerIndex,
+        std::uint16_t sequence,
+        const char* encodedPayload,
+        bool fromServer);
+    bool GetInterpolatedVRPose(
+        int playerIndex,
+        float interpolationDelayMs,
+        float staleAfterMs,
+        VRPoseFrame& outPose,
+        float& outFreshness) const;
+    float AdvanceVRPoseBlendWeight(
+        int playerIndex,
+        float targetWeight,
+        float blendSeconds);
 };
 
 // === Logging Macros (Debug Only) ===

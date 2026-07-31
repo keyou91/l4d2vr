@@ -650,6 +650,40 @@ namespace vr_vm_stabilize
         if (bestStride <= 0 || bestScore < 6)
             return false;
 
+        // Parent links are independent of bone-name readability. Procedural,
+        // jiggle, and attachment bones can have names that fail the string
+        // probe while still carrying a valid mstudiobone_t::parent field.
+        // Re-read every parent after selecting the stride so those unnamed
+        // descendants remain part of head/hand hierarchy operations.
+        if (static_cast<int>(bestParents.size()) == outNumBones)
+        {
+            for (int bone = 0; bone < outNumBones; ++bone)
+            {
+                const size_t boneOffset =
+                    static_cast<size_t>(outBoneIndex) +
+                    static_cast<size_t>(bestStride) *
+                        static_cast<size_t>(bone);
+                if (studioLength > 0 &&
+                    boneOffset + 8u >
+                        static_cast<size_t>(studioLength))
+                {
+                    continue;
+                }
+
+                int parent = -1;
+                if (SafeRead(
+                        studioHdr + boneOffset + 4u,
+                        parent) &&
+                    parent >= -1 &&
+                    parent < outNumBones &&
+                    parent != bone)
+                {
+                    bestParents[static_cast<size_t>(bone)] =
+                        parent;
+                }
+            }
+        }
+
         outStride = bestStride;
         outNames.swap(bestNames);
         outParents.swap(bestParents);
@@ -17281,6 +17315,8 @@ namespace
         pCustomBoneToWorld = copiedBones;
     }
 
+#include "hooks_world_pose.inl"
+
     inline std::string DescribeCallerAddress(const void* address)
     {
         if (!address)
@@ -17930,6 +17966,33 @@ C_BaseEntity* Hooks::dClientFindUseEntity(void* ecx, void* edx, float radius, fl
 	return hkClientFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
 }
 
+bool __fastcall Hooks::dWorldPoseWeaponSetupBones(
+	void* ecx,
+	void* edx,
+	matrix3x4_t* boneToWorldOut,
+	int maxBones,
+	int boneMask,
+	float currentTime)
+{
+	const bool result =
+		hkWorldPoseWeaponSetupBones.fOriginal(
+			ecx,
+			boneToWorldOut,
+			maxBones,
+			boneMask,
+			currentTime);
+	if (result && boneToWorldOut)
+	{
+		HooksWorldPoseApplyWeaponSetupBones(
+			m_VR,
+			m_Game,
+			ecx,
+			boneToWorldOut,
+			maxBones);
+	}
+	return result;
+}
+
 void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld)
 {
 	vr_vm_stabilize::ScopedStableBoneScratch stableBoneScratchScope;
@@ -17986,6 +18049,8 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 			g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) &&
 		g_FirstPersonBodyPlayerReady.load(std::memory_order_acquire) &&
 		g_FirstPersonBodyActualFirstPerson.load(std::memory_order_acquire) &&
+		m_VR &&
+		!m_VR->m_IsThirdPersonCamera &&
 		InterlockedCompareExchange(
 			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
 
@@ -18128,6 +18193,34 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 			className = HooksSafeGetNetworkClassName(m_Game, const_cast<C_BaseEntity*>(entity));
 			isPlayerClass = className && (std::strcmp(className, "CTerrorPlayer") == 0 || std::strcmp(className, "C_TerrorPlayer") == 0);
 		}
+		const bool isSurvivorWorldModel =
+			entity &&
+			info.entity_index > 0 &&
+			info.entity_index <= 64 &&
+			modelName.find("models/survivors/") != std::string::npos;
+		const bool isPlayerWorldModel =
+			isPlayerClass || isSurvivorWorldModel;
+		if (m_VR->m_WorldModelVRPoseDebugLog &&
+			m_Game->m_EngineClient &&
+			info.entity_index == m_Game->m_EngineClient->GetLocalPlayer() &&
+			isSurvivorWorldModel)
+		{
+			static thread_local std::uint64_t s_lastLocalWorldPoseStageLog = 0u;
+			const std::uint64_t now =
+				static_cast<std::uint64_t>(GetTickCount64());
+			if (now - s_lastLocalWorldPoseStageLog >= 1000u)
+			{
+				s_lastLocalWorldPoseStageLog = now;
+				Game::logMsg(
+					"[VR][WorldPose] local draw stage class=%s model=%s thirdPerson=%d firstPersonBodyEye=%d bones=%p shadow=%d",
+					className ? className : "<null>",
+					modelName.c_str(),
+					m_VR->m_IsThirdPersonCamera ? 1 : 0,
+					firstPersonBodyEyeActive ? 1 : 0,
+					pBonesToWorldFinal,
+					shadowDepthDraw ? 1 : 0);
+			}
+		}
 		const bool isViewmodelClassForProbe = className &&
 			(std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0);
 		drawEntityIsViewmodelClass = isViewmodelClassForProbe;
@@ -18157,6 +18250,17 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 			(modelName.find("models/weapons/hands/") != std::string::npos) ||
 			(modelName.find("/hands/") != std::string::npos) ||
 			(modelName.find("v_hands") != std::string::npos);
+		const std::string lowerWorldPoseModelName =
+			vr_vm_stabilize::ToLowerAscii(modelName);
+		const bool looksLikeHeldWorldModel =
+			lowerWorldPoseModelName.find("/w_models/") !=
+				std::string::npos ||
+			lowerWorldPoseModelName.find("models/weapons/w_") !=
+				std::string::npos ||
+			lowerWorldPoseModelName.find("/weapons/w_") !=
+				std::string::npos ||
+			lowerWorldPoseModelName.find("/melee/w_") !=
+				std::string::npos;
 		if (teleportSuppressibleViewmodel && m_VR->ShouldSuppressTeleportViewmodelRender())
 			return;
 		if (teleportSuppressibleViewmodel)
@@ -18191,6 +18295,182 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 			const int localPlayerIndex = m_Game->m_EngineClient->GetLocalPlayer();
 			if (info.entity_index == localPlayerIndex)
 				return;
+		}
+
+		// Reconstruct the observer-visible VR pose only in the render copy of
+		// CTerrorPlayer's final matrices.  The local player goes through this
+		// same path in a third-person scene, which makes protocol/IK testing
+		// possible without a second client.
+		if (isPlayerWorldModel &&
+			!shadowDepthDraw &&
+			pBonesToWorldFinal &&
+			entity)
+		{
+			vr_vm_stabilize::Mat3x4* worldPoseBones = nullptr;
+			if (HooksWorldPoseBuildPlayerBones(
+					m_VR,
+					m_Game,
+					state,
+					info,
+					entity,
+					firstPersonBodyEyeActive,
+					pBonesToWorldFinal,
+					worldPoseBones))
+			{
+				pBonesToWorldFinal = worldPoseBones;
+			}
+		}
+
+		// Active world weapons are rendered separately from their owning player
+		// and otherwise remain bonemerged to Source's unmodified hand.  Move the
+		// weapon's render-copy bones by the exact native-hand -> VR-hand delta.
+		// This keeps the stock hand-to-gun offset and internal firing/reload
+		// animation while cancelling the large native idle attachment motion.
+		// Do not gate this on the reported network class or a custom-bone
+		// pointer: L4D2 bonemerge children can report the owning player's class
+		// and can deliberately submit a null custom-bone array.
+		if (!isSurvivorWorldModel &&
+			!shadowDepthDraw &&
+			!teleportSuppressibleViewmodel)
+		{
+			vr_vm_stabilize::Mat3x4* alignedWorldWeaponBones = nullptr;
+			vr_vm_stabilize::Mat3x4 weaponNativeToFinal =
+				vr_vm_stabilize::Identity();
+			int weaponOwnerPlayerIndex = -1;
+			std::uint64_t weaponHandAgeMs = 0u;
+			Vector weaponHandDisplacement(0.0f, 0.0f, 0.0f);
+			int weaponMatchMask = 0;
+			if (HooksWorldPoseBuildActiveWeaponBones(
+					m_VR,
+					m_Game,
+					state,
+					info,
+					entity,
+					looksLikeHeldWorldModel,
+					pBonesToWorldFinal,
+					alignedWorldWeaponBones,
+					weaponNativeToFinal,
+					weaponOwnerPlayerIndex,
+					weaponHandAgeMs,
+					weaponHandDisplacement,
+					weaponMatchMask))
+			{
+				bool weaponBoneTransformApplied = false;
+				bool weaponModelTransformApplied = false;
+				if (alignedWorldWeaponBones)
+				{
+					pBonesToWorldFinal =
+						alignedWorldWeaponBones;
+					weaponBoneTransformApplied = true;
+				}
+				else if (!pCustomBoneToWorld)
+				{
+					vr_vm_stabilize::Mat3x4 sourceModelWorld{};
+					bool sourceModelWorldValid = false;
+					if (info.pModelToWorld)
+					{
+						sourceModelWorldValid =
+							vr_vm_stabilize::SafeRead(
+								reinterpret_cast<
+									const vr_vm_stabilize::Mat3x4*>(
+										info.pModelToWorld),
+								sourceModelWorld) &&
+							HooksNativeViewmodelHandsOnlyMatrixFinite(
+								sourceModelWorld);
+					}
+					if (!sourceModelWorldValid)
+					{
+						vr_vm_stabilize::BuildFromOrgAngles(
+							info.origin,
+							info.angles,
+							sourceModelWorld);
+						sourceModelWorldValid =
+							HooksNativeViewmodelHandsOnlyMatrixFinite(
+								sourceModelWorld);
+					}
+
+					vr_vm_stabilize::Mat3x4 targetModelWorld{};
+					QAngle targetModelAngles{};
+					if (sourceModelWorldValid)
+					{
+						vr_vm_stabilize::Mul(
+							weaponNativeToFinal,
+							sourceModelWorld,
+							targetModelWorld);
+					}
+					if (sourceModelWorldValid &&
+						HooksNativeViewmodelHandsOnlyMatrixFinite(
+							targetModelWorld) &&
+						HooksViewmodelAutoGripMatrixAngles(
+							targetModelWorld,
+							targetModelAngles))
+					{
+						std::uint32_t sequence =
+							m_VR->m_RenderFrameSeq.load(
+								std::memory_order_acquire) &
+							~1u;
+						if (sequence == 0u)
+							sequence = 2u;
+						vr_vm_stabilize::Mat3x4*
+							stableModelToWorld =
+								vr_vm_stabilize::AllocStableBones(
+									1,
+									sequence);
+						if (stableModelToWorld)
+						{
+							*stableModelToWorld =
+								targetModelWorld;
+							drawInfo = info;
+							drawInfo.origin =
+								vr_vm_stabilize::GetOrigin(
+									targetModelWorld);
+							drawInfo.angles =
+								targetModelAngles;
+							drawInfo.pModelToWorld =
+								reinterpret_cast<
+									const matrix3x4_t*>(
+										stableModelToWorld);
+							pDrawInfo = &drawInfo;
+							weaponModelTransformApplied = true;
+						}
+					}
+				}
+
+				if (m_VR->m_WorldModelVRPoseDebugLog)
+				{
+					static thread_local std::array<
+						std::uint64_t,
+						Game::kMaxPlayers> s_lastWeaponApplyLog{};
+					const std::uint64_t now =
+						static_cast<std::uint64_t>(GetTickCount64());
+					std::uint64_t& last =
+						s_lastWeaponApplyLog[
+							static_cast<size_t>(
+								weaponOwnerPlayerIndex)];
+					if (now - last >= 1000u)
+					{
+						last = now;
+						Game::logMsg(
+							"[VR][WorldPoseWeapon] match player=%d entity=%d model=%s age=%llums match=0x%02X apply=%s handDelta=(%.1f %.1f %.1f) bones=%p->%p",
+							weaponOwnerPlayerIndex,
+							info.entity_index,
+							modelName.c_str(),
+							static_cast<unsigned long long>(
+								weaponHandAgeMs),
+							weaponMatchMask,
+							weaponBoneTransformApplied
+								? "bones"
+								: (weaponModelTransformApplied
+									? "model_transform"
+									: "none"),
+							weaponHandDisplacement.x,
+							weaponHandDisplacement.y,
+							weaponHandDisplacement.z,
+							pCustomBoneToWorld,
+							alignedWorldWeaponBones);
+					}
+				}
+			}
 		}
 
 

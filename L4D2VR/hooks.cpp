@@ -5,6 +5,7 @@
 #include "sdk.h"
 #include "sdk_server.h"
 #include "vr.h"
+#include "vr_pose_protocol.h"
 #include "trace.h"
 #include "offsets.h"
 #include "vr_hands/vr_hand_math.h"
@@ -40,6 +41,10 @@
 
 namespace
 {
+    bool HooksWorldPoseEnsureWeaponSetupBonesHookMainThread(
+        VR* vr,
+        Game* game);
+
     // The local player is hidden in first person at multiple renderable stages:
     // ShouldDraw can unregister it, GetModel can return null, and the player
     // DrawModel override can reject the native color draw.

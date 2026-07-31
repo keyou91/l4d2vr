@@ -1470,6 +1470,29 @@ int Hooks::dClientFireTerrorBullets(
 
 
 // === 用下面这整个函数替换你当前的 Hooks::dProcessUsercmds ===
+void __fastcall Hooks::dServerGameClientsClientCommand(
+	void* ecx,
+	void* edx,
+	edict_t* player,
+	const void* sourceCommand)
+{
+	(void)edx;
+	if (m_Game &&
+		m_Game->HandleBuiltinVRPoseRelayCommand(
+			player,
+			sourceCommand))
+	{
+		// Consume only the private pose commands. Every ordinary Source
+		// command continues through the original game-DLL handler.
+		return;
+	}
+
+	const auto original =
+		hkServerGameClientsClientCommand.fOriginal;
+	if (original)
+		original(ecx, player, sourceCommand);
+}
+
 float __fastcall Hooks::dProcessUsercmds(void* ecx, void* edx, edict_t* player,
 	void* buf, int numcmds, int totalcmds,
 	int dropped_packets, bool ignore, bool paused)
@@ -1478,6 +1501,7 @@ float __fastcall Hooks::dProcessUsercmds(void* ecx, void* edx, edict_t* player,
 	m_ServerCommandControllerAimOverride = false;
 	m_ServerCommandControllerAimPlayer = nullptr;
 	m_ServerCommandControllerAimReason = 0;
+	m_ServerPacketSawVRUsercmd = false;
 
 	Hooks::s_ServerUnderstandsVR = true;
 
@@ -1575,6 +1599,14 @@ float __fastcall Hooks::dProcessUsercmds(void* ecx, void* edx, edict_t* player,
 	m_ServerProcessingUsercmdPlayer = pPlayer;
 	m_ServerProcessingUsercmdPlayerIndex = index;
 	float result = hkProcessUsercmds.fOriginal(ecx, player, buf, numcmds, totalcmds, dropped_packets, ignore, paused);
+	if (m_ServerPacketSawVRUsercmd &&
+		m_Game->IsValidPlayerIndex(index))
+	{
+		m_Game->ObserveBuiltinVRPoseRelayClient(
+			index,
+			player);
+	}
+	m_ServerPacketSawVRUsercmd = false;
 	ObjectPullUpdateServer(index, pPlayer);
 	// Custom inventory throws suppress stock IN_ATTACK/IN_USE, then invoke the
 	// game's generic Weapon_Drop path here.
@@ -1843,6 +1875,8 @@ int Hooks::dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from)
 
 	Hooks::s_ServerUnderstandsVR = true;
 	hkReadUsercmd.fOriginal(buf, move, from);
+	if (move && move->tick_count < 0)
+		m_ServerPacketSawVRUsercmd = true;
 
 	int i = m_Game->m_CurrentUsercmdID;
 	const bool hasValidPlayer = m_Game->IsValidPlayerIndex(i);

@@ -1,0 +1,4 @@
+LIBRARY "l4d2vr_pose_server"
+
+EXPORTS
+    CreateInterface

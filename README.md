@@ -24,6 +24,26 @@
 * You can join any server to play, but if the server wasn't created by VR some VR-exclusive features. 
 * Versus works, but it's barely been tested.
 
+### Multiplayer VR body poses
+
+The updated client sends a compact HMD + left controller + right controller
+pose at 25 Hz. Observing clients reconstruct the survivor's head, upper body,
+and both arms locally while preserving the game's native lower-body animation.
+
+* Every player who should see VR body motion needs the updated L4D2VR client.
+* A listen server is handled directly by the host's updated `d3d9.dll`; no
+  extra server plugin is required.
+* A standalone dedicated server still needs `l4d2vr_pose_server.dll` and
+  `l4d2vr_pose_server.vdf` in `left4dead2/addons`.
+* A client without the update continues to see the original L4D2 animation.
+* The pose override is visual only; it does not change collision or hitboxes.
+* `WorldModelVRPoseLocalThirdPerson=true` lets the local player verify the same
+  reconstruction path in a third-person camera.
+* `WorldModelVRPoseBodyYawDeadzoneDeg=35` lets the head and hands move inside a
+  visual comfort cone before the lower body starts turning.
+* `WorldModelVRPoseBodyYawTurnSpeedDegPerSecond=180` controls the smooth
+  lower-body catch-up speed after that threshold is crossed.
+
 ## How to use
 1. Download [L4D2VR.zip](https://github.com/liu547161153/l4d2vr/releases) and extract the files to your Left 4 Dead 2 directory `steamapps/common/Left 4 Dead 2`
 2. Launch SteamVR, then launch Left 4 Dead 2 with these [launch options](https://help.steampowered.com/en/faqs/view/7D01-D2DD-D75E-2955): <br>`-heapsize 524288 -processheap -high -novid -windowed`
@@ -80,7 +100,11 @@
    ```
 5. (Optional/manual) Open l4d2vr.sln and build `Release|x86`.
 
-> Note: After building, it will attempt to copy the new d3d9.dll to `steamapps/common/Left 4 Dead 2`
+> Note: After building, it will attempt to copy the new d3d9.dll to
+> `steamapps/common/Left 4 Dead 2`. The pose relay is produced as
+> `Release/l4d2vr_pose_server.dll`; copy it and
+> `L4D2VR/l4d2vr_pose_server.vdf` to the server's `left4dead2/addons`
+> directory.
 
 ## Dev note: VTable lookup
 For quick vtable inspection, use [Asherkin's VTable Dumper](https://asherkin.github.io/vtable/).

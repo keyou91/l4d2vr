@@ -1,5 +1,6 @@
 #include "game.h"
 #include <Windows.h>
+#include <algorithm>
 #include <iostream>
 #include <unordered_map>
 #include <cstdarg>
@@ -19,6 +20,7 @@
 #include "hooks.h"
 #include "offsets.h"
 #include "sigscanner.h"
+#include "vr_pose_protocol.h"
 #include "sdk/ivdebugoverlay.h"
 
 static std::mutex logMutex;
@@ -243,7 +245,48 @@ namespace
         virtual SourceConVar* FindVar(const char* varName) = 0;
     };
 
-    class SourceCCommand;
+    // Small, stable interface exposed by engine.dll specifically for sending a
+    // command to one client. A listen server can use it directly from d3d9.dll.
+    class SourceIServerPluginHelpersPoseRelay
+    {
+    public:
+        virtual void CreateMessage(
+            edict_t*,
+            int,
+            void*,
+            void*) = 0;
+        virtual void ClientCommand(edict_t*, const char*) = 0;
+        virtual int StartQueryCvarValue(edict_t*, const char*) = 0;
+    };
+
+    class SourceCCommand
+    {
+    public:
+        static constexpr int kMaxArgCount = 64;
+        static constexpr int kMaxCommandLength = 512;
+
+        int ArgC() const
+        {
+            return (m_nArgc >= 0 && m_nArgc <= kMaxArgCount)
+                ? m_nArgc
+                : 0;
+        }
+
+        const char* Arg(int index) const
+        {
+            if (index < 0 || index >= ArgC())
+                return "";
+            const char* value = m_ppArgv[index];
+            return value ? value : "";
+        }
+
+    private:
+        int m_nArgc = 0;
+        int m_nArgv0Size = 0;
+        char m_pArgSBuffer[kMaxCommandLength]{};
+        char m_pArgvBuffer[kMaxCommandLength]{};
+        const char* m_ppArgv[kMaxArgCount]{};
+    };
 
     class SourceRegisteredConCommandBase
     {
@@ -460,8 +503,30 @@ namespace
 {
     constexpr int kFcvarServerCanExecute = (1 << 28);
     constexpr char kL4D2VRServerAckCommandName[] = "l4d2vr_server_ack";
+    constexpr char kL4D2VRPoseAckCommandName[] = "l4d2vr_pose_ack";
+    constexpr char kL4D2VRPoseReceiveCommandName[] = "l4d2vr_pose_receive";
 
-    void __cdecl OnL4D2VRServerAckCommand(const SourceCCommand&)
+    bool ParseUnsignedCommandArgument(
+        const SourceCCommand& command,
+        int argumentIndex,
+        unsigned long maximum,
+        unsigned long& outValue)
+    {
+        outValue = 0;
+        const char* text = command.Arg(argumentIndex);
+        if (!text || !*text)
+            return false;
+
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(text, &end, 10);
+        if (!end || end == text || *end != '\0' || parsed > maximum)
+            return false;
+
+        outValue = parsed;
+        return true;
+    }
+
+    void __cdecl OnL4D2VRServerAckCommand(const SourceCCommand& command)
     {
         const bool wasKnown = Hooks::s_ServerUnderstandsVR;
         Hooks::s_ServerUnderstandsVR = true;
@@ -477,6 +542,49 @@ namespace
 
         if (!wasKnown)
             Game::logMsg("[VR][ServerAck] dedicated server plugin acknowledged VR usercmd support");
+
+        // Protocol 2+ of the combined server plugin also implements the
+        // independent world-pose relay.
+        unsigned long protocolVersion = 0;
+        if (g_Game &&
+            ParseUnsignedCommandArgument(command, 1, 255u, protocolVersion) &&
+            protocolVersion >= 2u)
+        {
+            g_Game->HandleVRPoseServerAck(
+                static_cast<int>(protocolVersion));
+        }
+    }
+
+    void __cdecl OnL4D2VRPoseAckCommand(const SourceCCommand& command)
+    {
+        unsigned long protocolVersion = 0;
+        if (!g_Game ||
+            !ParseUnsignedCommandArgument(command, 1, 255u, protocolVersion))
+        {
+            return;
+        }
+
+        g_Game->HandleVRPoseServerAck(
+            static_cast<int>(protocolVersion));
+    }
+
+    void __cdecl OnL4D2VRPoseReceiveCommand(const SourceCCommand& command)
+    {
+        unsigned long playerIndex = 0;
+        unsigned long sequence = 0;
+        if (!g_Game ||
+            command.ArgC() != 4 ||
+            !ParseUnsignedCommandArgument(command, 1, 64u, playerIndex) ||
+            !ParseUnsignedCommandArgument(command, 2, 65535u, sequence))
+        {
+            return;
+        }
+
+        g_Game->ReceiveVRPosePayload(
+            static_cast<int>(playerIndex),
+            static_cast<std::uint16_t>(sequence),
+            command.Arg(3),
+            true);
     }
 
     SourceRegisteredConCommand g_L4D2VRServerAckCommand(
@@ -484,12 +592,22 @@ namespace
         &OnL4D2VRServerAckCommand,
         "Accepts L4D2VR dedicated server plugin acknowledgement.",
         kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRPoseAckCommand(
+        kL4D2VRPoseAckCommandName,
+        &OnL4D2VRPoseAckCommand,
+        "Accepts L4D2VR world-pose relay acknowledgement.",
+        kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRPoseReceiveCommand(
+        kL4D2VRPoseReceiveCommandName,
+        &OnL4D2VRPoseReceiveCommand,
+        "Receives a relayed L4D2VR world-model pose.",
+        kFcvarServerCanExecute);
 
-    bool g_L4D2VRServerAckCommandRegistered = false;
+    bool g_L4D2VRCommandsRegistered = false;
 
-    void RegisterL4D2VRServerAckCommand(void* cvarIface)
+    void RegisterL4D2VRCommands(void* cvarIface)
     {
-        if (!cvarIface || g_L4D2VRServerAckCommandRegistered)
+        if (!cvarIface || g_L4D2VRCommandsRegistered)
             return;
 
         SourceICvar* cvar = reinterpret_cast<SourceICvar*>(cvarIface);
@@ -497,12 +615,20 @@ namespace
         {
             if (!cvar->FindCommandBase(kL4D2VRServerAckCommandName))
                 cvar->RegisterConCommand(&g_L4D2VRServerAckCommand);
-            g_L4D2VRServerAckCommandRegistered = true;
-            Game::logMsg("[VR][ServerAck] registered %s client command", kL4D2VRServerAckCommandName);
+            if (!cvar->FindCommandBase(kL4D2VRPoseAckCommandName))
+                cvar->RegisterConCommand(&g_L4D2VRPoseAckCommand);
+            if (!cvar->FindCommandBase(kL4D2VRPoseReceiveCommandName))
+                cvar->RegisterConCommand(&g_L4D2VRPoseReceiveCommand);
+            g_L4D2VRCommandsRegistered = true;
+            Game::logMsg(
+                "[VR][WorldPose] registered commands: %s, %s, %s",
+                kL4D2VRServerAckCommandName,
+                kL4D2VRPoseAckCommandName,
+                kL4D2VRPoseReceiveCommandName);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Game::logMsg("[VR][ServerAck] failed to register %s client command", kL4D2VRServerAckCommandName);
+            Game::logMsg("[VR][WorldPose] failed to register client commands");
         }
     }
 }
@@ -522,6 +648,12 @@ Game::Game()
     m_EngineTraceServer = static_cast<IEngineTrace*>(TryInterfaceNoError("engine.dll", "EngineTraceServer003"));
     m_EngineClient = static_cast<IEngineClient*>(GetInterfaceSafe("engine.dll", "VEngineClient013"));
     m_EngineSound = TryInterfaceNoError("engine.dll", "IEngineSoundClient003");
+    m_ServerPluginHelpers = TryInterfaceNoError(
+        "engine.dll",
+        "ISERVERPLUGINHELPERS001");
+    m_ServerGameClients = TryInterfaceNoError(
+        "server.dll",
+        "ServerGameClients003");
     m_GameEventManager = static_cast<IGameEventManager2*>(TryInterfaceNoError("engine.dll", "GAMEEVENTSMANAGER002"));
     if (!m_GameEventManager)
         m_GameEventManager = static_cast<IGameEventManager2*>(TryInterfaceNoError("engine.dll", "GAMEEVENTSMANAGER001"));
@@ -538,7 +670,7 @@ Game::Game()
         m_Cvar = TryInterfaceNoError("vstdlib.dll", "VEngineCvar006");
     if (!m_Cvar)
         m_Cvar = TryInterfaceNoError("vstdlib.dll", "VEngineCvar004");
-    RegisterL4D2VRServerAckCommand(m_Cvar);
+    RegisterL4D2VRCommands(m_Cvar);
 
     m_Offsets = new Offsets();
     m_VR = new VR(this);
@@ -681,7 +813,1014 @@ bool Game::IsValidPlayerIndex(int index) const
 
 void Game::ResetAllPlayerVRInfo()
 {
-    m_PlayersVRInfo.fill(Player{});
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        m_PlayersVRInfo.fill(Player{});
+        m_VRPoseServerCapable.store(false, std::memory_order_release);
+        m_VRPoseHelloSent.store(false, std::memory_order_release);
+        m_VRPoseLastLocalPublishTickMs = 0u;
+        m_VRPoseLocalSequence = 0u;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(
+            m_BuiltinVRPoseRelayMutex);
+        m_BuiltinVRPoseRelayClients.fill(VRPoseRelayServerClient{});
+    }
+}
+
+void Game::ResetVRPoseServerSession()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        for (Player& player : m_PlayersVRInfo)
+        {
+            player.previousWorldPose = VRPoseFrame{};
+            player.latestWorldPose = VRPoseFrame{};
+            player.worldPoseBlendWeight = 0.0f;
+            player.worldPoseBlendTickMs = 0u;
+            player.worldPoseUserID = -1;
+            player.pPlayer = nullptr;
+        }
+        m_VRPoseServerCapable.store(false, std::memory_order_release);
+        m_VRPoseHelloSent.store(false, std::memory_order_release);
+        m_VRPoseLastLocalPublishTickMs = 0u;
+        m_VRPoseLocalSequence = 0u;
+    }
+    {
+        // On a listen server this also ends the current relay session. Edict
+        // slots and packet sequences may be reused on the next map.
+        std::lock_guard<std::recursive_mutex> lock(
+            m_BuiltinVRPoseRelayMutex);
+        m_BuiltinVRPoseRelayClients.fill(VRPoseRelayServerClient{});
+    }
+}
+
+namespace
+{
+    constexpr int kVRPoseRelayMaxPlayerIndex = 64;
+    constexpr int kVRPoseRelayMaxAckAttempts = 5;
+    constexpr std::uint64_t kVRPoseRelayAckIntervalMs = 1000u;
+    constexpr std::uint64_t kVRPoseRelayUploadSilenceForAckMs = 1500u;
+    constexpr std::uint64_t kVRPoseRelayMinimumDecodeIntervalUs = 16667u;
+    constexpr int kSourceEdictFreeFlag = (1 << 1);
+    constexpr char kVRPoseRelayHelloCommand[] = "l4d2vr_pose_hello";
+    constexpr char kVRPoseRelayUploadCommand[] = "l4d2vr_pose_upload";
+    constexpr char kVRPoseRelayAckCommand[] = "l4d2vr_pose_ack 1\n";
+
+    struct VRPoseRelayCommandView
+    {
+        int argumentCount = 0;
+        const char* name = "";
+        const char* argument1 = "";
+        const char* argument2 = "";
+    };
+
+    std::uint64_t VRPoseTickMs()
+    {
+        return static_cast<std::uint64_t>(GetTickCount64());
+    }
+
+    std::uint64_t VRPoseTickUs()
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    bool VRPoseRelayReadCommand(
+        const void* sourceCommand,
+        VRPoseRelayCommandView& outCommand)
+    {
+        outCommand = {};
+        if (!sourceCommand)
+            return false;
+#ifdef _MSC_VER
+        __try
+        {
+#endif
+            const SourceCCommand& command =
+                *static_cast<const SourceCCommand*>(sourceCommand);
+            outCommand.argumentCount = command.ArgC();
+            outCommand.name = command.Arg(0);
+            outCommand.argument1 = command.Arg(1);
+            outCommand.argument2 = command.Arg(2);
+            return true;
+#ifdef _MSC_VER
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            outCommand = {};
+            return false;
+        }
+#endif
+    }
+
+    bool VRPoseRelayReadEdictIdentity(
+        edict_t* entity,
+        int& outPlayerIndex,
+        std::int16_t& outSerial)
+    {
+        outPlayerIndex = -1;
+        outSerial = 0;
+        if (!entity)
+            return false;
+#ifdef _MSC_VER
+        __try
+        {
+#endif
+            if ((entity->m_fStateFlags & kSourceEdictFreeFlag) != 0 ||
+                !entity->m_pUnk)
+            {
+                return false;
+            }
+            outPlayerIndex = static_cast<int>(entity->m_EdictIndex);
+            outSerial = entity->m_NetworkSerialNumber;
+            return outPlayerIndex >= 1 &&
+                outPlayerIndex <= kVRPoseRelayMaxPlayerIndex;
+#ifdef _MSC_VER
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            outPlayerIndex = -1;
+            outSerial = 0;
+            return false;
+        }
+#endif
+    }
+
+    bool VRPoseRelaySendClientCommand(
+        void* serverPluginHelpers,
+        edict_t* entity,
+        const char* command)
+    {
+        if (!serverPluginHelpers || !entity || !command || !*command)
+            return false;
+#ifdef _MSC_VER
+        __try
+        {
+#endif
+            static_cast<SourceIServerPluginHelpersPoseRelay*>(
+                serverPluginHelpers)->ClientCommand(entity, command);
+            return true;
+#ifdef _MSC_VER
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#endif
+    }
+
+    bool VRPoseRelayParseSequence(
+        const char* text,
+        std::uint16_t& outSequence)
+    {
+        outSequence = 0u;
+        if (!text || !*text)
+            return false;
+
+        std::uint32_t value = 0u;
+        for (const unsigned char* cursor =
+                 reinterpret_cast<const unsigned char*>(text);
+             *cursor;
+             ++cursor)
+        {
+            if (*cursor < '0' || *cursor > '9')
+                return false;
+            value =
+                value * 10u +
+                static_cast<std::uint32_t>(*cursor - '0');
+            if (value > 0xFFFFu)
+                return false;
+        }
+
+        outSequence = static_cast<std::uint16_t>(value);
+        return true;
+    }
+
+    float VRPoseNormalizeAngle(float angle)
+    {
+        if (!std::isfinite(angle))
+            return 0.0f;
+        angle -= 360.0f * std::floor((angle + 180.0f) / 360.0f);
+        return angle;
+    }
+
+    float VRPoseAngleLerp(float from, float to, float fraction)
+    {
+        const float delta = VRPoseNormalizeAngle(to - from);
+        return VRPoseNormalizeAngle(from + delta * fraction);
+    }
+
+    bool VRPoseFiniteVector(const Vector& value)
+    {
+        return std::isfinite(value.x) &&
+            std::isfinite(value.y) &&
+            std::isfinite(value.z);
+    }
+
+    bool VRPoseFiniteAngles(const QAngle& value)
+    {
+        return std::isfinite(value.x) &&
+            std::isfinite(value.y) &&
+            std::isfinite(value.z);
+    }
+
+    std::int16_t VRPosePackPosition(float value)
+    {
+        if (!std::isfinite(value))
+            return 0;
+        const float scaled = value / l4d2vr_pose::kPositionUnitsPerStep;
+        const long rounded = std::lround(std::clamp(
+            scaled,
+            -32767.0f,
+            32767.0f));
+        return static_cast<std::int16_t>(rounded);
+    }
+
+    float VRPoseUnpackPosition(std::int16_t value)
+    {
+        return static_cast<float>(value) *
+            l4d2vr_pose::kPositionUnitsPerStep;
+    }
+
+    std::int16_t VRPosePackAngle(float value)
+    {
+        const float normalized = VRPoseNormalizeAngle(value);
+        const long rounded = std::lround(std::clamp(
+            normalized * (32767.0f / 180.0f),
+            -32767.0f,
+            32767.0f));
+        return static_cast<std::int16_t>(rounded);
+    }
+
+    float VRPoseUnpackAngle(std::int16_t value)
+    {
+        return VRPoseNormalizeAngle(
+            static_cast<float>(value) * (180.0f / 32767.0f));
+    }
+
+    Vector VRPoseWorldPositionToBodyLocal(
+        const Vector& worldPosition,
+        const Vector& playerOrigin,
+        float bodyYaw)
+    {
+        Vector forward{};
+        Vector right{};
+        Vector up{};
+        QAngle::AngleVectors(
+            QAngle(0.0f, bodyYaw, 0.0f),
+            &forward,
+            &right,
+            &up);
+        const Vector delta = worldPosition - playerOrigin;
+        return Vector(
+            DotProduct(delta, forward),
+            DotProduct(delta, right),
+            DotProduct(delta, up));
+    }
+
+    QAngle VRPoseWorldAnglesToBodyLocal(
+        const QAngle& worldAngles,
+        float bodyYaw)
+    {
+        return QAngle(
+            VRPoseNormalizeAngle(worldAngles.x),
+            VRPoseNormalizeAngle(worldAngles.y - bodyYaw),
+            VRPoseNormalizeAngle(worldAngles.z));
+    }
+
+    void VRPosePackTrackedPose(
+        const VRTrackedPoseLocal& source,
+        l4d2vr_pose::PackedTrackedPose& destination)
+    {
+        destination.position[0] = VRPosePackPosition(source.position.x);
+        destination.position[1] = VRPosePackPosition(source.position.y);
+        destination.position[2] = VRPosePackPosition(source.position.z);
+        destination.rotation[0] = VRPosePackAngle(source.angles.x);
+        destination.rotation[1] = VRPosePackAngle(source.angles.y);
+        destination.rotation[2] = VRPosePackAngle(source.angles.z);
+    }
+
+    VRTrackedPoseLocal VRPoseUnpackTrackedPose(
+        const l4d2vr_pose::PackedTrackedPose& source)
+    {
+        VRTrackedPoseLocal result{};
+        result.position = Vector(
+            VRPoseUnpackPosition(source.position[0]),
+            VRPoseUnpackPosition(source.position[1]),
+            VRPoseUnpackPosition(source.position[2]));
+        result.angles = QAngle(
+            VRPoseUnpackAngle(source.rotation[0]),
+            VRPoseUnpackAngle(source.rotation[1]),
+            VRPoseUnpackAngle(source.rotation[2]));
+        return result;
+    }
+
+    bool VRPoseTrackedPointSane(const VRTrackedPoseLocal& pose)
+    {
+        // A tracked point cannot legitimately be more than roughly twelve
+        // metres from the player origin. Reject larger values before they can
+        // generate extreme observer-side bone matrices.
+        return VRPoseFiniteVector(pose.position) &&
+            VRPoseFiniteAngles(pose.angles) &&
+            pose.position.LengthSqr() <= (512.0f * 512.0f);
+    }
+
+    bool VRPoseReadPlayerTransform(
+        C_BasePlayer* player,
+        Vector& outOrigin,
+        QAngle& outAngles)
+    {
+        if (!player)
+            return false;
+#ifdef _MSC_VER
+        __try
+        {
+            outOrigin = player->GetAbsOrigin();
+            outAngles = player->GetAbsAngles();
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        outOrigin = player->GetAbsOrigin();
+        outAngles = player->GetAbsAngles();
+        return true;
+#endif
+    }
+
+    void VRPoseReadPlayerIdentity(
+        Game* game,
+        int playerIndex,
+        C_BasePlayer*& outPlayer,
+        int& outUserID)
+    {
+        outPlayer = nullptr;
+        outUserID = -1;
+        if (!game || playerIndex <= 0)
+            return;
+#ifdef _MSC_VER
+        __try
+        {
+#endif
+            if (game->m_ClientEntityList)
+            {
+                outPlayer = reinterpret_cast<C_BasePlayer*>(
+                    game->m_ClientEntityList->GetClientEntity(
+                        playerIndex));
+            }
+            if (game->m_EngineClient)
+            {
+                player_info_t info{};
+                if (game->m_EngineClient->GetPlayerInfo(
+                        playerIndex,
+                        &info))
+                {
+                    outUserID = info.userID;
+                }
+            }
+#ifdef _MSC_VER
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            outPlayer = nullptr;
+            outUserID = -1;
+        }
+#endif
+    }
+
+    VRTrackedPoseLocal VRPoseInterpolateTrackedPoint(
+        const VRTrackedPoseLocal& previous,
+        const VRTrackedPoseLocal& latest,
+        float fraction)
+    {
+        VRTrackedPoseLocal result{};
+        result.position =
+            previous.position + (latest.position - previous.position) * fraction;
+        result.angles.x =
+            VRPoseAngleLerp(previous.angles.x, latest.angles.x, fraction);
+        result.angles.y =
+            VRPoseAngleLerp(previous.angles.y, latest.angles.y, fraction);
+        result.angles.z =
+            VRPoseAngleLerp(previous.angles.z, latest.angles.z, fraction);
+        return result;
+    }
+}
+
+void Game::ObserveBuiltinVRPoseRelayClient(
+    int playerIndex,
+    edict_t* entity)
+{
+    if (!m_ServerPluginHelpers ||
+        !m_ServerGameClients ||
+        playerIndex < 1 ||
+        playerIndex > kVRPoseRelayMaxPlayerIndex ||
+        !entity)
+    {
+        return;
+    }
+
+    int edictPlayerIndex = -1;
+    std::int16_t edictSerial = 0;
+    if (!VRPoseRelayReadEdictIdentity(
+            entity,
+            edictPlayerIndex,
+            edictSerial) ||
+        edictPlayerIndex != playerIndex)
+    {
+        return;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(
+        m_BuiltinVRPoseRelayMutex);
+    VRPoseRelayServerClient& client =
+        m_BuiltinVRPoseRelayClients[playerIndex];
+    if (client.entity != entity ||
+        client.edictSerial != edictSerial)
+    {
+        client = VRPoseRelayServerClient{};
+        client.entity = entity;
+        client.edictSerial = edictSerial;
+    }
+
+    const std::uint64_t nowMs = VRPoseTickMs();
+    const bool uploadIsSilent =
+        client.lastUploadTickMs == 0u ||
+        nowMs - client.lastUploadTickMs >=
+            kVRPoseRelayUploadSilenceForAckMs;
+    if (!uploadIsSilent ||
+        client.ackAttempts >= kVRPoseRelayMaxAckAttempts ||
+        (client.lastAckTickMs != 0u &&
+         nowMs - client.lastAckTickMs < kVRPoseRelayAckIntervalMs))
+    {
+        return;
+    }
+
+    client.lastAckTickMs = nowMs;
+    ++client.ackAttempts;
+    if (VRPoseRelaySendClientCommand(
+            m_ServerPluginHelpers,
+            entity,
+            kVRPoseRelayAckCommand) &&
+        client.ackAttempts == 1)
+    {
+        Game::logMsg(
+            "[VR][WorldPose] built-in listen relay offered protocol 1 to player %d",
+            playerIndex);
+    }
+}
+
+bool Game::HandleBuiltinVRPoseRelayCommand(
+    edict_t* entity,
+    const void* sourceCommand)
+{
+    if (!m_ServerPluginHelpers || !m_ServerGameClients)
+        return false;
+
+    VRPoseRelayCommandView command{};
+    if (!VRPoseRelayReadCommand(sourceCommand, command))
+        return false;
+
+    const bool isHello =
+        std::strcmp(command.name, kVRPoseRelayHelloCommand) == 0;
+    const bool isUpload =
+        std::strcmp(command.name, kVRPoseRelayUploadCommand) == 0;
+    if (!isHello && !isUpload)
+        return false;
+
+    int playerIndex = -1;
+    std::int16_t edictSerial = 0;
+    if (!VRPoseRelayReadEdictIdentity(
+            entity,
+            playerIndex,
+            edictSerial))
+    {
+        return true;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(
+        m_BuiltinVRPoseRelayMutex);
+    VRPoseRelayServerClient& client =
+        m_BuiltinVRPoseRelayClients[playerIndex];
+    if (client.entity != entity ||
+        client.edictSerial != edictSerial)
+    {
+        client = VRPoseRelayServerClient{};
+        client.entity = entity;
+        client.edictSerial = edictSerial;
+    }
+
+    if (isHello)
+    {
+        if (command.argumentCount == 2 &&
+            std::strcmp(command.argument1, "1") == 0)
+        {
+            const bool firstHello = !client.protocolSupported;
+            client.protocolSupported = true;
+            // A hello also marks a new sender session. This permits a client
+            // module reload or map transition to restart its uint16 sequence.
+            client.haveSequence = false;
+            if (firstHello)
+            {
+                Game::logMsg(
+                    "[VR][WorldPose] built-in listen relay accepted player %d",
+                    playerIndex);
+            }
+        }
+        return true;
+    }
+
+    if (!client.protocolSupported ||
+        command.argumentCount != 3)
+    {
+        return true;
+    }
+
+    std::uint16_t sequence = 0u;
+    if (!VRPoseRelayParseSequence(command.argument1, sequence))
+        return true;
+    if (client.haveSequence &&
+        !l4d2vr_pose::IsSequenceNewer(
+            sequence,
+            client.lastSequence))
+    {
+        return true;
+    }
+
+    const std::uint64_t nowUs = VRPoseTickUs();
+    if (client.lastDecodeTickUs != 0u &&
+        nowUs - client.lastDecodeTickUs <
+            kVRPoseRelayMinimumDecodeIntervalUs)
+    {
+        return true;
+    }
+    // Invalid payloads consume the rate-limit slot too.
+    client.lastDecodeTickUs = nowUs;
+
+    l4d2vr_pose::WirePacket packet{};
+    if (!l4d2vr_pose::DecodePayload(
+            command.argument2,
+            packet))
+    {
+        return true;
+    }
+
+    client.haveSequence = true;
+    client.lastSequence = sequence;
+    client.lastUploadTickMs = VRPoseTickMs();
+    client.ackAttempts = 0;
+
+    char relayCommand[128] = {};
+    const int commandLength = std::snprintf(
+        relayCommand,
+        sizeof(relayCommand),
+        "l4d2vr_pose_receive %d %u %s\n",
+        playerIndex,
+        static_cast<unsigned int>(sequence),
+        command.argument2);
+    if (commandLength <= 0 ||
+        commandLength >= static_cast<int>(sizeof(relayCommand)))
+    {
+        return true;
+    }
+
+    for (int recipientIndex = 1;
+         recipientIndex <= kVRPoseRelayMaxPlayerIndex;
+         ++recipientIndex)
+    {
+        if (recipientIndex == playerIndex)
+            continue;
+
+        VRPoseRelayServerClient& recipient =
+            m_BuiltinVRPoseRelayClients[recipientIndex];
+        if (!recipient.protocolSupported || !recipient.entity)
+            continue;
+
+        int currentIndex = -1;
+        std::int16_t currentSerial = 0;
+        if (!VRPoseRelayReadEdictIdentity(
+                recipient.entity,
+                currentIndex,
+                currentSerial) ||
+            currentIndex != recipientIndex ||
+            currentSerial != recipient.edictSerial)
+        {
+            recipient = VRPoseRelayServerClient{};
+            continue;
+        }
+
+        VRPoseRelaySendClientCommand(
+            m_ServerPluginHelpers,
+            recipient.entity,
+            relayCommand);
+    }
+
+    return true;
+}
+
+void Game::HandleVRPoseServerAck(int protocolVersion)
+{
+    if (protocolVersion < static_cast<int>(l4d2vr_pose::kVersion))
+        return;
+
+    const bool wasCapable =
+        m_VRPoseServerCapable.exchange(true, std::memory_order_acq_rel);
+    // The relay resets its per-client capability table on every LevelInit.
+    // ACK is therefore also the map-transition handshake: always answer it
+    // idempotently even when this client already completed a previous map.
+    m_VRPoseHelloSent.store(true, std::memory_order_release);
+    ServerCmd("l4d2vr_pose_hello 1", true);
+
+    if (!wasCapable)
+    {
+        Game::logMsg(
+            "[VR][WorldPose] server relay protocol %d acknowledged",
+            protocolVersion);
+    }
+}
+
+void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
+{
+    if (!vr ||
+        !localPlayer ||
+        !vr->m_IsVREnabled ||
+        !vr->m_WorldModelVRPoseEnabled ||
+        !m_EngineClient ||
+        !m_EngineClient->IsInGame())
+    {
+        return;
+    }
+
+    const int localPlayerIndex = m_EngineClient->GetLocalPlayer();
+    if (!IsValidPlayerIndex(localPlayerIndex) || localPlayerIndex <= 0)
+        return;
+
+    const std::uint64_t nowMs = VRPoseTickMs();
+    const float sendHz = std::clamp(
+        vr->m_WorldModelVRPoseSendHz,
+        10.0f,
+        60.0f);
+    const std::uint64_t intervalMs = static_cast<std::uint64_t>(
+        std::max(1.0f, std::floor(1000.0f / sendHz)));
+    if (m_VRPoseLastLocalPublishTickMs != 0u &&
+        nowMs - m_VRPoseLastLocalPublishTickMs < intervalMs)
+    {
+        return;
+    }
+    m_VRPoseLastLocalPublishTickMs = nowMs;
+
+    Vector playerOrigin{};
+    QAngle playerAngles{};
+    if (!VRPoseReadPlayerTransform(
+            localPlayer,
+            playerOrigin,
+            playerAngles))
+    {
+        return;
+    }
+
+    if (!VRPoseFiniteVector(playerOrigin) ||
+        !VRPoseFiniteAngles(playerAngles))
+    {
+        return;
+    }
+
+    VRWorldPoseTrackingSnapshot tracking{};
+    if (!vr->ReadWorldPoseTrackingSnapshot(tracking))
+        return;
+
+    const float bodyYaw = VRPoseNormalizeAngle(playerAngles.y);
+    std::uint8_t validMask = 0u;
+    if (tracking.hmdValid)
+        validMask |= l4d2vr_pose::kValidHmd;
+    if (tracking.leftHandValid)
+        validMask |= l4d2vr_pose::kValidLeftHand;
+    if (tracking.rightHandValid)
+        validMask |= l4d2vr_pose::kValidRightHand;
+    if ((validMask & l4d2vr_pose::kValidHmd) == 0u)
+        return;
+
+    VRPoseFrame frame{};
+    frame.valid = true;
+    frame.validMask = validMask;
+    frame.sequence = ++m_VRPoseLocalSequence;
+    frame.receivedTickMs = nowMs;
+
+    frame.hmd.position = VRPoseWorldPositionToBodyLocal(
+        tracking.hmdPosition,
+        playerOrigin,
+        bodyYaw);
+    frame.hmd.angles = VRPoseWorldAnglesToBodyLocal(
+        tracking.hmdAngles,
+        bodyYaw);
+    frame.leftHand.position = VRPoseWorldPositionToBodyLocal(
+        tracking.leftHandPosition,
+        playerOrigin,
+        bodyYaw);
+    frame.leftHand.angles = VRPoseWorldAnglesToBodyLocal(
+        tracking.leftHandAngles,
+        bodyYaw);
+    frame.rightHand.position = VRPoseWorldPositionToBodyLocal(
+        tracking.rightHandPosition,
+        playerOrigin,
+        bodyYaw);
+    frame.rightHand.angles = VRPoseWorldAnglesToBodyLocal(
+        tracking.rightHandAngles,
+        bodyYaw);
+
+    if (((frame.validMask & l4d2vr_pose::kValidHmd) != 0u &&
+            !VRPoseTrackedPointSane(frame.hmd)) ||
+        ((frame.validMask & l4d2vr_pose::kValidLeftHand) != 0u &&
+            !VRPoseTrackedPointSane(frame.leftHand)) ||
+        ((frame.validMask & l4d2vr_pose::kValidRightHand) != 0u &&
+            !VRPoseTrackedPointSane(frame.rightHand)))
+    {
+        return;
+    }
+
+    l4d2vr_pose::WirePacket wire{};
+    wire.versionAndValidMask = static_cast<std::uint8_t>(
+        (l4d2vr_pose::kVersion << 4) | frame.validMask);
+    VRPosePackTrackedPose(frame.hmd, wire.hmd);
+    VRPosePackTrackedPose(frame.leftHand, wire.leftHand);
+    VRPosePackTrackedPose(frame.rightHand, wire.rightHand);
+    l4d2vr_pose::FinalizePacket(wire);
+
+    std::string encodedPayload;
+    if (!l4d2vr_pose::EncodePayload(wire, encodedPayload))
+        return;
+
+    // Local loopback makes the exact observer reconstruction available to the
+    // local third-person camera even when no multiplayer relay is installed.
+    ReceiveVRPosePayload(
+        localPlayerIndex,
+        frame.sequence,
+        encodedPayload.c_str(),
+        false);
+
+    if (!m_VRPoseServerCapable.load(std::memory_order_acquire))
+        return;
+
+    char command[128]{};
+    const int written = std::snprintf(
+        command,
+        sizeof(command),
+        "l4d2vr_pose_upload %u %s",
+        static_cast<unsigned int>(frame.sequence),
+        encodedPayload.c_str());
+    if (written <= 0 || written >= static_cast<int>(sizeof(command)))
+        return;
+
+    // Pose samples are sequenced and interpolated, so stale reliable delivery
+    // is less useful than the latest packet.
+    ServerCmd(command, false);
+}
+
+bool Game::ReceiveVRPosePayload(
+    int playerIndex,
+    std::uint16_t sequence,
+    const char* encodedPayload,
+    bool fromServer)
+{
+    if (!IsValidPlayerIndex(playerIndex) ||
+        playerIndex <= 0 ||
+        !encodedPayload)
+    {
+        return false;
+    }
+
+    l4d2vr_pose::WirePacket wire{};
+    if (!l4d2vr_pose::DecodePayload(encodedPayload, wire))
+        return false;
+
+    VRPoseFrame frame{};
+    frame.valid = true;
+    frame.validMask = l4d2vr_pose::PacketValidMask(wire);
+    frame.sequence = sequence;
+    frame.receivedTickMs = VRPoseTickMs();
+    frame.hmd = VRPoseUnpackTrackedPose(wire.hmd);
+    frame.leftHand = VRPoseUnpackTrackedPose(wire.leftHand);
+    frame.rightHand = VRPoseUnpackTrackedPose(wire.rightHand);
+
+    if (((frame.validMask & l4d2vr_pose::kValidHmd) != 0u &&
+            !VRPoseTrackedPointSane(frame.hmd)) ||
+        ((frame.validMask & l4d2vr_pose::kValidLeftHand) != 0u &&
+            !VRPoseTrackedPointSane(frame.leftHand)) ||
+        ((frame.validMask & l4d2vr_pose::kValidRightHand) != 0u &&
+            !VRPoseTrackedPointSane(frame.rightHand)))
+    {
+        return false;
+    }
+
+    C_BasePlayer* observedPlayer = nullptr;
+    int observedUserID = -1;
+    VRPoseReadPlayerIdentity(
+        this,
+        playerIndex,
+        observedPlayer,
+        observedUserID);
+
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        Player& player = m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)];
+        const bool playerIdentityChanged =
+            (observedPlayer &&
+             player.pPlayer &&
+             observedPlayer != player.pPlayer) ||
+            (observedUserID >= 0 &&
+             player.worldPoseUserID >= 0 &&
+             observedUserID != player.worldPoseUserID);
+        if (playerIdentityChanged)
+        {
+            player.previousWorldPose = VRPoseFrame{};
+            player.latestWorldPose = VRPoseFrame{};
+            player.worldPoseBlendWeight = 0.0f;
+            player.worldPoseBlendTickMs = 0u;
+        }
+        if (observedPlayer)
+            player.pPlayer = observedPlayer;
+        if (observedUserID >= 0)
+            player.worldPoseUserID = observedUserID;
+
+        if (player.latestWorldPose.valid &&
+            !l4d2vr_pose::IsSequenceNewer(
+                sequence,
+                player.latestWorldPose.sequence))
+        {
+            // A client module reload can restart its uint16 sequence without
+            // changing the Source player slot/userID.  The relay has already
+            // validated this sender session, so permit a sequence rebase only
+            // after the old observer sample has been silent for one second.
+            const bool mayRebaseAfterSilence =
+                frame.receivedTickMs >
+                    player.latestWorldPose.receivedTickMs &&
+                frame.receivedTickMs -
+                    player.latestWorldPose.receivedTickMs >=
+                    1000u;
+            if (!mayRebaseAfterSilence)
+                return false;
+            player.previousWorldPose = VRPoseFrame{};
+            player.latestWorldPose = VRPoseFrame{};
+            player.worldPoseBlendWeight = 0.0f;
+            player.worldPoseBlendTickMs = 0u;
+        }
+
+        player.previousWorldPose = player.latestWorldPose.valid
+            ? player.latestWorldPose
+            : frame;
+        player.latestWorldPose = frame;
+    }
+
+    if (fromServer)
+        m_VRPoseServerCapable.store(true, std::memory_order_release);
+
+    if (m_VR && m_VR->m_WorldModelVRPoseDebugLog)
+    {
+        static std::array<std::uint64_t, Game::kMaxPlayers> s_lastLogMs{};
+        if (frame.receivedTickMs - s_lastLogMs[static_cast<std::size_t>(playerIndex)] >= 1000u)
+        {
+            s_lastLogMs[static_cast<std::size_t>(playerIndex)] = frame.receivedTickMs;
+            Game::logMsg(
+                "[VR][WorldPose] receive player=%d seq=%u source=%s hmd=(%.1f %.1f %.1f) hmdRot=(%.1f %.1f %.1f) left=(%.1f %.1f %.1f) right=(%.1f %.1f %.1f)",
+                playerIndex,
+                static_cast<unsigned int>(sequence),
+                fromServer ? "server" : "local",
+                frame.hmd.position.x,
+                frame.hmd.position.y,
+                frame.hmd.position.z,
+                frame.hmd.angles.x,
+                frame.hmd.angles.y,
+                frame.hmd.angles.z,
+                frame.leftHand.position.x,
+                frame.leftHand.position.y,
+                frame.leftHand.position.z,
+                frame.rightHand.position.x,
+                frame.rightHand.position.y,
+                frame.rightHand.position.z);
+        }
+    }
+
+    return true;
+}
+
+bool Game::GetInterpolatedVRPose(
+    int playerIndex,
+    float interpolationDelayMs,
+    float staleAfterMs,
+    VRPoseFrame& outPose,
+    float& outFreshness) const
+{
+    outPose = VRPoseFrame{};
+    outFreshness = 0.0f;
+    if (!IsValidPlayerIndex(playerIndex) || playerIndex <= 0)
+        return false;
+
+    VRPoseFrame previous{};
+    VRPoseFrame latest{};
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        const Player& player =
+            m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)];
+        previous = player.previousWorldPose;
+        latest = player.latestWorldPose;
+    }
+
+    if (!latest.valid)
+        return false;
+
+    const std::uint64_t nowMs = VRPoseTickMs();
+    const float ageMs = static_cast<float>(
+        nowMs >= latest.receivedTickMs
+            ? nowMs - latest.receivedTickMs
+            : 0u);
+    const float staleStart = std::clamp(staleAfterMs, 100.0f, 2000.0f);
+    const float staleFadeMs = std::clamp(staleStart, 100.0f, 500.0f);
+    outFreshness = 1.0f - std::clamp(
+        (ageMs - staleStart) / staleFadeMs,
+        0.0f,
+        1.0f);
+    if (outFreshness <= 0.0f)
+        return false;
+
+    float fraction = 1.0f;
+    if (previous.valid &&
+        latest.receivedTickMs > previous.receivedTickMs)
+    {
+        const std::uint64_t delay = static_cast<std::uint64_t>(
+            std::clamp(interpolationDelayMs, 0.0f, 250.0f));
+        const std::uint64_t targetTick =
+            (nowMs > delay) ? (nowMs - delay) : 0u;
+        const float denominator = static_cast<float>(
+            latest.receivedTickMs - previous.receivedTickMs);
+        const float numerator = static_cast<float>(
+            targetTick > previous.receivedTickMs
+                ? targetTick - previous.receivedTickMs
+                : 0u);
+        fraction = std::clamp(numerator / denominator, 0.0f, 1.0f);
+    }
+
+    outPose = latest;
+    outPose.hmd = VRPoseInterpolateTrackedPoint(
+        previous.valid ? previous.hmd : latest.hmd,
+        latest.hmd,
+        fraction);
+    outPose.leftHand = VRPoseInterpolateTrackedPoint(
+        previous.valid ? previous.leftHand : latest.leftHand,
+        latest.leftHand,
+        fraction);
+    outPose.rightHand = VRPoseInterpolateTrackedPoint(
+        previous.valid ? previous.rightHand : latest.rightHand,
+        latest.rightHand,
+        fraction);
+    return true;
+}
+
+float Game::AdvanceVRPoseBlendWeight(
+    int playerIndex,
+    float targetWeight,
+    float blendSeconds)
+{
+    if (!IsValidPlayerIndex(playerIndex) || playerIndex <= 0)
+        return 0.0f;
+
+    const std::uint64_t nowMs = VRPoseTickMs();
+    std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+    Player& player = m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)];
+    targetWeight = std::clamp(targetWeight, 0.0f, 1.0f);
+    blendSeconds = std::clamp(blendSeconds, 0.05f, 0.50f);
+
+    if (player.worldPoseBlendTickMs == 0u)
+    {
+        player.worldPoseBlendTickMs = nowMs;
+        return player.worldPoseBlendWeight;
+    }
+
+    const float deltaSeconds = std::clamp(
+        static_cast<float>(nowMs - player.worldPoseBlendTickMs) * 0.001f,
+        0.0f,
+        0.10f);
+    player.worldPoseBlendTickMs = nowMs;
+    const float step = std::clamp(
+        deltaSeconds / blendSeconds,
+        0.0f,
+        1.0f);
+    if (player.worldPoseBlendWeight < targetWeight)
+    {
+        player.worldPoseBlendWeight = std::min(
+            targetWeight,
+            player.worldPoseBlendWeight + step);
+    }
+    else
+    {
+        player.worldPoseBlendWeight = std::max(
+            targetWeight,
+            player.worldPoseBlendWeight - step);
+    }
+    return player.worldPoseBlendWeight;
 }
 
 // === Entity Access ===
@@ -767,6 +1906,12 @@ int Game::FindRecvPropOffset(const char* networkName, const char* propName) cons
 }
 
 // === Commands ===
+void Game::ServerCmd(const char* szCmdString, bool reliable)
+{
+    if (m_EngineClient && szCmdString && *szCmdString)
+        m_EngineClient->ServerCmd(szCmdString, reliable);
+}
+
 void Game::ClientCmd(const char* szCmdString)
 {
     if (m_EngineClient)

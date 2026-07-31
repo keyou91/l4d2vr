@@ -272,6 +272,13 @@ void VR::ResetPavlovTwoHandedAimSmoothing()
     m_VrHandsTwoHandedAimSmoothingValid = false;
 }
 
+bool VR::ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot) const
+{
+    std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+    outSnapshot = m_WorldPoseTrackingSnapshot;
+    return outSnapshot.initialized;
+}
+
 void VR::UpdateTracking()
 {
     GetPoses();
@@ -280,6 +287,8 @@ void VR::UpdateTracking()
     // - We arm a short cooldown window whenever we (re)enter "in game" or we lose/regain the local player pointer.
     // - The render hook will use this window to suppress observer-driven third-person latching.
     const bool inGameNow = (m_Game && m_Game->m_EngineClient && m_Game->m_EngineClient->IsInGame());
+    if (m_WasInGamePrev && !inGameNow && m_Game)
+        m_Game->ResetVRPoseServerSession();
     if (!m_WasInGamePrev && inGameNow){
         m_ThirdPersonMapLoadCooldownPending = true;
         Hooks::s_ServerUnderstandsVR = false;
@@ -295,6 +304,12 @@ void VR::UpdateTracking()
         ? (C_BasePlayer*)m_Game->GetClientEntity(playerIndex)
         : nullptr;
     if (!localPlayer) {
+        // Never let a reconnect/map transition publish tracking coordinates
+        // anchored to the previous local player or map.
+        {
+            std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+            m_WorldPoseTrackingSnapshot = {};
+        }
         m_ScopeWeaponIsFirearm = false;
         // If we temporarily lose the local player (connect/disconnect/map change),
         // clear mounted-gun edge tracking so we don't trigger a bogus reset later.
@@ -1242,6 +1257,52 @@ void VR::UpdateTracking()
     rightControllerAngSmoothed.y += m_RotationOffset;
     // Wrap angle from -180 to 180
     rightControllerAngSmoothed.y -= 360 * std::floor((rightControllerAngSmoothed.y + 180) / 360);
+
+    // Preserve the anatomical controller rotations for multiplayer world-model
+    // reconstruction. Everything below this point is allowed to calibrate or
+    // redirect the gameplay/viewmodel aim basis and must not leak into the
+    // remote hand pose.
+    m_LeftControllerTrackedAngAbs = leftControllerAngSmoothed;
+    m_RightControllerTrackedAngAbs = rightControllerAngSmoothed;
+
+    // The gameplay controller fields are swapped in left-handed mode. Publish
+    // an anatomical snapshot so the physical left controller always drives the
+    // model's left arm (and likewise for the right arm).
+    {
+        VRWorldPoseTrackingSnapshot snapshot{};
+        snapshot.initialized = true;
+        snapshot.hmdValid =
+            m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid;
+
+        const vr::TrackedDeviceIndex_t physicalLeftIndex =
+            GetPhysicalControllerIndexForHand(true);
+        const vr::TrackedDeviceIndex_t physicalRightIndex =
+            GetPhysicalControllerIndexForHand(false);
+        snapshot.leftHandValid =
+            physicalLeftIndex < vr::k_unMaxTrackedDeviceCount &&
+            m_Poses[physicalLeftIndex].bPoseIsValid;
+        snapshot.rightHandValid =
+            physicalRightIndex < vr::k_unMaxTrackedDeviceCount &&
+            m_Poses[physicalRightIndex].bPoseIsValid;
+
+        snapshot.hmdPosition = m_HmdPosAbs;
+        snapshot.hmdAngles = m_HmdAngAbs;
+        snapshot.leftHandPosition = m_LeftHanded
+            ? m_RightControllerPosAbs
+            : m_LeftControllerPosAbs;
+        snapshot.leftHandAngles = m_LeftHanded
+            ? m_RightControllerTrackedAngAbs
+            : m_LeftControllerTrackedAngAbs;
+        snapshot.rightHandPosition = m_LeftHanded
+            ? m_LeftControllerPosAbs
+            : m_RightControllerPosAbs;
+        snapshot.rightHandAngles = m_LeftHanded
+            ? m_LeftControllerTrackedAngAbs
+            : m_RightControllerTrackedAngAbs;
+
+        std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+        m_WorldPoseTrackingSnapshot = snapshot;
+    }
 
     QAngle::AngleVectors(leftControllerAngSmoothed, &m_LeftControllerForward, &m_LeftControllerRight, &m_LeftControllerUp);
     QAngle::AngleVectors(rightControllerAngSmoothed, &m_RightControllerForward, &m_RightControllerRight, &m_RightControllerUp);

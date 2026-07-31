@@ -80,6 +80,10 @@ typedef void(__thiscall* tEndFrame)(PVOID);
 typedef void(__thiscall* tCalcViewModelView)(void* thisptr, void* owner, const Vector& eyePosition, const QAngle& eyeAngles);
 typedef int(__cdecl* tFireTerrorBullets)(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
 typedef float(__thiscall* tProcessUsercmds)(void* thisptr, edict_t* player, void* buf, int numcmds, int totalcmds, int dropped_packets, bool ignore, bool paused);
+typedef void(__thiscall* tServerGameClientsClientCommand)(
+	void* thisptr,
+	edict_t* player,
+	const void* sourceCommand);
 typedef int(__cdecl* tReadUsercmd)(void* buf, CUserCmd* move, CUserCmd* from);
 typedef void(__thiscall* tWriteUsercmdDeltaToBuffer)(void* thisptr, int a1, void* buf, int from, int to, bool isnewcommand);
 typedef int(__cdecl* tWriteUsercmd)(void* buf, CUserCmd* to, CUserCmd* from);
@@ -106,6 +110,12 @@ typedef void(__thiscall* tDrawModelExecute)(void* thisptr, void* state, const Mo
 typedef bool(__thiscall* tFirstPersonBodyRenderableShouldDraw)(void* thisptr);
 typedef void* (__thiscall* tFirstPersonBodyRenderableGetModel)(void* thisptr);
 typedef int(__thiscall* tFirstPersonBodyRenderableDrawModel)(void* thisptr, int flags, const void* instance);
+typedef bool(__thiscall* tWorldPoseWeaponSetupBones)(
+	void* thisptr,
+	matrix3x4_t* boneToWorldOut,
+	int maxBones,
+	int boneMask,
+	float currentTime);
 typedef void(__thiscall* tPushRenderTargetAndViewport)(void* thisptr, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 typedef void(__thiscall* tPopRenderTargetAndViewport)(void* thisptr);
 typedef void(__thiscall* tVgui_Paint)(void* thisptr, int mode);
@@ -140,6 +150,8 @@ public:
 	static inline Hook<tFireTerrorBullets> hkServerFireTerrorBullets;
 	static inline Hook<tFireTerrorBullets> hkClientFireTerrorBullets;
 	static inline Hook<tProcessUsercmds> hkProcessUsercmds;
+	static inline Hook<tServerGameClientsClientCommand>
+		hkServerGameClientsClientCommand;
 	static inline Hook<tReadUsercmd> hkReadUsercmd;
 	static inline Hook<tWriteUsercmdDeltaToBuffer> hkWriteUsercmdDeltaToBuffer;
 	static inline Hook<tWriteUsercmd> hkWriteUsercmd;
@@ -171,6 +183,7 @@ public:
 	static inline Hook<tFirstPersonBodyRenderableShouldDraw> hkFirstPersonBodyRenderableShouldDraw;
 	static inline Hook<tFirstPersonBodyRenderableGetModel> hkFirstPersonBodyRenderableGetModel;
 	static inline Hook<tFirstPersonBodyRenderableDrawModel> hkFirstPersonBodyRenderableDrawModel;
+	static inline Hook<tWorldPoseWeaponSetupBones> hkWorldPoseWeaponSetupBones;
 	static inline Hook<tPushRenderTargetAndViewport> hkPushRenderTargetAndViewport;
 	static inline Hook<tPopRenderTargetAndViewport> hkPopRenderTargetAndViewport;
 	static inline Hook<tVgui_Paint> hkVgui_Paint;
@@ -215,6 +228,11 @@ public:
 	static int dServerFireTerrorBullets(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
 	static int dClientFireTerrorBullets(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
 	static float __fastcall dProcessUsercmds(void* ecx, void* edx, edict_t* player, void* buf, int numcmds, int totalcmds, int dropped_packets, bool ignore, bool paused);
+	static void __fastcall dServerGameClientsClientCommand(
+		void* ecx,
+		void* edx,
+		edict_t* player,
+		const void* sourceCommand);
 	static int dReadUsercmd(void* buf, CUserCmd* move, CUserCmd* from);
 	static void __fastcall dWriteUsercmdDeltaToBuffer(void* ecx, void* edx, int a1, void* buf, int from, int to, bool isnewcommand);
 	static int dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from);
@@ -246,6 +264,13 @@ public:
 	static bool __fastcall dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx);
 	static void* __fastcall dFirstPersonBodyRenderableGetModel(void* ecx, void* edx);
 	static int __fastcall dFirstPersonBodyRenderableDrawModel(void* ecx, void* edx, int flags, const void* instance);
+	static bool __fastcall dWorldPoseWeaponSetupBones(
+		void* ecx,
+		void* edx,
+		matrix3x4_t* boneToWorldOut,
+		int maxBones,
+		int boneMask,
+		float currentTime);
 	static void __fastcall dPushRenderTargetAndViewport(void* ecx, void* edx, ITexture* pTexture, ITexture* pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 	static void __fastcall dPopRenderTargetAndViewport(void* ecx, void* edx);
 	static void __fastcall dVGui_Paint(void* ecx, void* edx, int mode);
@@ -292,4 +317,5 @@ public:
 	static inline thread_local bool m_ServerProcessingUsercmd = false;
 	static inline thread_local void* m_ServerProcessingUsercmdPlayer = nullptr;
 	static inline thread_local int m_ServerProcessingUsercmdPlayerIndex = -1;
+	static inline thread_local bool m_ServerPacketSawVRUsercmd = false;
 };

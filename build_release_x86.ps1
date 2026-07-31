@@ -1,3 +1,7 @@
+param(
+    [switch]$Incremental
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -13,11 +17,12 @@ if (-not $msbuildCmd) {
     Write-Error "msbuild not found in PATH. Open a Visual Studio Developer PowerShell and retry."
 }
 
-Write-Host "Building fixed target: Release|x86 from l4d2vr.sln"
+$buildTarget = if ($Incremental) { "Build" } else { "Rebuild" }
+Write-Host "$buildTarget fixed target: Release|x86 from l4d2vr.sln"
 
 & $msbuildCmd.Source `
     $solutionPath `
-    /t:Build `
+    "/t:$buildTarget" `
     /p:Configuration=Release `
     /p:Platform=x86 `
     /m

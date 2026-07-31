@@ -88,7 +88,7 @@ public:
 	virtual void* fn3() = 0;
 	virtual void* fn4() = 0;
 	virtual void* fn5() = 0;
-	virtual void* fn6() = 0;
+	virtual void ServerCmd(const char* szCmdString, bool bReliable = true) = 0;
 	virtual void* ClientCmd(const char* szCmdString) = 0;
 	virtual bool GetPlayerInfo(int ent_num, player_info_t* pinfo) = 0;
 	virtual int GetPlayerForUserID(int userID) = 0;

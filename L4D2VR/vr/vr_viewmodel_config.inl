@@ -1300,6 +1300,70 @@ void VR::ParseConfigFile()
     m_FirstPersonBodyHideArms = getBool(
         "FirstPersonBodyHideArms",
         m_FirstPersonBodyHideArms);
+    m_WorldModelVRPoseEnabled = getBool(
+        "WorldModelVRPoseEnabled",
+        m_WorldModelVRPoseEnabled);
+    m_WorldModelVRPoseLocalThirdPerson = getBool(
+        "WorldModelVRPoseLocalThirdPerson",
+        m_WorldModelVRPoseLocalThirdPerson);
+    m_WorldModelVRPoseSendHz = std::clamp(
+        getFloat("WorldModelVRPoseSendHz", m_WorldModelVRPoseSendHz),
+        10.0f,
+        60.0f);
+    m_WorldModelVRPoseInterpolationMs = std::clamp(
+        getFloat(
+            "WorldModelVRPoseInterpolationMs",
+            m_WorldModelVRPoseInterpolationMs),
+        0.0f,
+        250.0f);
+    m_WorldModelVRPoseStaleAfterMs = std::clamp(
+        getFloat(
+            "WorldModelVRPoseStaleAfterMs",
+            m_WorldModelVRPoseStaleAfterMs),
+        100.0f,
+        2000.0f);
+    m_WorldModelVRPoseBlendSeconds = std::clamp(
+        getFloat(
+            "WorldModelVRPoseBlendSeconds",
+            m_WorldModelVRPoseBlendSeconds),
+        0.05f,
+        0.50f);
+    m_WorldModelVRPoseTorsoWeight = std::clamp(
+        getFloat(
+            "WorldModelVRPoseTorsoWeight",
+            m_WorldModelVRPoseTorsoWeight),
+        0.0f,
+        1.0f);
+    m_WorldModelVRPoseMaxTorsoAngleDeg = std::clamp(
+        getFloat(
+            "WorldModelVRPoseMaxTorsoAngleDeg",
+            m_WorldModelVRPoseMaxTorsoAngleDeg),
+        0.0f,
+        60.0f);
+    m_WorldModelVRPoseBodyYawDeadzoneDeg = std::clamp(
+        getFloat(
+            "WorldModelVRPoseBodyYawDeadzoneDeg",
+            m_WorldModelVRPoseBodyYawDeadzoneDeg),
+        0.0f,
+        90.0f);
+    m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond = std::clamp(
+        getFloat(
+            "WorldModelVRPoseBodyYawTurnSpeedDegPerSecond",
+            m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond),
+        30.0f,
+        720.0f);
+    {
+        Vector offhandRotation = getVector3(
+            "WorldModelVRPoseOffhandRotationOffsetDeg",
+            m_WorldModelVRPoseOffhandRotationOffsetDeg);
+        offhandRotation.x = std::clamp(offhandRotation.x, -180.0f, 180.0f);
+        offhandRotation.y = std::clamp(offhandRotation.y, -180.0f, 180.0f);
+        offhandRotation.z = std::clamp(offhandRotation.z, -180.0f, 180.0f);
+        m_WorldModelVRPoseOffhandRotationOffsetDeg = offhandRotation;
+    }
+    m_WorldModelVRPoseDebugLog = getBool(
+        "WorldModelVRPoseDebugLog",
+        m_WorldModelVRPoseDebugLog);
     m_ClothingMaterials = getBool(
         "ClothingMaterials",
         m_ClothingMaterials);

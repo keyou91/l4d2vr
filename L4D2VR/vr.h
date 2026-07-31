@@ -77,6 +77,23 @@ struct TrackedDevicePoseData
 	QAngle TrackedDeviceAngVel;
 };
 
+// Coherent, anatomical (physical left/right) world-space tracking sample used
+// by the multiplayer pose publisher. It is copied under a short mutex so the
+// HMD and both controllers always come from the same UpdateTracking pass.
+struct VRWorldPoseTrackingSnapshot
+{
+	bool initialized = false;
+	bool hmdValid = false;
+	bool leftHandValid = false;
+	bool rightHandValid = false;
+	Vector hmdPosition{};
+	QAngle hmdAngles{};
+	Vector leftHandPosition{};
+	QAngle leftHandAngles{};
+	Vector rightHandPosition{};
+	QAngle rightHandAngles{};
+};
+
 struct SharedTextureHolder
 {
 	vr::VRVulkanTextureData_t m_VulkanData{};
@@ -399,8 +416,13 @@ public:
 	Vector m_ThirdPersonFrontViewOverlayOffset = { 1.5f, 0.4f, -0.3f };
 	QAngle m_ThirdPersonFrontViewOverlayAngleOffset = { -45.0f, -5.0f, -5.0f };
 	Vector m_LeftControllerPosAbs;
+	// Pure tracked controller rotation after body/snap-turn yaw, before the
+	// viewmodel -45 degree calibration, weapon pitch, aim assist, scope, or
+	// two-handed aiming modifies the gameplay controller basis.
+	QAngle m_LeftControllerTrackedAngAbs;
 	QAngle m_LeftControllerAngAbs;
 	Vector m_RightControllerPosAbs;
+	QAngle m_RightControllerTrackedAngAbs;
 	QAngle m_RightControllerAngAbs;
 
 	Vector m_ViewmodelPosOffset;
@@ -1352,6 +1374,8 @@ public:
 	TrackedDevicePoseData m_HmdPose;
 	TrackedDevicePoseData m_LeftControllerPose;
 	TrackedDevicePoseData m_RightControllerPose;
+	mutable std::mutex m_WorldPoseTrackingSnapshotMutex;
+	VRWorldPoseTrackingSnapshot m_WorldPoseTrackingSnapshot{};
 
 	float m_RotationOffset = 0;
 	std::chrono::steady_clock::time_point m_PrevFrameTime;
@@ -1464,6 +1488,24 @@ public:
 	bool m_FirstPersonBodyEnabled = true;
 	bool m_FirstPersonBodyHideHead = true;
 	bool m_FirstPersonBodyHideArms = true;
+	// Multiplayer world-model reconstruction. The server only relays the compact
+	// HMD + two-controller packet; observers apply this visual IK locally.
+	bool m_WorldModelVRPoseEnabled = true;
+	bool m_WorldModelVRPoseLocalThirdPerson = true;
+	bool m_WorldModelVRPoseDebugLog = false;
+	float m_WorldModelVRPoseSendHz = 25.0f;
+	float m_WorldModelVRPoseInterpolationMs = 50.0f;
+	float m_WorldModelVRPoseStaleAfterMs = 250.0f;
+	float m_WorldModelVRPoseBlendSeconds = 0.15f;
+	float m_WorldModelVRPoseTorsoWeight = 0.65f;
+	float m_WorldModelVRPoseMaxTorsoAngleDeg = 35.0f;
+	// Keep the rendered lower body at its previous yaw while the server-facing
+	// aim yaw remains inside this comfort cone. Shooting still uses the exact
+	// controller/HMD viewangles.
+	float m_WorldModelVRPoseBodyYawDeadzoneDeg = 35.0f;
+	// Visual-only catch-up speed after the aim yaw exits the comfort cone.
+	float m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond = 180.0f;
+	Vector m_WorldModelVRPoseOffhandRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	struct HiddenMaterialNameRule
 	{
 		std::string characterName;
@@ -3658,8 +3700,10 @@ public:
 	void GetPoseData(vr::TrackedDevicePose_t& poseRaw, TrackedDevicePoseData& poseOut);
 	void PoseWaiterThreadMain();
 	bool ReadPoseWaiterSnapshot(vr::TrackedDevicePose_t* outPoses, uint32_t* outSeq = nullptr) const;
-	// leftHand follows the project's gameplay hand ordering after LeftHanded remapping.
+	bool ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot) const;
+	// Maps the project's gameplay hand through the LeftHanded setting.
 	bool IsGameplayHandLeftPhysical(bool leftHand) const;
+	// leftHand selects the physical OpenVR controller role.
 	vr::TrackedDeviceIndex_t GetPhysicalControllerIndexForHand(bool leftHand) const;
 	void TriggerLegacyHapticPulse(vr::TrackedDeviceIndex_t deviceIndex, float durationSeconds, float amplitude) const;
 	void TriggerPhysicalHandHapticPulse(bool leftHand, float durationSeconds, float frequency, float amplitude, int priority = 1);

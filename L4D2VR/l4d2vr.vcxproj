@@ -440,6 +440,7 @@
     <ClInclude Include="..\dxvk_new\src\vulkan\vulkan_util.h" />
     <ClInclude Include="..\dxvk_new\tests\test_utils.h" />
     <ClInclude Include="game.h" />
+    <ClInclude Include="vr_pose_protocol.h" />
     <ClInclude Include="vr_hands\vr_hand_asset_loader.h" />
     <ClInclude Include="vr_hands\vr_hand_manifest.h" />
     <ClInclude Include="vr_hands\vr_hand_math.h" />
@@ -666,6 +667,7 @@
     <None Include="hooks\hooks_createmove.inl" />
     <None Include="hooks\hooks_init.inl" />
     <None Include="hooks\hooks_misc.inl" />
+    <None Include="hooks\hooks_world_pose.inl" />
     <None Include="hooks\hooks_throwables.inl" />
     <None Include="hooks\hooks_render.inl" />
     <None Include="vr\vr_aiming.inl" />

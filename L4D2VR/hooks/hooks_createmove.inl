@@ -79,6 +79,9 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 				}
 			}
 			HooksFirstPersonBodyUpdateLocalStateMainThread(localPlayer);
+			HooksWorldPoseEnsureWeaponSetupBonesHookMainThread(
+				m_VR,
+				m_Game);
 		};
 
 	if (!cmd)
@@ -1844,6 +1847,9 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 		m_Game,
 		cmd->command_number,
 		manualThrowPoseRelevant);
+
+	if (m_Game && m_VR)
+		m_Game->PublishLocalVRPose(m_VR, localPlayerForAutoActions);
 
 	s_lastButtons = cmd->buttons;
 
