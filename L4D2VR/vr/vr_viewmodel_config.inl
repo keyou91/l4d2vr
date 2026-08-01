@@ -1249,12 +1249,19 @@ void VR::ParseConfigFile()
     m_AutoRecenterHardDistance = std::max(
         m_AutoRecenterSoftStartDistance + 1.0f,
         getFloat("AutoRecenterHardDistance", m_AutoRecenterHardDistance));
-    m_ThirdPersonVRCameraOffset = std::max(0.0f, getFloat("ThirdPersonVRCameraOffset", m_ThirdPersonVRCameraOffset));
+    {
+        // Backward-compatible parsing:
+        // - old form: ThirdPersonVRCameraOffset=38
+        // - new form: ThirdPersonVRCameraOffset=38,0,0
+        const float legacyBack = getFloat("ThirdPersonVRCameraOffset", m_ThirdPersonVRCameraOffset.x);
+        const Vector legacyDefault = { legacyBack, 0.0f, 0.0f };
+        m_ThirdPersonVRCameraOffset = getVector3("ThirdPersonVRCameraOffset", legacyDefault);
+    }
     {
         // Backward-compatible parsing:
         // - old form: ThirdPersonFrontVRCameraOffset=80
         // - new form: ThirdPersonFrontVRCameraOffset=80,0,0
-        const float legacyForward = getFloat("ThirdPersonFrontVRCameraOffset", m_ThirdPersonVRCameraOffset);
+        const float legacyForward = getFloat("ThirdPersonFrontVRCameraOffset", m_ThirdPersonFrontVRCameraOffset.x);
         const Vector frontDefault = { legacyForward, 0.0f, 0.0f };
         m_ThirdPersonFrontVRCameraOffset = getVector3("ThirdPersonFrontVRCameraOffset", frontDefault);
         // Optional per-axis overrides for easier live tuning.

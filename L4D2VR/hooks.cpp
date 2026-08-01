@@ -2194,6 +2194,151 @@ struct EngineThirdPersonCamSmoother
 	}
 };
 
+struct QueuedThirdPersonBodyPhaseAligner
+{
+	bool valid = false;
+	Vector previousSceneOrigin{ 0,0,0 };
+	Vector previousRenderAnchor{ 0,0,0 };
+	Vector correction{ 0,0,0 };
+	Vector movementDirection{ 1,0,0 };
+	std::chrono::steady_clock::time_point movementHoldEnd{};
+
+	void Reset()
+	{
+		valid = false;
+		previousSceneOrigin = { 0,0,0 };
+		previousRenderAnchor = { 0,0,0 };
+		correction = { 0,0,0 };
+		movementDirection = { 1,0,0 };
+		movementHoldEnd = {};
+	}
+
+	Vector Update(
+		const Vector& sceneOrigin,
+		const Vector& renderAnchor,
+		const Vector& bodyVelocity,
+		bool inputValid)
+	{
+		auto finiteVector = [](const Vector& value)
+			{
+				return std::isfinite(value.x) &&
+					std::isfinite(value.y) &&
+					std::isfinite(value.z);
+			};
+
+		if (!inputValid ||
+			!finiteVector(sceneOrigin) ||
+			!finiteVector(renderAnchor) ||
+			!finiteVector(bodyVelocity))
+		{
+			Reset();
+			return {};
+		}
+
+		if (!valid)
+		{
+			valid = true;
+			previousSceneOrigin = sceneOrigin;
+			previousRenderAnchor = renderAnchor;
+			return {};
+		}
+
+		Vector sceneDelta = sceneOrigin - previousSceneOrigin;
+		Vector anchorDelta = renderAnchor - previousRenderAnchor;
+		previousSceneOrigin = sceneOrigin;
+		previousRenderAnchor = renderAnchor;
+
+		sceneDelta.z = 0.0f;
+		anchorDelta.z = 0.0f;
+
+		// A camera-mode transition, teleport or map change must never be interpreted
+		// as ordinary locomotion phase error.
+		constexpr float kDiscontinuityDistance = 64.0f;
+		if (sceneDelta.LengthSqr() >
+				(kDiscontinuityDistance * kDiscontinuityDistance) ||
+			anchorDelta.LengthSqr() >
+				(kDiscontinuityDistance * kDiscontinuityDistance))
+		{
+			correction = {};
+			movementHoldEnd = {};
+			return correction;
+		}
+
+		Vector planarVelocity(bodyVelocity.x, bodyVelocity.y, 0.0f);
+		const float bodySpeed = planarVelocity.Length();
+		const auto now = std::chrono::steady_clock::now();
+		constexpr float kMovingSpeedThreshold = 1.0f;
+		if (bodySpeed > kMovingSpeedThreshold)
+		{
+			movementDirection = planarVelocity * (1.0f / bodySpeed);
+			movementHoldEnd = now + std::chrono::milliseconds(180);
+		}
+
+		const bool movementActive =
+			bodySpeed > kMovingSpeedThreshold ||
+			(movementHoldEnd.time_since_epoch().count() != 0 &&
+				now < movementHoldEnd);
+		if (!movementActive)
+		{
+			if (correction.LengthSqr() < (0.02f * 0.02f))
+				correction = {};
+			return correction;
+		}
+
+		// setup.origin is frame-aligned with the world model, but a shoulder camera
+		// also moves when the player turns their head. Keep only travel along the
+		// actual body velocity so head/controller rotation cannot translate the
+		// body-locked VR camera again.
+		float sceneAlong =
+			sceneDelta.x * movementDirection.x +
+			sceneDelta.y * movementDirection.y;
+		const float maxSceneTravel =
+			std::clamp(0.75f + bodySpeed * 0.045f, 0.75f, 12.0f);
+		sceneAlong = std::clamp(
+			sceneAlong,
+			-maxSceneTravel,
+			maxSceneTravel);
+		const Vector sceneTravel = movementDirection * sceneAlong;
+
+		// The render anchor can catch up several render calls later. Subtract its
+		// complete bounded planar movement so the correction naturally returns to
+		// zero instead of leaving a permanent camera offset after stopping.
+		Vector anchorTravel = anchorDelta;
+		const float anchorTravelLength = anchorTravel.Length();
+		constexpr float kMaxAnchorTravelPerRender = 12.0f;
+		if (anchorTravelLength > kMaxAnchorTravelPerRender &&
+			anchorTravelLength > 0.0001f)
+		{
+			anchorTravel *= kMaxAnchorTravelPerRender / anchorTravelLength;
+		}
+
+		const Vector correctionBefore = correction;
+		correction += sceneTravel - anchorTravel;
+		correction.z = 0.0f;
+
+		// Once movement has stopped, do not let a late anchor update overshoot and
+		// create an equal jitter in the opposite direction.
+		if (bodySpeed <= kMovingSpeedThreshold)
+		{
+			const float beforeDotAfter =
+				correctionBefore.x * correction.x +
+				correctionBefore.y * correction.y;
+			if (beforeDotAfter < 0.0f)
+				correction = {};
+		}
+
+		constexpr float kMaxPhaseCorrection = 20.0f;
+		const float correctionLength = correction.Length();
+		if (correctionLength > kMaxPhaseCorrection &&
+			correctionLength > 0.0001f)
+		{
+			correction *= kMaxPhaseCorrection / correctionLength;
+		}
+
+		return correction;
+	}
+};
+
 
 // ------------------------------------------------------------
 // Third-person render stability helpers (netvars from offsets.txt)

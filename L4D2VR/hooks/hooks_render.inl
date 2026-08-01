@@ -743,6 +743,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	bool timingPoseAcquireAttempted = false;
 	bool timingPoseAcquireFresh = false;
 	bool timingPoseAcquireRelaxed = false;
+	Vector queuedThirdPersonBodyPhaseCorrection{ 0,0,0 };
 	double timingPoseAcquireMs = 0.0;
 	DWORD timingPoseAcquireBudgetMs = 0;
 	uint32_t timingPoseSeqBeforeAcquire = 0;
@@ -1277,6 +1278,19 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		const Vector extrapAnchor = s_viewSmoothValid ? s_viewSmoothAnchor : queuedAnchorTarget;
 		float extrapRot = s_viewSmoothValid ? s_viewSmoothRot : vp.rotationOffset;
+
+		// Keep a queued third-person camera phase-locked to the Source scene frame.
+		// The world model is rendered from setup.origin, while the latest HMD pose is
+		// rebuilt from extrapAnchor. Without this correction, ordinary locomotion can
+		// put the camera and local player model on adjacent queued frames, making the
+		// model visibly shake. Only body-velocity-aligned planar travel is accepted;
+		// tracked HMD translation remains entirely in the render-pose snapshot.
+		static thread_local QueuedThirdPersonBodyPhaseAligner s_tpBodyPhaseAligner;
+		queuedThirdPersonBodyPhaseCorrection = s_tpBodyPhaseAligner.Update(
+			smoothedSetupOrigin,
+			extrapAnchor,
+			vp.bodyVelocity,
+			vpOk && vp.hasLocalPlayer);
 
 		// For debug: show how \"steppy\" the engine view inputs are (not used for smoothing).
 		const float pendingDeltaSq = pendingOriginDelta.LengthSqr();
@@ -2373,6 +2387,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 	// Expose third-person camera to VR helpers (aim line, overlays, etc.)
 	m_VR->m_IsThirdPersonCamera = renderThirdPerson;
+	if (!renderThirdPerson)
+		m_VR->m_ThirdPersonPoseInitialized = false;
 
 	// This is the only authoritative camera decision used by FirstPersonBody.
 	// Death first-person locks and in-eye observer modes deliberately make
@@ -2575,6 +2591,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			yaw -= 360.0f * std::floor((yaw + 180.0f) / 360.0f);
 			return yaw;
 		};
+	const float thirdPersonTurnOffset = wrapYawDeg((queueMode == 0)
+		? m_VR->m_RotationOffset
+		: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire));
 
 	// Recenter the VR anchors once per threshold when yaw turns left/right a lot.
 	// Requirement: if yaw turns beyond 60° (left or right), do a one-shot ResetPosition.
@@ -2582,18 +2601,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	{
 		static bool s_yawResetInit = false;
 		static float s_yawResetBase = 0.0f;
-		const float bodyYaw = (queueMode == 0)
-			? m_VR->m_RotationOffset
-			: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
-
 		if (!s_yawResetInit)
 		{
-			s_yawResetBase = bodyYaw;
+			s_yawResetBase = thirdPersonTurnOffset;
 			s_yawResetInit = true;
 		}
 		else
 		{
-			float diff = bodyYaw - s_yawResetBase;
+			float diff = thirdPersonTurnOffset - s_yawResetBase;
 			// Normalize to [-180, 180] to handle wrap-around.
 			diff -= 360.0f * std::floor((diff + 180.0f) / 360.0f);
 			if (std::fabs(diff) >= 60.0f)
@@ -2608,7 +2623,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					// an atomic request instead of doing that from the render thread.
 					m_VR->m_ResetPositionDeferredPending.store(1u, std::memory_order_release);
 				}
-				s_yawResetBase = bodyYaw;
+				s_yawResetBase = thirdPersonTurnOffset;
 			}
 		}
 	}
@@ -2630,19 +2645,47 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		ResetTpWallColl();
 	if (renderThirdPerson)
 	{
-		// Third-person uses two different angle bases:
-		//  1) renderCamAng: the orientation the user actually looks through this frame.
-		//     This should continue to follow the HMD so head turning still looks around naturally.
-		//  2) cameraBasisAng: the basis used to place the third-person camera center behind/in front of
-		//     the player. When decoupled from HMD, head turning no longer drags the whole third-person
-		//     camera position/orbit, while roomscale translation still moves it.
+		// Third-person uses two independent angle bases:
+		//  1) renderCamAng is the HMD view orientation. It remains fully rotational.
+		//  2) cameraBasisAng places the camera offset. In body-locked mode it keeps the
+		//     yaw captured on third-person entry and only follows explicit turn-offset changes.
+		//     HMD/controller pitch and yaw therefore cannot translate the whole camera, while
+		//     the tracked HMD center still carries real positional 6DoF.
 		QAngle renderCamAng(viewAngles.x, viewAngles.y, viewAngles.z);
 		if (m_VR->m_HmdForward.IsZero())
 			renderCamAng = engineCamAngles;
+		const QAngle trackedHmdAng = renderCamAng;
 
+		const bool preserveEngineCameraPlacement = stateIsDeadOrObserver || hasViewEntityOverride;
 		QAngle cameraBasisAng = renderCamAng;
-		if (!m_VR->m_ThirdPersonCameraFollowHmd || m_VR->m_HmdForward.IsZero())
+		if (preserveEngineCameraPlacement)
+		{
 			cameraBasisAng = engineCamAngles;
+			m_VR->m_ThirdPersonPoseInitialized = false;
+		}
+		else if (!m_VR->m_ThirdPersonCameraFollowHmd)
+		{
+			if (!m_VR->m_ThirdPersonPoseInitialized)
+			{
+				m_VR->m_ThirdPersonPlacementYaw = wrapYawDeg(viewAngles.y);
+				m_VR->m_ThirdPersonPlacementTurnOffsetPrev = thirdPersonTurnOffset;
+				m_VR->m_ThirdPersonPoseInitialized = true;
+			}
+			else
+			{
+				const float turnDelta = wrapYawDeg(
+					thirdPersonTurnOffset - m_VR->m_ThirdPersonPlacementTurnOffsetPrev);
+				m_VR->m_ThirdPersonPlacementYaw = wrapYawDeg(
+					m_VR->m_ThirdPersonPlacementYaw + turnDelta);
+				m_VR->m_ThirdPersonPlacementTurnOffsetPrev = thirdPersonTurnOffset;
+			}
+
+			cameraBasisAng.Init(0.0f, m_VR->m_ThirdPersonPlacementYaw, 0.0f);
+		}
+		else
+		{
+			m_VR->m_ThirdPersonPoseInitialized = false;
+		}
 
 		if (thirdPersonFrontViewActive)
 		{
@@ -2655,8 +2698,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			}
 			else
 			{
-				frontYaw = m_VR->m_RotationOffset;
-				frontYaw -= 360.0f * std::floor((frontYaw + 180.0f) / 360.0f);
+				frontYaw = thirdPersonTurnOffset;
 			}
 
 			frontYaw = wrapYawDeg(frontYaw + 180.0f);
@@ -2676,6 +2718,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		const float ipd = (m_VR->m_Ipd * m_VR->m_IpdScale * m_VR->m_VRScale);
 		const float eyeZ = (m_VR->m_EyeZ * m_VR->m_VRScale);
+		Vector trackedHmdForward;
+		QAngle::AngleVectors(trackedHmdAng, &trackedHmdForward, nullptr, nullptr);
+		const Vector trackedEyeCenter =
+			(m_VR->GetViewOriginLeft() + m_VR->GetViewOriginRight()) * 0.5f;
+		const Vector trackedHmdCenter = trackedEyeCenter + (trackedHmdForward * eyeZ);
 
 		// Treat camera origin as "head center", apply SteamVR eye-to-head offsets.
 		// If we're forcing third-person (state) while the engine is in first-person, use HMD position to synthesize a stable 3p camera.
@@ -2684,14 +2731,30 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		// If stateWantsThirdPerson is true, always synthesize from HMD to avoid camera "jumping"
 		// between setup.origin and HmdPosAbs.
 		Vector baseCenter;
-		if (stateWantsThirdPerson)
+		if (preserveEngineCameraPlacement)
 		{
-			// Dead/observer camera must follow engine view, not HMD position.
-			baseCenter = stateIsDeadOrObserver ? engineCamOrigin : m_VR->m_HmdPosAbs;
+			// Death, observer and scripted cameras keep their authored engine position.
+			baseCenter = engineCamOrigin;
+		}
+		else if (m_VR->m_ThirdPersonCameraFollowHmd &&
+			(engineThirdPersonNow || customWalkThirdPersonNow))
+		{
+			// Legacy follow mode keeps the engine's shoulder-camera origin.
+			baseCenter = engineCamOrigin;
 		}
 		else
 		{
-			baseCenter = (engineThirdPersonNow || customWalkThirdPersonNow) ? engineCamOrigin : m_VR->m_HmdPosAbs;
+			// Body-locked mode synthesizes the third-person camera from the current tracked HMD center.
+			// This retains render-rate HMD translation (leaning/approaching) without importing
+			// the engine camera orbit that can be driven by HMD or controller viewangles.
+			baseCenter = trackedHmdCenter;
+			if (queueMode != 0)
+			{
+				// Shift only the body/world part of the tracked pose into the Source scene
+				// frame. The OpenVR local pose remains untouched, so leaning, approaching,
+				// side-stepping and vertical HMD movement are still true 6DoF.
+				baseCenter += queuedThirdPersonBodyPhaseCorrection;
+			}
 		}
 		Vector camCenter = baseCenter + (basisFwd * (-eyeZ));
 		if (thirdPersonFrontViewActive)
@@ -2702,12 +2765,16 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				+ (basisRight * configuredOffset.y)
 				+ (basisUp * configuredOffset.z);
 		}
-		else if (m_VR->m_ThirdPersonVRCameraOffset > 0.0f)
+		else
 		{
-			camCenter = camCenter + (basisFwd * (-m_VR->m_ThirdPersonVRCameraOffset));
+			const Vector& configuredOffset = m_VR->m_ThirdPersonVRCameraOffset;
+			camCenter = camCenter
+				+ (basisFwd * (-configuredOffset.x))
+				+ (basisRight * configuredOffset.y)
+				+ (basisUp * configuredOffset.z);
 		}
 		// Camera collision: clamp camera distance when something blocks the line from the anchor to the desired camera.
-		// This prevents the third-person render camera from going through walls (common when using ThirdPersonVRCameraOffset).
+		// This prevents the third-person render camera from going through walls when any local camera offset axis is used.
 		if (queueMode == 0 && m_Game && m_Game->m_EngineTrace && !hasViewEntityOverride)
 		{
 			const Vector desiredCamCenter = camCenter;

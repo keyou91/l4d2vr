@@ -376,9 +376,9 @@ public:
 	// Only a small whitelist of explicitly-handled cases will remain first-person.
 	bool m_ThirdPersonDefault = false;
 	// If true, third-person camera placement/orbit follows HMD head turns.
-	// If false, the rendered view still follows the HMD, but the third-person camera center/offset
-	// is placed using the engine/body camera basis so turning your head does not drag the whole camera.
-	bool m_ThirdPersonCameraFollowHmd = true;
+	// If false, the rendered view and tracked HMD translation remain fully active, but the
+	// third-person camera offset stays locked to the body-facing yaw captured on entry.
+	bool m_ThirdPersonCameraFollowHmd = false;
 	// Optional front-observer mode for third-person rendering.
 	// When enabled, 3P camera is placed in front of the player and looks back at the player.
 	bool m_ThirdPersonFrontViewEnabled = false;
@@ -401,8 +401,12 @@ public:
 	// Used to keep aim line / overlays in sync when third-person camera is smoothed.
 	Vector m_ThirdPersonRenderCenter = { 0,0,0 };
 	bool m_ThirdPersonPoseInitialized = false;
+	float m_ThirdPersonPlacementYaw = 0.0f;
+	float m_ThirdPersonPlacementTurnOffsetPrev = 0.0f;
 	float m_ThirdPersonCameraSmoothing = 0.85f;
-	float m_ThirdPersonVRCameraOffset = 38.0f;
+	// Normal third-person camera local offset in the body-locked camera basis:
+	// x=back/forward (positive farther back), y=right/left, z=up/down.
+	Vector m_ThirdPersonVRCameraOffset = { 38.0f, 0.0f, 0.0f };
 	// Front-view third-person camera local offset in camera basis:
 	// x=front/back, y=left/right, z=up/down.
 	Vector m_ThirdPersonFrontVRCameraOffset = { 80.0f, 30.0f, -15.0f };

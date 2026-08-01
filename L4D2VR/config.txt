@@ -26,8 +26,8 @@ AntiAliasing=0
 ReShadeVRCompat=false
 EyeRenderTargetMatchProjectionAspect=false
 
-ThirdPersonCameraFollowHmd=true
-ThirdPersonVRCameraOffset=38
+ThirdPersonCameraFollowHmd=false
+ThirdPersonVRCameraOffset=38,0,0
 ThirdPersonFrontVRCameraOffset=80,30,-15
 ThirdPersonFrontViewOverlayWidthMeters=0.3
 ThirdPersonFrontViewOverlayFov=20
