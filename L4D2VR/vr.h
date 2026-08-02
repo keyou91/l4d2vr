@@ -1514,6 +1514,11 @@ public:
 	bool m_WorldModelVRPoseEnabled = true;
 	bool m_WorldModelVRPoseLocalThirdPerson = true;
 	bool m_WorldModelVRPoseDebugLog = false;
+	// Local third-person switches replace the submitted survivor draw and its
+	// queued bone buffers. Delay IK takeover until that render state has
+	// settled, independently of whether a persisted calibration already exists.
+	std::atomic<std::uint64_t>
+		m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs{ 0u };
 	// Final palm-only local rotation offsets. These are deliberately applied
 	// after the positional two-bone solve so wrist tuning cannot move an elbow.
 	Vector m_WorldModelVRPoseLeftHandRotationOffsetDeg{};

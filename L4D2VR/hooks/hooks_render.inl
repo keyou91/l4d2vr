@@ -2386,7 +2386,27 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	}
 
 	// Expose third-person camera to VR helpers (aim line, overlays, etc.)
+	const bool wasRenderingThirdPerson =
+		m_VR->m_IsThirdPersonCamera;
 	m_VR->m_IsThirdPersonCamera = renderThirdPerson;
+	if (!renderThirdPerson)
+	{
+		m_VR->m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs.store(
+			0u,
+			std::memory_order_release);
+	}
+	else if (!wasRenderingThirdPerson)
+	{
+		// A saved calibration previously let WorldPose enter on the first
+		// queued survivor draw, while Source was still replacing its 1P bone
+		// submission with the 3P one. An in-session five-second calibration
+		// hid this lifecycle bug by supplying an accidental delay.
+		constexpr std::uint64_t kWorldPoseThirdPersonWarmupMs = 750u;
+		m_VR->m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs.store(
+			static_cast<std::uint64_t>(GetTickCount64()) +
+				kWorldPoseThirdPersonWarmupMs,
+			std::memory_order_release);
+	}
 	if (!renderThirdPerson)
 		m_VR->m_ThirdPersonPoseInitialized = false;
 

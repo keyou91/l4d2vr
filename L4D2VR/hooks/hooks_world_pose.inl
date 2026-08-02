@@ -5203,6 +5203,36 @@
                 : -1;
         const bool localPlayer =
             info.entity_index == localPlayerIndex;
+        const std::uint64_t worldPoseNow =
+            static_cast<std::uint64_t>(GetTickCount64());
+        std::uint64_t localThirdPersonWarmupUntil = 0u;
+        bool localThirdPersonWarmupActive = false;
+        if (localPlayer && vr->m_IsThirdPersonCamera)
+        {
+            localThirdPersonWarmupUntil =
+                vr->m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs.load(
+                    std::memory_order_acquire);
+            if (localThirdPersonWarmupUntil == 0u)
+            {
+                // Fail closed if a queued model draw observes the camera flag
+                // before the authoritative RenderView transition publishes
+                // its deadline. This also guarantees eventual progress.
+                constexpr std::uint64_t kFallbackWarmupMs = 750u;
+                const std::uint64_t fallbackUntil =
+                    worldPoseNow + kFallbackWarmupMs;
+                std::uint64_t expected = 0u;
+                vr->m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs
+                    .compare_exchange_strong(
+                        expected,
+                        fallbackUntil,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire);
+                localThirdPersonWarmupUntil =
+                    expected == 0u ? fallbackUntil : expected;
+            }
+            localThirdPersonWarmupActive =
+                worldPoseNow < localThirdPersonWarmupUntil;
+        }
         WorldModelVRPoseCalibrationSnapshot localCalibration{};
         const bool localCalibrationValid =
             !localPlayer ||
@@ -5214,6 +5244,7 @@
         const bool localPoseAllowed =
             !localPlayer ||
             (vr->m_WorldModelVRPoseLocalThirdPerson &&
+             !localThirdPersonWarmupActive &&
              (vr->m_IsThirdPersonCamera ||
               !localFirstPersonEyeActive));
 
@@ -5259,7 +5290,7 @@
                 {
                     last = now;
                     Game::logMsg(
-                        "[VR][WorldPose] pre-IK skip player=%d local=%d hasPose=%d freshness=%.2f weight=%.2f thirdPerson=%d firstPersonBodyEye=%d localAllowed=%d suppressed=0x%08X",
+                        "[VR][WorldPose] pre-IK skip player=%d local=%d hasPose=%d freshness=%.2f weight=%.2f thirdPerson=%d firstPersonBodyEye=%d localAllowed=%d warmupMs=%llu suppressed=0x%08X",
                         info.entity_index,
                         localPlayer ? 1 : 0,
                         hasPose ? 1 : 0,
@@ -5268,6 +5299,10 @@
                         vr->m_IsThirdPersonCamera ? 1 : 0,
                         localFirstPersonEyeActive ? 1 : 0,
                         localPoseAllowed ? 1 : 0,
+                        static_cast<unsigned long long>(
+                            localThirdPersonWarmupActive
+                                ? localThirdPersonWarmupUntil - worldPoseNow
+                                : 0u),
                         static_cast<unsigned int>(
                             suppressionReasonMask));
                 }
