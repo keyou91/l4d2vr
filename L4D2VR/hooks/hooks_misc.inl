@@ -13314,7 +13314,8 @@ namespace
         int numBones,
         const HooksNativeViewmodelHandsOnlySideInfo& keepSide,
         const vr_vm_stabilize::Mat3x4* sourcePoseBones,
-        vr_vm_stabilize::Mat3x4* currentBones)
+        vr_vm_stabilize::Mat3x4* currentBones,
+        bool forceRestFingerLocals = false)
     {
         const bool emptyHandsPlaceholderActive =
             vr && vr->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
@@ -13371,7 +13372,11 @@ namespace
         std::vector<vr_vm_stabilize::Mat3x4> baseWorld(static_cast<size_t>(numBones));
         std::vector<vr_vm_stabilize::Mat3x4> baseLocal(static_cast<size_t>(numBones));
         const vr_vm_stabilize::Mat3x4* localPoseSource =
-            (applyEmptyRightHand && sourcePoseBones) ? sourcePoseBones : currentBones;
+            forceRestFingerLocals
+                ? currentBones
+                : ((applyEmptyRightHand && sourcePoseBones)
+                    ? sourcePoseBones
+                    : currentBones);
         for (int bone = 0; bone < numBones; ++bone)
         {
             if (!vr_vm_stabilize::SafeRead(
@@ -13423,9 +13428,11 @@ namespace
                 const bool thumbRoot =
                     bone < static_cast<int>(thumbRootMask.size()) &&
                     thumbRootMask[static_cast<size_t>(bone)] != 0u;
-                if (applyEmptyRightHand &&
-                    !thumbRoot &&
-                    hasAngle[static_cast<size_t>(bone)])
+                const bool mappedFingerJoint =
+                    thumbRoot ||
+                    hasAngle[static_cast<size_t>(bone)] != 0u;
+                if ((applyEmptyRightHand || forceRestFingerLocals) &&
+                    mappedFingerJoint)
                 {
                     vr_vm_stabilize::Mat3x4 restLocal{};
                     if (HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
@@ -18263,6 +18270,38 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 				std::string::npos ||
 			lowerWorldPoseModelName.find("/melee/w_") !=
 				std::string::npos;
+		if (emptyHandsPlaceholderActiveAtEntry &&
+			m_VR->m_IsThirdPersonCamera &&
+			looksLikeHeldWorldModel &&
+			m_Game &&
+			m_Game->m_EngineClient &&
+			m_Game->m_ClientEntityList)
+		{
+			const int localPlayerIndex =
+				m_Game->m_EngineClient->GetLocalPlayer();
+			C_BaseEntity* const localPlayerEntity =
+				(localPlayerIndex > 0)
+					? HooksSafeGetClientEntity(
+						m_Game,
+						localPlayerIndex)
+					: nullptr;
+			C_BaseCombatWeapon* activeWeapon = nullptr;
+			void* activeWeaponRenderable = nullptr;
+			if (localPlayerEntity &&
+				HooksWorldPoseGetActiveWeaponSafe(
+					localPlayerEntity,
+					activeWeapon,
+					activeWeaponRenderable) &&
+				activeWeaponRenderable &&
+				(info.pRenderable == activeWeaponRenderable ||
+				 entity == activeWeapon))
+			{
+				// The server-side dummy pistol keeps native shove/use behavior
+				// after the real inventory is empty. Hide only that local active
+				// renderable; dropped weapons and other players remain visible.
+				return;
+			}
+		}
 		if (teleportSuppressibleViewmodel && m_VR->ShouldSuppressTeleportViewmodelRender())
 			return;
 		if (teleportSuppressibleViewmodel)

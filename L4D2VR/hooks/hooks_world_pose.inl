@@ -38,6 +38,9 @@
         int upperChest = -1;
         HooksWorldPoseArmLayout left{};
         HooksWorldPoseArmLayout right{};
+        int boneTableOffset = 0;
+        int boneStride = 0;
+        std::vector<std::string> boneNames;
         std::vector<int> parents;
     };
 
@@ -999,6 +1002,9 @@
         {
             return false;
         }
+        layout.boneTableOffset = boneIndex;
+        layout.boneStride = stride;
+        layout.boneNames = boneNames;
         HooksFirstPersonBodyFindBone(
             boneNames,
             {
@@ -2361,6 +2367,20 @@
                     handDisplacement);
             }
         }
+    }
+
+    inline void HooksWorldPoseClearWeaponHandState(int playerIndex)
+    {
+        if (playerIndex <= 0 ||
+            playerIndex >= Game::kMaxPlayers)
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(
+            g_HooksWorldPoseWeaponHandMutex);
+        g_HooksWorldPoseWeaponHandStates[
+            static_cast<size_t>(playerIndex)] =
+                HooksWorldPoseWeaponHandState{};
     }
 
     inline bool HooksWorldPoseProbeWeaponSetupBonesTarget(
@@ -4169,6 +4189,47 @@
             bone,
             delta,
             bones);
+    }
+
+    inline bool HooksWorldPoseApplyLocalTrackedFingerPose(
+        VR* vr,
+        void* drawState,
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        int side,
+        const vr_vm_stabilize::Mat3x4* sourceBones,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!vr || !drawState || !sourceBones || !bones ||
+            (side != -1 && side != 1) ||
+            arm.hand < 0 || arm.hand >= layout.numBones ||
+            layout.boneTableOffset <= 0 ||
+            layout.boneStride <= 0 ||
+            static_cast<int>(layout.boneNames.size()) <
+                layout.numBones ||
+            static_cast<int>(layout.parents.size()) <
+                layout.numBones)
+        {
+            return false;
+        }
+
+        HooksNativeViewmodelHandsOnlySideInfo trackedSide{};
+        trackedSide.side = side;
+        trackedSide.hand = arm.hand;
+        trackedSide.wrist = arm.hand;
+        trackedSide.forearm = arm.forearm;
+        return HooksNativeViewmodelHandsOnlyApplyOpenVRFingerPose(
+            vr,
+            drawState,
+            layout.boneTableOffset,
+            layout.boneStride,
+            layout.boneNames,
+            layout.parents,
+            layout.numBones,
+            trackedSide,
+            sourceBones,
+            bones,
+            true);
     }
 
     inline bool HooksWorldPoseApplyBodyCarryToArmTarget(
@@ -6152,6 +6213,40 @@
             changed = rightArmSolved || changed;
         }
 
+        // World-model fingers are a final local-pose layer. The off hand is
+        // always free for tracked curls. The weapon hand deliberately keeps
+        // Source's authored grip while an actual item is equipped, then
+        // switches to the same tracked curl path in authoritative empty-hands
+        // state. Rest-local finger rotations prevent weapon animation from
+        // leaking into either tracked hand.
+        if (localPlayer && leftArmSolved)
+        {
+            changed =
+                HooksWorldPoseApplyLocalTrackedFingerPose(
+                    vr,
+                    drawState,
+                    *layout,
+                    layout->left,
+                    -1,
+                    sourceBones,
+                    bones) ||
+                changed;
+        }
+        if (localPlayer && rightArmSolved &&
+            localEmptyHandsPlaceholder)
+        {
+            changed =
+                HooksWorldPoseApplyLocalTrackedFingerPose(
+                    vr,
+                    drawState,
+                    *layout,
+                    layout->right,
+                    1,
+                    sourceBones,
+                    bones) ||
+                changed;
+        }
+
         if (!changed)
             return false;
         for (int bone = 0; bone < layout->numBones; ++bone)
@@ -6167,17 +6262,25 @@
         // sees this temporary player-bone copy.  Publish the exact native and
         // final right-hand transforms so its later draw can receive the same
         // rigid correction without mutating Source's shared bone cache.
-        HooksWorldPosePublishWeaponHandState(
-            vr,
-            game,
-            entity,
-            info.entity_index,
-            info,
-            *layout,
-            sourceBones,
-            bones,
-            rightControllerWorld,
-            rightPoseValid);
+        if (!localEmptyHandsPlaceholder)
+        {
+            HooksWorldPosePublishWeaponHandState(
+                vr,
+                game,
+                entity,
+                info.entity_index,
+                info,
+                *layout,
+                sourceBones,
+                bones,
+                rightControllerWorld,
+                rightPoseValid);
+        }
+        else
+        {
+            HooksWorldPoseClearWeaponHandState(
+                info.entity_index);
+        }
 
         HooksWorldPoseStoreStereoPlayerBones(
             entity,
