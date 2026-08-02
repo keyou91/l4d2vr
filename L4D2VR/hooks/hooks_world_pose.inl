@@ -82,6 +82,7 @@
         vr_vm_stabilize::Mat3x4 headReferenceLocal{};
         bool visualBodyYawValid = false;
         bool visualBodyYawTurning = false;
+        bool handRetargetScaleLogged = false;
         float visualBodyYaw = 0.0f;
         std::uint64_t visualBodyYawTickMs = 0u;
         void Reset(const C_BaseEntity* newEntity, const uint8_t* newStudioHdr)
@@ -4142,48 +4143,77 @@
         return true;
     }
 
-    inline bool HooksWorldPoseApplyCalibratedHandPosition(
-        const HooksWorldPoseArmLayout& arm,
-        const VRTrackedPoseLocal& hmdPose,
-        const VRTrackedPoseLocal& handPose,
-        const Vector& calibrationHmdLocal,
-        const Vector& calibrationHandLocal,
-        const Vector& bodyForward,
-        const Vector& bodyRight,
-        const Vector& bodyUp,
-        const vr_vm_stabilize::Mat3x4& headTarget,
-        vr_vm_stabilize::Mat3x4& handTarget)
+    inline bool HooksWorldPoseComputeCalibratedHandRetargetScale(
+        const HooksWorldPoseBoneLayout& layout,
+        const WorldModelVRPoseCalibrationSnapshot& calibration,
+        float& outScale,
+        float& outTrackedSpan,
+        float& outModelSpan)
     {
-        if (!arm.bindHandFromHeadValid ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(headTarget) ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(handTarget))
+        outScale = 1.0f;
+        outTrackedSpan = 0.0f;
+        outModelSpan = 0.0f;
+        if (!calibration.valid ||
+            !layout.left.bindHandFromHeadValid ||
+            !layout.right.bindHandFromHeadValid)
         {
             return false;
         }
 
-        const Vector trackedFromHmd =
-            handPose.position - hmdPose.position;
-        const Vector calibratedFromHmd =
-            calibrationHandLocal - calibrationHmdLocal;
-        const Vector trackedMotion =
-            trackedFromHmd - calibratedFromHmd;
-        if (!HooksNativeViewmodelHandsOnlyVectorFinite(trackedMotion))
+        // Both measurements are full wrist-to-wrist T-pose spans, so shoulder
+        // width is included on both sides of the ratio. This avoids guessing a
+        // shoulder position from the HMD and works with differently sized
+        // workshop survivor skeletons.
+        outTrackedSpan =
+            (calibration.rightHandLocal -
+             calibration.leftHandLocal).Length();
+        outModelSpan =
+            (layout.right.bindHandFromHeadModel -
+             layout.left.bindHandFromHeadModel).Length();
+        if (!std::isfinite(outTrackedSpan) ||
+            !std::isfinite(outModelSpan) ||
+            outTrackedSpan <= 8.0f ||
+            outModelSpan <= 8.0f)
+        {
             return false;
+        }
 
-        // Studio bind matrices use Source model axes (X forward, Y left,
-        // Z up), while packet-local Y is anatomical right. Convert the bind
-        // hand offset once, then layer only the user's HMD-relative movement.
-        const Vector targetBodyLocal(
-            arm.bindHandFromHeadModel.x + trackedMotion.x,
-            -arm.bindHandFromHeadModel.y + trackedMotion.y,
-            arm.bindHandFromHeadModel.z + trackedMotion.z);
+        // Never amplify physical controller travel. A large model can still
+        // use 1:1 tracking, while a smaller model compresses the user's motion
+        // to its calibrated proportions.
+        outScale = std::clamp(
+            outModelSpan / outTrackedSpan,
+            0.50f,
+            1.00f);
+        return std::isfinite(outScale);
+    }
+
+    inline bool HooksWorldPoseApplyHandRetargetScale(
+        const vr_vm_stabilize::Mat3x4& hmdWorld,
+        const vr_vm_stabilize::Mat3x4& controllerWorld,
+        float scale,
+        vr_vm_stabilize::Mat3x4& handTarget)
+    {
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(hmdWorld) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(controllerWorld) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(handTarget) ||
+            !std::isfinite(scale) ||
+            scale <= 0.0f ||
+            scale > 1.0f)
+        {
+            return false;
+        }
+
+        const Vector hmdOrigin =
+            vr_vm_stabilize::GetOrigin(hmdWorld);
+        const Vector controllerOrigin =
+            vr_vm_stabilize::GetOrigin(controllerWorld);
         const Vector targetWorld =
-            vr_vm_stabilize::GetOrigin(headTarget) +
-            bodyForward * targetBodyLocal.x +
-            bodyRight * targetBodyLocal.y +
-            bodyUp * targetBodyLocal.z;
+            hmdOrigin +
+            (controllerOrigin - hmdOrigin) * scale;
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(targetWorld))
             return false;
+
         handTarget.m[0][3] = targetWorld.x;
         handTarget.m[1][3] = targetWorld.y;
         handTarget.m[2][3] = targetWorld.z;
@@ -4311,6 +4341,141 @@
         return true;
     }
 
+    inline float HooksWorldPoseTwoBoneDistanceForAngle(
+        float upperLength,
+        float lowerLength,
+        float elbowAngleRadians)
+    {
+        const float distanceSquared =
+            upperLength * upperLength +
+            lowerLength * lowerLength -
+            2.0f * upperLength * lowerLength *
+                std::cos(elbowAngleRadians);
+        return std::sqrt(std::max(distanceSquared, 0.0f));
+    }
+
+    inline bool HooksWorldPoseConstrainArmTarget(
+        int side,
+        const Vector& bodyForward,
+        const Vector& bodyRight,
+        const Vector& bodyUp,
+        const Vector& start,
+        const Vector& middle,
+        const Vector& end,
+        const Vector& rawTarget,
+        Vector& outTarget,
+        float& outArmLength)
+    {
+        outArmLength = 0.0f;
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(start) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(middle) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(end) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(rawTarget))
+        {
+            return false;
+        }
+
+        const float upperLength = (middle - start).Length();
+        const float lowerLength = (end - middle).Length();
+        const float armLength = upperLength + lowerLength;
+        if (!std::isfinite(upperLength) ||
+            !std::isfinite(lowerLength) ||
+            !std::isfinite(armLength) ||
+            upperLength <= 0.5f ||
+            lowerLength <= 0.5f ||
+            armLength <= 1.0f)
+        {
+            return false;
+        }
+        outArmLength = armLength;
+
+        const Vector anatomicalOutward =
+            bodyRight * static_cast<float>(side);
+        const Vector rawDelta = rawTarget - start;
+        float forward = DotProduct(rawDelta, bodyForward);
+        float outward = DotProduct(rawDelta, anatomicalOutward);
+        const float up = DotProduct(rawDelta, bodyUp);
+
+        // Shoulder workspace. Crossing the chest is legal, but reaching far
+        // through the opposite shoulder or simultaneously behind the back and
+        // across the torso is not. Keeping this in body space also makes the
+        // limits rotate atomically with snap turns.
+        constexpr float kMaxAcrossRatio = 0.48f;
+        constexpr float kMaxBehindRatio = 0.24f;
+        const float maxAcross = armLength * kMaxAcrossRatio;
+        const float maxBehind = armLength * kMaxBehindRatio;
+        outward = std::max(outward, -maxAcross);
+        forward = std::max(forward, -maxBehind);
+        if (outward < 0.0f && forward < 0.0f)
+        {
+            const float acrossUnit = -outward / maxAcross;
+            const float behindUnit = -forward / maxBehind;
+            const float combined = std::sqrt(
+                acrossUnit * acrossUnit +
+                behindUnit * behindUnit);
+            if (std::isfinite(combined) && combined > 1.0f)
+            {
+                outward /= combined;
+                forward /= combined;
+            }
+        }
+
+        Vector constrainedDelta =
+            bodyForward * forward +
+            anatomicalOutward * outward +
+            bodyUp * up;
+        float targetDistance = constrainedDelta.Length();
+        if (!std::isfinite(targetDistance))
+            return false;
+
+        // The ozz job preserves both bone lengths, but without a caller-side
+        // joint limit it can still approach the two singular humanly invalid
+        // states: a folded-back elbow or a perfectly locked elbow. Project the
+        // wrist onto the distances produced by a 18..165 degree elbow angle.
+        constexpr float kDegreesToRadians =
+            0.01745329251994329577f;
+        const float minDistance =
+            HooksWorldPoseTwoBoneDistanceForAngle(
+                upperLength,
+                lowerLength,
+                18.0f * kDegreesToRadians);
+        const float maxDistance =
+            HooksWorldPoseTwoBoneDistanceForAngle(
+                upperLength,
+                lowerLength,
+                165.0f * kDegreesToRadians);
+        if (!std::isfinite(minDistance) ||
+            !std::isfinite(maxDistance) ||
+            minDistance <= 0.0f ||
+            maxDistance <= minDistance)
+        {
+            return false;
+        }
+
+        if (targetDistance <= 0.001f)
+        {
+            constrainedDelta =
+                anatomicalOutward * 0.55f +
+                bodyForward * 0.65f -
+                bodyUp * 0.25f;
+            if (VectorNormalize(constrainedDelta) == 0.0f)
+                return false;
+            constrainedDelta *= minDistance;
+        }
+        else if (targetDistance < minDistance ||
+                 targetDistance > maxDistance)
+        {
+            const float legalDistance = std::clamp(
+                targetDistance,
+                minDistance,
+                maxDistance);
+            constrainedDelta *= legalDistance / targetDistance;
+        }
+
+        outTarget = start + constrainedDelta;
+        return HooksNativeViewmodelHandsOnlyVectorFinite(outTarget);
+    }
+
     inline bool HooksWorldPoseBuildExplicitPoleVector(
         int side,
         const Vector& bodyForward,
@@ -4318,6 +4483,7 @@
         const Vector& bodyUp,
         const Vector& start,
         const Vector& target,
+        float armLength,
         bool& cachedPoleBodyLocalValid,
         Vector& cachedPoleBodyLocal,
         Vector& outPole)
@@ -4331,13 +4497,37 @@
 
         const Vector anatomicalOutward =
             bodyRight * static_cast<float>(side);
-        // A fixed anatomical elbow intent: mostly outward, slightly down and
-        // slightly forward. It is projected away from start-to-target so the
-        // official solver never receives an aligned pole vector.
+        if (!std::isfinite(armLength) || armLength <= 1.0f)
+            return false;
+
+        const Vector targetDelta = target - start;
+        const float targetOutward =
+            DotProduct(targetDelta, anatomicalOutward) / armLength;
+        const float targetUp =
+            DotProduct(targetDelta, bodyUp) / armLength;
+        const float crossBody = std::clamp(
+            -targetOutward / 0.48f,
+            0.0f,
+            1.0f);
+        const float raised = std::clamp(
+            targetUp / 0.80f,
+            0.0f,
+            1.0f);
+        const float lowered = std::clamp(
+            -targetUp / 0.80f,
+            0.0f,
+            1.0f);
+
+        // The elbow intent follows the wrist region. A cross-body wrist gets
+        // a stronger outward/forward elbow, while an overhead wrist sheds the
+        // fixed downward bias. This keeps the elbow on its anatomical side
+        // instead of reusing a pole hemisphere from an unrelated pose.
         const Vector desiredPole =
-            anatomicalOutward -
-            bodyUp * 0.45f +
-            bodyForward * 0.15f;
+            anatomicalOutward * (1.10f + 0.85f * crossBody) +
+            bodyForward *
+                (0.32f + 0.48f * crossBody + 0.28f * raised) -
+            bodyUp *
+                (0.34f + 0.18f * lowered - 0.24f * raised);
         const Vector desiredPoleProjectedRaw =
             desiredPole -
             targetDirection *
@@ -4397,23 +4587,15 @@
             }
         }
 
-        // Projection becomes singular when the target crosses the desired
-        // pole direction. On either side of that zero the normalized result
-        // has opposite signs, which would make IKTwoBoneJob flip the arm by
-        // 180 degrees. Keep the projected pole in the previous hemisphere.
-        if (cachedPoleProjectedValid &&
-            DotProduct(outPole, cachedPoleProjected) < 0.0f)
-        {
-            outPole *= -1.0f;
-        }
         if (cachedPoleProjectedValid &&
             std::isfinite(desiredProjectionRatio))
         {
             // Inside the near-alignment cone the projected anatomical vector
-            // amplifies tiny target noise. Hold the transported cached pole,
-            // then blend it back only as the geometry leaves the singularity.
-            constexpr float kPoleHoldProjectionRatio = 0.10f;
-            constexpr float kPoleReleaseProjectionRatio = 0.15f;
+            // amplifies tiny target noise. The cache is used only in that
+            // cone; outside it the current anatomical intent wins, so a hand
+            // crossing the chest cannot drag an obsolete pole to the back.
+            constexpr float kPoleHoldProjectionRatio = 0.08f;
+            constexpr float kPoleReleaseProjectionRatio = 0.14f;
             if (desiredProjectionRatio <=
                 kPoleHoldProjectionRatio)
             {
@@ -4427,9 +4609,14 @@
                      kPoleHoldProjectionRatio) /
                     (kPoleReleaseProjectionRatio -
                      kPoleHoldProjectionRatio);
-                outPole =
-                    cachedPoleProjected * (1.0f - release) +
-                    outPole * release;
+                if (DotProduct(
+                        cachedPoleProjected,
+                        outPole) >= 0.0f)
+                {
+                    outPole =
+                        cachedPoleProjected * (1.0f - release) +
+                        outPole * release;
+                }
                 if (VectorNormalize(outPole) == 0.0f)
                     return false;
             }
@@ -4484,11 +4671,27 @@
 
         const Vector start =
             vr_vm_stabilize::GetOrigin(bones[arm.upperArm]);
-        const Vector target =
+        const Vector middle =
+            vr_vm_stabilize::GetOrigin(bones[arm.forearm]);
+        const Vector end =
+            vr_vm_stabilize::GetOrigin(bones[arm.hand]);
+        const Vector rawTarget =
             vr_vm_stabilize::GetOrigin(handTarget);
+        Vector target{};
+        float armLength = 0.0f;
         Vector explicitPole{};
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(start) ||
-            !HooksNativeViewmodelHandsOnlyVectorFinite(target) ||
+            !HooksWorldPoseConstrainArmTarget(
+                side,
+                bodyForward,
+                bodyRight,
+                bodyUp,
+                start,
+                middle,
+                end,
+                rawTarget,
+                target,
+                armLength) ||
             !HooksWorldPoseBuildExplicitPoleVector(
                 side,
                 bodyForward,
@@ -4496,6 +4699,7 @@
                 bodyUp,
                 start,
                 target,
+                armLength,
                 poleBodyLocalValid,
                 poleBodyLocal,
                 explicitPole))
@@ -5356,6 +5560,47 @@
                 rightControllerWorld,
                 bones[layout->right.hand],
                 rightHandTarget);
+
+        float handRetargetScale = 1.0f;
+        float calibratedTrackedSpan = 0.0f;
+        float calibratedModelSpan = 0.0f;
+        const bool handRetargetScaleValid =
+            localPlayer &&
+            hmdTransformValid &&
+            HooksWorldPoseComputeCalibratedHandRetargetScale(
+                *layout,
+                localCalibration,
+                handRetargetScale,
+                calibratedTrackedSpan,
+                calibratedModelSpan);
+        if (handRetargetScaleValid)
+        {
+            if (leftPoseValid)
+            {
+                HooksWorldPoseApplyHandRetargetScale(
+                    hmdWorld,
+                    leftControllerWorld,
+                    handRetargetScale,
+                    leftHandTarget);
+            }
+            if (rightPoseValid)
+            {
+                HooksWorldPoseApplyHandRetargetScale(
+                    hmdWorld,
+                    rightControllerWorld,
+                    handRetargetScale,
+                    rightHandTarget);
+            }
+            if (!calibration.handRetargetScaleLogged)
+            {
+                calibration.handRetargetScaleLogged = true;
+                Game::logMsg(
+                    "[VR][WorldPose] calibrated hand retarget span tracked=%.2f model=%.2f scale=%.3f",
+                    calibratedTrackedSpan,
+                    calibratedModelSpan,
+                    handRetargetScale);
+            }
+        }
         bool weaponGripRotationValid = false;
         if (rightPoseValid)
         {
