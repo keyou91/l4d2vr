@@ -19,10 +19,11 @@
         bool palmToHandValid = false;
         bool midAxisValid = false;
         bool bindChainLocalValid = false;
+        bool bindClavicleModelValid = false;
         bool bindHandFromHeadValid = false;
         vr_vm_stabilize::Mat3x4 palmToHand{};
         Vector midAxisLocal{};
-        vr_vm_stabilize::Mat3x4 bindClavicleLocal{};
+        vr_vm_stabilize::Mat3x4 bindClavicleModel{};
         vr_vm_stabilize::Mat3x4 bindUpperArmLocal{};
         vr_vm_stabilize::Mat3x4 bindForearmLocal{};
         vr_vm_stabilize::Mat3x4 bindHandLocal{};
@@ -78,12 +79,12 @@
         Vector rightGripShotImpulseAxis{};
         bool neckReferenceLocalValid = false;
         bool headReferenceLocalValid = false;
-        bool leftArmRootBodyReferenceValid = false;
-        bool rightArmRootBodyReferenceValid = false;
+        bool leftArmRootVerticalReferenceValid = false;
+        bool rightArmRootVerticalReferenceValid = false;
         vr_vm_stabilize::Mat3x4 neckReferenceLocal{};
         vr_vm_stabilize::Mat3x4 headReferenceLocal{};
-        vr_vm_stabilize::Mat3x4 leftArmRootBodyReference{};
-        vr_vm_stabilize::Mat3x4 rightArmRootBodyReference{};
+        float leftArmRootVerticalReference = 0.0f;
+        float rightArmRootVerticalReference = 0.0f;
         bool visualBodyYawValid = false;
         bool visualBodyYawTurning = false;
         float visualBodyYaw = 0.0f;
@@ -707,6 +708,7 @@
         arm.palmToHandValid = false;
         arm.midAxisValid = false;
         arm.bindChainLocalValid = false;
+        arm.bindClavicleModelValid = false;
         arm.bindHandFromHeadValid = false;
         // The caller has already validated ancestry. Keep this reader bounded
         // to the three joints required by IK.
@@ -805,6 +807,10 @@
                 arm.hand,
                 bindHand,
                 arm.bindHandLocal);
+        arm.bindClavicleModel = bindClavicle;
+        arm.bindClavicleModelValid =
+            HooksNativeViewmodelHandsOnlyMatrixFinite(
+                arm.bindClavicleModel);
 
         if (headBone >= 0 &&
             headBone < numBones &&
@@ -3237,6 +3243,66 @@
         return true;
     }
 
+    inline bool HooksWorldPoseBuildEyeToHeadCalibration(
+        const QAngle& sourceEyeAngles,
+        const vr_vm_stabilize::Mat3x4& sourceHeadBone,
+        vr_vm_stabilize::Mat3x4& outEyeToHead)
+    {
+        if (!std::isfinite(sourceEyeAngles.x) ||
+            !std::isfinite(sourceEyeAngles.y) ||
+            !std::isfinite(sourceEyeAngles.z))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 sourceHeadRigid{};
+        if (!HooksWorldPoseBuildRigidBoneTransform(
+                sourceHeadBone,
+                sourceHeadRigid))
+        {
+            return false;
+        }
+
+        // Source eye angles already contain the live look direction used to
+        // pose the player head. Remove that direction from the native head to
+        // retain only this model's bone-axis convention. Unlike calibrating
+        // directly against the HMD, this cannot bake an arbitrary first-frame
+        // idle/fire head tilt into the permanent tracker correction.
+        const Vector headOrigin =
+            vr_vm_stabilize::GetOrigin(sourceHeadRigid);
+        vr_vm_stabilize::Mat3x4 sourceEyeWorld{};
+        vr_vm_stabilize::Mat3x4 inverseSourceEye{};
+        vr_vm_stabilize::BuildFromOrgAngles(
+            headOrigin,
+            sourceEyeAngles,
+            sourceEyeWorld);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
+                sourceEyeWorld))
+        {
+            return false;
+        }
+        vr_vm_stabilize::InvertTR(
+            sourceEyeWorld,
+            inverseSourceEye);
+        vr_vm_stabilize::Mul(
+            inverseSourceEye,
+            sourceHeadRigid,
+            outEyeToHead);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
+                outEyeToHead))
+        {
+            return false;
+        }
+
+        // Head position is constrained separately against Source's current
+        // neck. A rotation-only basis prevents HMD rotation from orbiting the
+        // head around a learned eye-to-bone translation.
+        outEyeToHead.m[0][3] = 0.0f;
+        outEyeToHead.m[1][3] = 0.0f;
+        outEyeToHead.m[2][3] = 0.0f;
+        return true;
+    }
+
     inline bool HooksWorldPoseEnsureHeadOrientationCalibration(
         const vr_vm_stabilize::Mat3x4& hmdWorld,
         const vr_vm_stabilize::Mat3x4& sourceHead,
@@ -4081,56 +4147,22 @@
             bones);
     }
 
-    inline bool HooksWorldPoseEnsureArmRootBodyReference(
-        const HooksWorldPoseBoneLayout& layout,
-        const HooksWorldPoseArmLayout& arm,
-        const vr_vm_stabilize::Mat3x4& bodyFrame,
-        const vr_vm_stabilize::Mat3x4* bones,
-        bool& referenceValid,
-        vr_vm_stabilize::Mat3x4& reference)
-    {
-        if (referenceValid)
-            return true;
-        if (!bones ||
-            arm.clavicle < 0 ||
-            arm.clavicle >= layout.numBones ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyFrame))
-        {
-            return false;
-        }
-
-        vr_vm_stabilize::Mat3x4 armRootRigid{};
-        vr_vm_stabilize::Mat3x4 inverseBody{};
-        if (!HooksWorldPoseBuildRigidBoneTransform(
-                bones[arm.clavicle],
-                armRootRigid) ||
-            !vr_vm_stabilize::InvertAffine(
-                bodyFrame,
-                inverseBody))
-        {
-            return false;
-        }
-        vr_vm_stabilize::Mul(
-            inverseBody,
-            armRootRigid,
-            reference);
-        referenceValid =
-            HooksNativeViewmodelHandsOnlyMatrixFinite(reference);
-        return referenceValid;
-    }
-
     inline bool HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseArmLayout& arm,
         const vr_vm_stabilize::Mat3x4& bodyFrame,
-        const vr_vm_stabilize::Mat3x4& bodyReference,
+        bool playerDucking,
+        bool& verticalReferenceValid,
+        float& verticalReference,
         vr_vm_stabilize::Mat3x4* bones)
     {
         if (!bones ||
             arm.clavicle < 0 ||
             arm.clavicle >= layout.numBones ||
+            !arm.bindClavicleModelValid ||
             !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyFrame) ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyReference))
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(
+                arm.bindClavicleModel))
         {
             return false;
         }
@@ -4141,7 +4173,7 @@
         vr_vm_stabilize::Mat3x4 delta{};
         vr_vm_stabilize::Mul(
             bodyFrame,
-            bodyReference,
+            arm.bindClavicleModel,
             stableRoot);
         if (!HooksWorldPoseBuildRigidBoneTransform(
                 bones[arm.clavicle],
@@ -4150,10 +4182,11 @@
             return false;
         }
 
-        // Body animation remains visible, but it is not allowed to drive the
-        // arm solver at full amplitude. Preserve one third of horizontal
-        // shoulder sway. Ignore breathing/bob vertically, while retaining a
-        // genuine crouch or stand transition so the sleeve stays attached.
+        // The torso keeps its full native animation, but the Ozz arm input is
+        // reconstructed from the model's immutable bind shoulder. Do not
+        // learn the first rendered frame: it may be a walk/fire pose and would
+        // turn that arbitrary shoulder rotation into a permanent IK basis.
+        // Horizontal native sway is intentionally excluded completely.
         Vector bodyUp(
             bodyFrame.m[0][2],
             bodyFrame.m[1][2],
@@ -4169,33 +4202,41 @@
             vr_vm_stabilize::GetOrigin(currentRoot);
         const Vector animatedDelta =
             currentOrigin - stableOrigin;
-        const float verticalDelta =
+        const float rawVerticalOffset =
             DotProduct(animatedDelta, bodyUp);
-        const Vector horizontalDelta =
-            animatedDelta - bodyUp * verticalDelta;
-        constexpr float kArmBodyAnimationHorizontalGain =
-            1.0f / 3.0f;
-        // Fade stance height back in continuously. A hard threshold here
-        // makes the complete clavicle branch alternate between two origins
-        // when a crouch transition hovers around the cutoff.
+        if (!std::isfinite(rawVerticalOffset))
+            return false;
+        if (!verticalReferenceValid && !playerDucking)
+        {
+            verticalReference = rawVerticalOffset;
+            verticalReferenceValid = true;
+        }
+        const float neutralVertical =
+            verticalReferenceValid
+                ? verticalReference
+                : rawVerticalOffset;
+        const float stanceVertical =
+            rawVerticalOffset - neutralVertical;
+
+        // Preserve only a genuine stand/crouch height transition. Fade it in
+        // continuously so crossing the bob threshold cannot flash the whole
+        // arm branch between two shoulder origins.
         constexpr float kVerticalBobDeadzone = 2.0f;
         constexpr float kFullStanceVertical = 8.0f;
-        const float verticalMagnitude = std::fabs(verticalDelta);
+        const float verticalMagnitude = std::fabs(stanceVertical);
         const float verticalRetention = std::clamp(
             (verticalMagnitude - kVerticalBobDeadzone) /
                 (kFullStanceVertical - kVerticalBobDeadzone),
             0.0f,
             1.0f);
         const float retainedVertical =
-            verticalDelta *
+            stanceVertical *
             verticalRetention *
             verticalRetention *
             (3.0f - 2.0f * verticalRetention);
         const Vector stabilizedOrigin =
             stableOrigin +
-            horizontalDelta *
-                kArmBodyAnimationHorizontalGain +
-            bodyUp * retainedVertical;
+            bodyUp * (neutralVertical + retainedVertical);
         stableRoot.m[0][3] = stabilizedOrigin.x;
         stableRoot.m[1][3] = stabilizedOrigin.y;
         stableRoot.m[2][3] = stabilizedOrigin.z;
@@ -5397,21 +5438,32 @@
                     sourceEyeAngles);
             if (!calibration.hmdToHeadValid)
             {
-                // The native runtime head and m_angEyeAngles already follow
-                // the same HMD pitch/yaw in VR. Calibrate those two live
-                // transforms directly. Trying to "neutralize" eye angles here
-                // subtracts the tracked look rotation a second time and bakes
-                // a large upward pitch into hmdToHead.
-                const bool calibrationReady =
-                    HooksWorldPoseEnsureHeadOrientationCalibration(
-                        hmdWorld,
+                if (sourceEyeAnglesValid &&
+                    HooksWorldPoseBuildEyeToHeadCalibration(
+                        sourceEyeAngles,
                         sourceBones[layout->head],
-                        calibration.hmdToHeadValid,
-                        calibration.hmdToHead);
-                if (calibrationReady &&
-                    calibration.hmdToHeadValid)
+                        calibration.hmdToHead))
                 {
-                    calibration.hmdToHeadUsesSourceEyeAngles = false;
+                    calibration.hmdToHeadValid = true;
+                    calibration.hmdToHeadUsesSourceEyeAngles = true;
+                }
+                else
+                {
+                    // Guarded compatibility fallback for unusual servers
+                    // where m_angEyeAngles is unavailable. The supported L4D2
+                    // path above is deterministic and does not learn an
+                    // animated first-frame head pose.
+                    const bool calibrationReady =
+                        HooksWorldPoseEnsureHeadOrientationCalibration(
+                            hmdWorld,
+                            sourceBones[layout->head],
+                            calibration.hmdToHeadValid,
+                            calibration.hmdToHead);
+                    if (calibrationReady &&
+                        calibration.hmdToHeadValid)
+                    {
+                        calibration.hmdToHeadUsesSourceEyeAngles = false;
+                    }
                 }
             }
         }
@@ -5759,44 +5811,30 @@
             armBodyFrameOrigin,
             QAngle(0.0f, appliedBodyYaw, 0.0f),
             armBodyFrame);
-        const bool leftArmRootReferenceReady =
-            leftPoseValid &&
-            HooksWorldPoseEnsureArmRootBodyReference(
-                *layout,
-                layout->left,
-                armBodyFrame,
-                bones,
-                calibration.leftArmRootBodyReferenceValid,
-                calibration.leftArmRootBodyReference);
-        const bool rightArmRootReferenceReady =
-            rightPoseValid &&
-            HooksWorldPoseEnsureArmRootBodyReference(
-                *layout,
-                layout->right,
-                armBodyFrame,
-                bones,
-                calibration.rightArmRootBodyReferenceValid,
-                calibration.rightArmRootBodyReference);
         bool leftArmRootStabilized = false;
         bool rightArmRootStabilized = false;
-        if (leftArmRootReferenceReady)
+        if (leftPoseValid)
         {
             leftArmRootStabilized =
                 HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
                     *layout,
                     layout->left,
                     armBodyFrame,
-                    calibration.leftArmRootBodyReference,
+                    playerDucking,
+                    calibration.leftArmRootVerticalReferenceValid,
+                    calibration.leftArmRootVerticalReference,
                     bones);
         }
-        if (rightArmRootReferenceReady)
+        if (rightPoseValid)
         {
             rightArmRootStabilized =
                 HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
                     *layout,
                     layout->right,
                     armBodyFrame,
-                    calibration.rightArmRootBodyReference,
+                    playerDucking,
+                    calibration.rightArmRootVerticalReferenceValid,
+                    calibration.rightArmRootVerticalReference,
                     bones);
         }
         changed = leftArmRootStabilized ||
@@ -6137,17 +6175,51 @@
                     nativeNeckLength,
                     finalNeckLength);
                 Game::logMsg(
-                    "[VR][WorldPose] IK arms left=%d solved=%d axis=%d reached=%d right=%d solved=%d axis=%d reached=%d shotWrist=%d shotTriggered=%d",
+                    "[VR][WorldPose] IK arms left=%d root=%d solved=%d axis=%d reached=%d right=%d root=%d solved=%d axis=%d reached=%d shotWrist=%d shotTriggered=%d",
                     leftPoseValid ? 1 : 0,
+                    leftArmRootStabilized ? 1 : 0,
                     leftArmSolved ? 1 : 0,
                     layout->left.midAxisValid ? 1 : 0,
                     leftArmReached ? 1 : 0,
                     rightPoseValid ? 1 : 0,
+                    rightArmRootStabilized ? 1 : 0,
                     rightArmSolved ? 1 : 0,
                     layout->right.midAxisValid ? 1 : 0,
                     rightArmReached ? 1 : 0,
                     weaponGripRotationValid ? 1 : 0,
                     weaponShotTriggered ? 1 : 0);
+                if (leftPoseValid)
+                {
+                    const Vector leftShoulder =
+                        vr_vm_stabilize::GetOrigin(
+                            bones[layout->left.upperArm]);
+                    const Vector leftGoal =
+                        vr_vm_stabilize::GetOrigin(leftHandTarget);
+                    Game::logMsg(
+                        "[VR][WorldPose] IK left shoulder=(%.2f %.2f %.2f) goal=(%.2f %.2f %.2f)",
+                        leftShoulder.x,
+                        leftShoulder.y,
+                        leftShoulder.z,
+                        leftGoal.x,
+                        leftGoal.y,
+                        leftGoal.z);
+                }
+                if (rightPoseValid)
+                {
+                    const Vector rightShoulder =
+                        vr_vm_stabilize::GetOrigin(
+                            bones[layout->right.upperArm]);
+                    const Vector rightGoal =
+                        vr_vm_stabilize::GetOrigin(rightHandTarget);
+                    Game::logMsg(
+                        "[VR][WorldPose] IK right shoulder=(%.2f %.2f %.2f) goal=(%.2f %.2f %.2f)",
+                        rightShoulder.x,
+                        rightShoulder.y,
+                        rightShoulder.z,
+                        rightGoal.x,
+                        rightGoal.y,
+                        rightGoal.z);
+                }
             }
         }
 
