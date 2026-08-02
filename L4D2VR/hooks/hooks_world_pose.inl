@@ -19,11 +19,9 @@
         bool palmToHandValid = false;
         bool midAxisValid = false;
         bool bindChainLocalValid = false;
-        bool bindClavicleModelValid = false;
         bool bindHandFromHeadValid = false;
         vr_vm_stabilize::Mat3x4 palmToHand{};
         Vector midAxisLocal{};
-        vr_vm_stabilize::Mat3x4 bindClavicleModel{};
         vr_vm_stabilize::Mat3x4 bindUpperArmLocal{};
         vr_vm_stabilize::Mat3x4 bindForearmLocal{};
         vr_vm_stabilize::Mat3x4 bindHandLocal{};
@@ -79,12 +77,12 @@
         Vector rightGripShotImpulseAxis{};
         bool neckReferenceLocalValid = false;
         bool headReferenceLocalValid = false;
-        bool leftArmRootVerticalReferenceValid = false;
-        bool rightArmRootVerticalReferenceValid = false;
+        bool leftArmBodyCarryReferenceValid = false;
+        bool rightArmBodyCarryReferenceValid = false;
         vr_vm_stabilize::Mat3x4 neckReferenceLocal{};
         vr_vm_stabilize::Mat3x4 headReferenceLocal{};
-        float leftArmRootVerticalReference = 0.0f;
-        float rightArmRootVerticalReference = 0.0f;
+        vr_vm_stabilize::Mat3x4 leftArmBodyCarryReference{};
+        vr_vm_stabilize::Mat3x4 rightArmBodyCarryReference{};
         bool visualBodyYawValid = false;
         bool visualBodyYawTurning = false;
         float visualBodyYaw = 0.0f;
@@ -708,7 +706,6 @@
         arm.palmToHandValid = false;
         arm.midAxisValid = false;
         arm.bindChainLocalValid = false;
-        arm.bindClavicleModelValid = false;
         arm.bindHandFromHeadValid = false;
         // The caller has already validated ancestry. Keep this reader bounded
         // to the three joints required by IK.
@@ -807,10 +804,6 @@
                 arm.hand,
                 bindHand,
                 arm.bindHandLocal);
-        arm.bindClavicleModel = bindClavicle;
-        arm.bindClavicleModelValid =
-            HooksNativeViewmodelHandsOnlyMatrixFinite(
-                arm.bindClavicleModel);
 
         if (headBone >= 0 &&
             headBone < numBones &&
@@ -4147,34 +4140,26 @@
             bones);
     }
 
-    inline bool HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+    inline bool HooksWorldPoseApplyBodyCarryToArmTarget(
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseArmLayout& arm,
         const vr_vm_stabilize::Mat3x4& bodyFrame,
-        bool playerDucking,
-        bool& verticalReferenceValid,
-        float& verticalReference,
-        vr_vm_stabilize::Mat3x4* bones)
+        const vr_vm_stabilize::Mat3x4* bones,
+        bool allowReferenceCapture,
+        bool& referenceValid,
+        vr_vm_stabilize::Mat3x4& bodyLocalReference,
+        vr_vm_stabilize::Mat3x4& inOutHandTarget)
     {
         if (!bones ||
             arm.clavicle < 0 ||
             arm.clavicle >= layout.numBones ||
-            !arm.bindClavicleModelValid ||
             !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyFrame) ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(
-                arm.bindClavicleModel))
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(inOutHandTarget))
         {
             return false;
         }
 
-        vr_vm_stabilize::Mat3x4 stableRoot{};
         vr_vm_stabilize::Mat3x4 currentRoot{};
-        vr_vm_stabilize::Mat3x4 inverseCurrent{};
-        vr_vm_stabilize::Mat3x4 delta{};
-        vr_vm_stabilize::Mul(
-            bodyFrame,
-            arm.bindClavicleModel,
-            stableRoot);
         if (!HooksWorldPoseBuildRigidBoneTransform(
                 bones[arm.clavicle],
                 currentRoot))
@@ -4182,82 +4167,71 @@
             return false;
         }
 
-        // The torso keeps its full native animation, but the Ozz arm input is
-        // reconstructed from the model's immutable bind shoulder. Do not
-        // learn the first rendered frame: it may be a walk/fire pose and would
-        // turn that arbitrary shoulder rotation into a permanent IK basis.
-        // Horizontal native sway is intentionally excluded completely.
-        Vector bodyUp(
-            bodyFrame.m[0][2],
-            bodyFrame.m[1][2],
-            bodyFrame.m[2][2]);
-        if (!HooksNativeViewmodelHandsOnlyVectorFinite(bodyUp) ||
-            VectorNormalize(bodyUp) == 0.0f)
+        if (!referenceValid)
         {
-            return false;
-        }
-        const Vector stableOrigin =
-            vr_vm_stabilize::GetOrigin(stableRoot);
-        const Vector currentOrigin =
-            vr_vm_stabilize::GetOrigin(currentRoot);
-        const Vector animatedDelta =
-            currentOrigin - stableOrigin;
-        const float rawVerticalOffset =
-            DotProduct(animatedDelta, bodyUp);
-        if (!std::isfinite(rawVerticalOffset))
-            return false;
-        if (!verticalReferenceValid && !playerDucking)
-        {
-            verticalReference = rawVerticalOffset;
-            verticalReferenceValid = true;
-        }
-        const float neutralVertical =
-            verticalReferenceValid
-                ? verticalReference
-                : rawVerticalOffset;
-        const float stanceVertical =
-            rawVerticalOffset - neutralVertical;
-
-        // Preserve only a genuine stand/crouch height transition. Fade it in
-        // continuously so crossing the bob threshold cannot flash the whole
-        // arm branch between two shoulder origins.
-        constexpr float kVerticalBobDeadzone = 2.0f;
-        constexpr float kFullStanceVertical = 8.0f;
-        const float verticalMagnitude = std::fabs(stanceVertical);
-        const float verticalRetention = std::clamp(
-            (verticalMagnitude - kVerticalBobDeadzone) /
-                (kFullStanceVertical - kVerticalBobDeadzone),
-            0.0f,
-            1.0f);
-        const float retainedVertical =
-            stanceVertical *
-            verticalRetention *
-            verticalRetention *
-            (3.0f - 2.0f * verticalRetention);
-        const Vector stabilizedOrigin =
-            stableOrigin +
-            bodyUp * (neutralVertical + retainedVertical);
-        stableRoot.m[0][3] = stabilizedOrigin.x;
-        stableRoot.m[1][3] = stabilizedOrigin.y;
-        stableRoot.m[2][3] = stabilizedOrigin.z;
-
-        if (!vr_vm_stabilize::InvertAffine(
+            if (!allowReferenceCapture)
+                return false;
+            vr_vm_stabilize::Mat3x4 inverseBody{};
+            if (!vr_vm_stabilize::InvertAffine(
+                    bodyFrame,
+                    inverseBody))
+            {
+                return false;
+            }
+            vr_vm_stabilize::Mul(
+                inverseBody,
                 currentRoot,
-                inverseCurrent))
+                bodyLocalReference);
+            referenceValid =
+                HooksNativeViewmodelHandsOnlyMatrixFinite(
+                    bodyLocalReference);
+            if (!referenceValid)
+                return false;
+        }
+
+        // Keep the clavicle attached to Source's animated torso. Measure its
+        // current native rigid motion relative to the captured body-local
+        // shoulder, then carry the wrist goal by that exact same delta. Ozz
+        // subsequently solves the bind upper/forearm chain between the live
+        // shoulder and carried wrist, so body motion reaches the whole arm
+        // instead of stopping at the upper arm.
+        vr_vm_stabilize::Mat3x4 referenceWorld{};
+        vr_vm_stabilize::Mat3x4 inverseReference{};
+        vr_vm_stabilize::Mat3x4 bodyCarryDelta{};
+        vr_vm_stabilize::Mat3x4 carriedTarget{};
+        vr_vm_stabilize::Mul(
+            bodyFrame,
+            bodyLocalReference,
+            referenceWorld);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(referenceWorld) ||
+            !vr_vm_stabilize::InvertAffine(
+                referenceWorld,
+                inverseReference))
         {
             return false;
         }
         vr_vm_stabilize::Mul(
-            stableRoot,
-            inverseCurrent,
-            delta);
-        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(delta))
+            currentRoot,
+            inverseReference,
+            bodyCarryDelta);
+        const Vector shoulderDisplacement =
+            vr_vm_stabilize::GetOrigin(currentRoot) -
+            vr_vm_stabilize::GetOrigin(referenceWorld);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(bodyCarryDelta) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(
+                shoulderDisplacement) ||
+            shoulderDisplacement.LengthSqr() > 4096.0f)
+        {
             return false;
-        return HooksWorldPoseApplyDeltaToBranch(
-            layout,
-            arm.clavicle,
-            delta,
-            bones);
+        }
+        vr_vm_stabilize::Mul(
+            bodyCarryDelta,
+            inOutHandTarget,
+            carriedTarget);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(carriedTarget))
+            return false;
+        inOutHandTarget = carriedTarget;
+        return true;
     }
 
     inline bool HooksWorldPoseRestoreHeadChain(
@@ -5804,52 +5778,51 @@
             &bodyUp);
 
         vr_vm_stabilize::Mat3x4 armBodyFrame{};
-        const Vector armBodyFrameOrigin =
-            info.origin +
-            appliedHmdWorldDelta * trackingWeight;
         vr_vm_stabilize::BuildFromOrgAngles(
-            armBodyFrameOrigin,
+            info.origin +
+                appliedHmdWorldDelta * trackingWeight,
             QAngle(0.0f, appliedBodyYaw, 0.0f),
             armBodyFrame);
-        bool leftArmRootStabilized = false;
-        bool rightArmRootStabilized = false;
+        bool leftArmBodyCarryApplied = false;
+        bool rightArmBodyCarryApplied = false;
         if (leftPoseValid)
         {
-            leftArmRootStabilized =
-                HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+            leftArmBodyCarryApplied =
+                HooksWorldPoseApplyBodyCarryToArmTarget(
                     *layout,
                     layout->left,
                     armBodyFrame,
-                    playerDucking,
-                    calibration.leftArmRootVerticalReferenceValid,
-                    calibration.leftArmRootVerticalReference,
-                    bones);
+                    bones,
+                    !playerDucking,
+                    calibration.leftArmBodyCarryReferenceValid,
+                    calibration.leftArmBodyCarryReference,
+                    leftHandTarget);
         }
         if (rightPoseValid)
         {
-            rightArmRootStabilized =
-                HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+            rightArmBodyCarryApplied =
+                HooksWorldPoseApplyBodyCarryToArmTarget(
                     *layout,
                     layout->right,
                     armBodyFrame,
-                    playerDucking,
-                    calibration.rightArmRootVerticalReferenceValid,
-                    calibration.rightArmRootVerticalReference,
-                    bones);
+                    bones,
+                    !playerDucking,
+                    calibration.rightArmBodyCarryReferenceValid,
+                    calibration.rightArmBodyCarryReference,
+                    rightHandTarget);
         }
-        changed = leftArmRootStabilized ||
-            rightArmRootStabilized ||
-            changed;
 
         // Calibration validates a coherent HMD/controller body scale; it must
-        // not replace the live wrist goal. The static hand target above is the
-        // controller's absolute world position. Adding the T-pose bind offset
-        // here a second time leaves both arms spread after calibration.
+        // not replace the live wrist goal. The target remains the controller's
+        // absolute world position plus only the current torso/clavicle carry
+        // delta measured above. Adding a T-pose bind offset here a second time
+        // leaves both arms spread after calibration.
 
-        // Ozz must receive one deterministic input skeleton. Source is still
-        // authoritative below the chest, but walk/run/fire arm channels are
-        // removed before every solve so they cannot move the shoulder or flip
-        // the elbow between otherwise identical controller samples.
+        // Keep Source's live clavicle exactly attached to the animated torso.
+        // Only the actual IK chain below it is restored to deterministic bind
+        // locals. Ozz then solves from that current anatomical shoulder to the
+        // body-carried controller goal, without creating a detached sleeve or
+        // consuming separate walk/fire animation in upperArm/forearm/hand.
         bool leftBindChainRestored = false;
         bool rightBindChainRestored = false;
         if (leftPoseValid)
@@ -5963,13 +5936,15 @@
                             -48.0f,
                             0.0f);
                         const Vector handDropWorld = bodyUp * handDrop;
-                        if (leftPoseValid)
+                        if (leftPoseValid &&
+                            !leftArmBodyCarryApplied)
                         {
                             leftHandTarget.m[0][3] += handDropWorld.x;
                             leftHandTarget.m[1][3] += handDropWorld.y;
                             leftHandTarget.m[2][3] += handDropWorld.z;
                         }
-                        if (rightPoseValid)
+                        if (rightPoseValid &&
+                            !rightArmBodyCarryApplied)
                         {
                             rightHandTarget.m[0][3] += handDropWorld.x;
                             rightHandTarget.m[1][3] += handDropWorld.y;
@@ -6175,14 +6150,14 @@
                     nativeNeckLength,
                     finalNeckLength);
                 Game::logMsg(
-                    "[VR][WorldPose] IK arms left=%d root=%d solved=%d axis=%d reached=%d right=%d root=%d solved=%d axis=%d reached=%d shotWrist=%d shotTriggered=%d",
+                    "[VR][WorldPose] IK arms left=%d carry=%d solved=%d axis=%d reached=%d right=%d carry=%d solved=%d axis=%d reached=%d shotWrist=%d shotTriggered=%d",
                     leftPoseValid ? 1 : 0,
-                    leftArmRootStabilized ? 1 : 0,
+                    leftArmBodyCarryApplied ? 1 : 0,
                     leftArmSolved ? 1 : 0,
                     layout->left.midAxisValid ? 1 : 0,
                     leftArmReached ? 1 : 0,
                     rightPoseValid ? 1 : 0,
-                    rightArmRootStabilized ? 1 : 0,
+                    rightArmBodyCarryApplied ? 1 : 0,
                     rightArmSolved ? 1 : 0,
                     layout->right.midAxisValid ? 1 : 0,
                     rightArmReached ? 1 : 0,
