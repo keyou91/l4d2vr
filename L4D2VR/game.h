@@ -102,9 +102,11 @@ struct VRTrackedPoseLocal
 struct VRPoseFrame
 {
     bool valid = false;
+    bool bodyYawValid = false;
     std::uint8_t validMask = 0u;
     std::uint16_t sequence = 0u;
     std::uint64_t receivedTickMs = 0u;
+    float bodyYaw = 0.0f;
     VRTrackedPoseLocal hmd{};
     VRTrackedPoseLocal leftHand{};
     VRTrackedPoseLocal rightHand{};
@@ -304,7 +306,8 @@ public:
         int playerIndex,
         std::uint16_t sequence,
         const char* encodedPayload,
-        bool fromServer);
+        bool fromServer,
+        float encodedBodyYaw);
     bool GetInterpolatedVRPose(
         int playerIndex,
         float interpolationDelayMs,

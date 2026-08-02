@@ -17988,7 +17988,9 @@ bool __fastcall Hooks::dWorldPoseWeaponSetupBones(
 			m_Game,
 			ecx,
 			boneToWorldOut,
-			maxBones);
+			maxBones,
+			boneMask,
+			currentTime);
 	}
 	return result;
 }

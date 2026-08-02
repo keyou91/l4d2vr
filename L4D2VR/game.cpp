@@ -584,7 +584,8 @@ namespace
             static_cast<int>(playerIndex),
             static_cast<std::uint16_t>(sequence),
             command.Arg(3),
-            true);
+            true,
+            std::numeric_limits<float>::quiet_NaN());
     }
 
     SourceRegisteredConCommand g_L4D2VRServerAckCommand(
@@ -1209,6 +1210,41 @@ namespace
             VRPoseAngleLerp(previous.angles.z, latest.angles.z, fraction);
         return result;
     }
+
+    VRTrackedPoseLocal VRPoseRebaseTrackedPointYaw(
+        const VRTrackedPoseLocal& pose,
+        float fromBodyYaw,
+        float toBodyYaw)
+    {
+        VRTrackedPoseLocal result = pose;
+        Vector fromForward{};
+        Vector fromRight{};
+        Vector fromUp{};
+        Vector toForward{};
+        Vector toRight{};
+        Vector toUp{};
+        QAngle::AngleVectors(
+            QAngle(0.0f, fromBodyYaw, 0.0f),
+            &fromForward,
+            &fromRight,
+            &fromUp);
+        QAngle::AngleVectors(
+            QAngle(0.0f, toBodyYaw, 0.0f),
+            &toForward,
+            &toRight,
+            &toUp);
+        const Vector worldOffset =
+            fromForward * pose.position.x +
+            fromRight * pose.position.y +
+            fromUp * pose.position.z;
+        result.position = Vector(
+            DotProduct(worldOffset, toForward),
+            DotProduct(worldOffset, toRight),
+            DotProduct(worldOffset, toUp));
+        result.angles.y = VRPoseNormalizeAngle(
+            pose.angles.y + fromBodyYaw - toBodyYaw);
+        return result;
+    }
 }
 
 void Game::ObserveBuiltinVRPoseRelayClient(
@@ -1492,8 +1528,14 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
     VRWorldPoseTrackingSnapshot tracking{};
     if (!vr->ReadWorldPoseTrackingSnapshot(tracking))
         return;
+	if (!VRPoseFiniteVector(tracking.referenceOrigin))
+		return;
 
-    const float bodyYaw = VRPoseNormalizeAngle(playerAngles.y);
+    // The tracked positions, controller angles and local yaw frame must be one
+    // coherent UpdateTracking sample. A later yaw read makes stationary hands
+    // orbit the player whenever a turn lands between the two reads.
+    const float bodyYaw = VRPoseNormalizeAngle(
+        tracking.bodyYawValid ? tracking.bodyYaw : playerAngles.y);
     std::uint8_t validMask = 0u;
     if (tracking.hmdValid)
         validMask |= l4d2vr_pose::kValidHmd;
@@ -1512,21 +1554,21 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
 
     frame.hmd.position = VRPoseWorldPositionToBodyLocal(
         tracking.hmdPosition,
-        playerOrigin,
+		tracking.referenceOrigin,
         bodyYaw);
     frame.hmd.angles = VRPoseWorldAnglesToBodyLocal(
         tracking.hmdAngles,
         bodyYaw);
     frame.leftHand.position = VRPoseWorldPositionToBodyLocal(
         tracking.leftHandPosition,
-        playerOrigin,
+		tracking.referenceOrigin,
         bodyYaw);
     frame.leftHand.angles = VRPoseWorldAnglesToBodyLocal(
         tracking.leftHandAngles,
         bodyYaw);
     frame.rightHand.position = VRPoseWorldPositionToBodyLocal(
         tracking.rightHandPosition,
-        playerOrigin,
+		tracking.referenceOrigin,
         bodyYaw);
     frame.rightHand.angles = VRPoseWorldAnglesToBodyLocal(
         tracking.rightHandAngles,
@@ -1560,7 +1602,8 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
         localPlayerIndex,
         frame.sequence,
         encodedPayload.c_str(),
-        false);
+        false,
+        bodyYaw);
 
     if (!m_VRPoseServerCapable.load(std::memory_order_acquire))
         return;
@@ -1584,7 +1627,8 @@ bool Game::ReceiveVRPosePayload(
     int playerIndex,
     std::uint16_t sequence,
     const char* encodedPayload,
-    bool fromServer)
+    bool fromServer,
+    float encodedBodyYaw)
 {
     if (!IsValidPlayerIndex(playerIndex) ||
         playerIndex <= 0 ||
@@ -1623,6 +1667,26 @@ bool Game::ReceiveVRPosePayload(
         playerIndex,
         observedPlayer,
         observedUserID);
+    if (std::isfinite(encodedBodyYaw))
+    {
+        frame.bodyYaw = VRPoseNormalizeAngle(encodedBodyYaw);
+        frame.bodyYawValid = true;
+    }
+    else if (observedPlayer)
+    {
+        Vector observedOrigin{};
+        QAngle observedAngles{};
+        if (VRPoseReadPlayerTransform(
+                observedPlayer,
+                observedOrigin,
+                observedAngles) &&
+            std::isfinite(observedAngles.y))
+        {
+            frame.bodyYaw =
+                VRPoseNormalizeAngle(observedAngles.y);
+            frame.bodyYawValid = true;
+        }
+    }
 
     {
         std::lock_guard<std::mutex> lock(m_VRPoseMutex);
@@ -1685,10 +1749,12 @@ bool Game::ReceiveVRPosePayload(
         {
             s_lastLogMs[static_cast<std::size_t>(playerIndex)] = frame.receivedTickMs;
             Game::logMsg(
-                "[VR][WorldPose] receive player=%d seq=%u source=%s hmd=(%.1f %.1f %.1f) hmdRot=(%.1f %.1f %.1f) left=(%.1f %.1f %.1f) right=(%.1f %.1f %.1f)",
+                "[VR][WorldPose] receive player=%d seq=%u source=%s bodyYaw=%.1f valid=%d hmd=(%.1f %.1f %.1f) hmdRot=(%.1f %.1f %.1f) left=(%.1f %.1f %.1f) right=(%.1f %.1f %.1f)",
                 playerIndex,
                 static_cast<unsigned int>(sequence),
                 fromServer ? "server" : "local",
+                frame.bodyYaw,
+                frame.bodyYawValid ? 1 : 0,
                 frame.hmd.position.x,
                 frame.hmd.position.y,
                 frame.hmd.position.z,
@@ -1763,17 +1829,45 @@ bool Game::GetInterpolatedVRPose(
         fraction = std::clamp(numerator / denominator, 0.0f, 1.0f);
     }
 
+    VRTrackedPoseLocal previousHmd =
+        previous.valid ? previous.hmd : latest.hmd;
+    VRTrackedPoseLocal previousLeftHand =
+        previous.valid ? previous.leftHand : latest.leftHand;
+    VRTrackedPoseLocal previousRightHand =
+        previous.valid ? previous.rightHand : latest.rightHand;
+    if (previous.valid &&
+        previous.bodyYawValid &&
+        latest.bodyYawValid)
+    {
+        // Body-local packet coordinates are meaningful only in the yaw frame
+        // in which they were sampled. Rebase the older sample into the latest
+        // yaw frame before interpolation, otherwise a turn makes stationary
+        // controllers orbit the player origin and visibly breaks arm IK.
+        previousHmd = VRPoseRebaseTrackedPointYaw(
+            previous.hmd,
+            previous.bodyYaw,
+            latest.bodyYaw);
+        previousLeftHand = VRPoseRebaseTrackedPointYaw(
+            previous.leftHand,
+            previous.bodyYaw,
+            latest.bodyYaw);
+        previousRightHand = VRPoseRebaseTrackedPointYaw(
+            previous.rightHand,
+            previous.bodyYaw,
+            latest.bodyYaw);
+    }
+
     outPose = latest;
     outPose.hmd = VRPoseInterpolateTrackedPoint(
-        previous.valid ? previous.hmd : latest.hmd,
+        previousHmd,
         latest.hmd,
         fraction);
     outPose.leftHand = VRPoseInterpolateTrackedPoint(
-        previous.valid ? previous.leftHand : latest.leftHand,
+        previousLeftHand,
         latest.leftHand,
         fraction);
     outPose.rightHand = VRPoseInterpolateTrackedPoint(
-        previous.valid ? previous.rightHand : latest.rightHand,
+        previousRightHand,
         latest.rightHand,
         fraction);
     return true;

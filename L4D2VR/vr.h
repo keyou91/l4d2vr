@@ -86,12 +86,29 @@ struct VRWorldPoseTrackingSnapshot
 	bool hmdValid = false;
 	bool leftHandValid = false;
 	bool rightHandValid = false;
+	bool bodyYawValid = false;
+	float bodyYaw = 0.0f;
+	// Player body origin sampled in the same UpdateTracking pass as the absolute
+	// tracked points below. Reading it later in the pose publisher can observe a
+	// different locomotion tick and leak that phase error into all three local
+	// positions.
+	Vector referenceOrigin{};
 	Vector hmdPosition{};
 	QAngle hmdAngles{};
 	Vector leftHandPosition{};
 	QAngle leftHandAngles{};
 	Vector rightHandPosition{};
 	QAngle rightHandAngles{};
+};
+
+struct WorldModelVRPoseCalibrationSnapshot
+{
+	bool valid = false;
+	int stage = 0;
+	float progress = 0.0f;
+	Vector hmdLocal{};
+	Vector leftHandLocal{};
+	Vector rightHandLocal{};
 };
 
 struct SharedTextureHolder
@@ -1497,19 +1514,32 @@ public:
 	bool m_WorldModelVRPoseEnabled = true;
 	bool m_WorldModelVRPoseLocalThirdPerson = true;
 	bool m_WorldModelVRPoseDebugLog = false;
+	std::atomic<bool> m_WorldModelVRPoseCalibrationValid{ false };
+	std::atomic<bool> m_WorldModelVRPoseCalibrationRequested{ false };
+	std::atomic<int> m_WorldModelVRPoseCalibrationStage{ 0 };
+	std::atomic<float> m_WorldModelVRPoseCalibrationProgress{ 0.0f };
+	mutable std::mutex m_WorldModelVRPoseCalibrationMutex;
+	Vector m_WorldModelVRPoseCalibrationHmdLocal{};
+	Vector m_WorldModelVRPoseCalibrationLeftHandLocal{};
+	Vector m_WorldModelVRPoseCalibrationRightHandLocal{};
+	std::uint64_t m_WorldModelVRPoseCalibrationHoldStartMs = 0u;
+	Vector m_WorldModelVRPoseCalibrationCandidateHmdLocal{};
+	Vector m_WorldModelVRPoseCalibrationCandidateLeftHandLocal{};
+	Vector m_WorldModelVRPoseCalibrationCandidateRightHandLocal{};
+	Vector m_WorldModelVRPoseCalibrationSumHmdLocal{};
+	Vector m_WorldModelVRPoseCalibrationSumLeftHandLocal{};
+	Vector m_WorldModelVRPoseCalibrationSumRightHandLocal{};
+	std::uint32_t m_WorldModelVRPoseCalibrationSampleCount = 0u;
 	float m_WorldModelVRPoseSendHz = 25.0f;
 	float m_WorldModelVRPoseInterpolationMs = 50.0f;
 	float m_WorldModelVRPoseStaleAfterMs = 250.0f;
 	float m_WorldModelVRPoseBlendSeconds = 0.15f;
-	float m_WorldModelVRPoseTorsoWeight = 0.65f;
-	float m_WorldModelVRPoseMaxTorsoAngleDeg = 35.0f;
 	// Keep the rendered lower body at its previous yaw while the server-facing
 	// aim yaw remains inside this comfort cone. Shooting still uses the exact
 	// controller/HMD viewangles.
 	float m_WorldModelVRPoseBodyYawDeadzoneDeg = 35.0f;
 	// Visual-only catch-up speed after the aim yaw exits the comfort cone.
 	float m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond = 180.0f;
-	Vector m_WorldModelVRPoseOffhandRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	struct HiddenMaterialNameRule
 	{
 		std::string characterName;
@@ -3705,6 +3735,10 @@ public:
 	void PoseWaiterThreadMain();
 	bool ReadPoseWaiterSnapshot(vr::TrackedDevicePose_t* outPoses, uint32_t* outSeq = nullptr) const;
 	bool ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot) const;
+	void BeginWorldModelVRPoseCalibration();
+	void UpdateWorldModelVRPoseCalibration(const VRWorldPoseTrackingSnapshot& snapshot);
+	bool GetWorldModelVRPoseCalibrationSnapshot(
+		WorldModelVRPoseCalibrationSnapshot& outSnapshot) const;
 	// Maps the project's gameplay hand through the LeftHanded setting.
 	bool IsGameplayHandLeftPhysical(bool leftHand) const;
 	// leftHand selects the physical OpenVR controller role.

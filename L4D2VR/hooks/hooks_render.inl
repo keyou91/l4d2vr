@@ -3187,6 +3187,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	// through both eyes, scope/rear-mirror work and the completion tail marker.
 	sourceRenderExecutionScope.QueueHeadAcquire();
 	const auto stereoSceneStartTime = std::chrono::steady_clock::now();
+	// m_RenderFrameSeq is a view-snapshot sequence and can remain unchanged
+	// while physical VR tracking and stereo rendering continue. Start a fresh
+	// weapon-bone cache lifetime for every actual stereo scene so old hand poses
+	// can never be replayed across rendered frames.
+	HooksWorldPoseBeginStereoFrame();
 	{
 		renderEyeScene(1, m_VR->m_LeftEyeTexture, leftEyeView, hudLeft, true);
 		if (desktopMirrorHidePluginOverlaysSingleCopyActive && m_VR->m_DesktopMirrorEye == 0)

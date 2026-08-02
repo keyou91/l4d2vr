@@ -12,7 +12,13 @@ $ozzLibRoot = Join-Path $ozzInstallRoot "lib"
 $tempDir = Join-Path $env:TEMP "l4d2vr-vr-hands-dependencies"
 
 $cgltfCommit = "85cd62382dfea638278962690cf515023f33ed00"
-$ozzVersion = "0.16.0"
+$ozzVersion = "0.17.0"
+# Pin the annotated 0.17.0 tag to its peeled commit so a moved tag cannot
+# silently change the third-party code used by release builds.
+$ozzCommit = "744eb9d99f606eda849acb0b1204f7a3dc20bca1"
+$ozzLicenseFile = Join-Path $ozzInstallRoot "LICENSE.md"
+$ozzVersionFile = Join-Path $ozzInstallRoot "VERSION.txt"
+$ozzVersionMarker = "ozz-animation $ozzVersion`ncommit $ozzCommit"
 $requiredOzzLibraries = @(
     "ozz_animation.lib",
     "ozz_animation_offline.lib",
@@ -21,6 +27,7 @@ $requiredOzzLibraries = @(
 $requiredOzzHeaders = @(
     "ozz\animation\runtime\skeleton.h",
     "ozz\animation\runtime\local_to_model_job.h",
+    "ozz\animation\runtime\ik_two_bone_job.h",
     "ozz\animation\offline\raw_skeleton.h",
     "ozz\animation\offline\skeleton_builder.h",
     "ozz\base\maths\soa_transform.h",
@@ -52,6 +59,18 @@ function Copy-RequiredLibraries([string]$sourceDir, [string]$destinationDir) {
 }
 
 function Test-OzzInstallReady {
+    if (-not (Test-Path $ozzLicenseFile)) {
+        return $false
+    }
+
+    if (-not (Test-Path $ozzVersionFile)) {
+        return $false
+    }
+
+    if ((Get-Content -Raw -Path $ozzVersionFile).Trim() -ne $ozzVersionMarker) {
+        return $false
+    }
+
     foreach ($header in $requiredOzzHeaders) {
         if (-not (Test-Path (Join-Path $ozzIncludeDir $header))) {
             return $false
@@ -117,25 +136,38 @@ Import-LegacyInstallLayout
 if (-not (Test-OzzInstallReady)) {
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
-    if (-not (Test-Path (Join-Path $ozzSourceDir "CMakeLists.txt"))) {
-        Write-Host "Downloading ozz-animation $ozzVersion..."
-        $ozzZip = Join-Path $tempDir "ozz-animation-$ozzVersion.zip"
-        $ozzExtract = Join-Path $tempDir "ozz-animation-extract"
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzExtract
-        Invoke-WebRequest `
-            -Uri "https://github.com/guillaumeblanc/ozz-animation/archive/refs/tags/$ozzVersion.zip" `
-            -OutFile $ozzZip
-        Expand-Archive -Force -Path $ozzZip -DestinationPath $ozzExtract
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzSourceDir
-        Move-Item -Path (Join-Path $ozzExtract "ozz-animation-$ozzVersion") -Destination $ozzSourceDir
+    Write-Host "Downloading ozz-animation $ozzVersion ($ozzCommit)..."
+    $ozzZip = Join-Path $tempDir "ozz-animation-$ozzCommit.zip"
+    $ozzExtract = Join-Path $tempDir "ozz-animation-extract"
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzExtract
+    Invoke-WebRequest `
+        -Uri "https://github.com/guillaumeblanc/ozz-animation/archive/$ozzCommit.zip" `
+        -OutFile $ozzZip
+    Expand-Archive -Force -Path $ozzZip -DestinationPath $ozzExtract
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzSourceDir
+    Move-Item -Path (Join-Path $ozzExtract "ozz-animation-$ozzCommit") -Destination $ozzSourceDir
+
+    $ozzSourceLicense = Join-Path $ozzSourceDir "LICENSE.md"
+    if (-not (Test-Path $ozzSourceLicense)) {
+        throw "ozz-animation $ozzVersion source archive does not contain LICENSE.md."
     }
+
+    # Clear the old compact package before installing a different pinned
+    # version, otherwise headers removed upstream could survive an upgrade.
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzIncludeDir
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzLibRoot
+    New-Item -ItemType Directory -Force -Path $ozzIncludeDir, $ozzLibRoot | Out-Null
 
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ozzBuildDir
     New-Item -ItemType Directory -Force -Path $ozzBuildDir | Out-Null
 
     Write-Host "Configuring ozz-animation Win32 static libraries..."
-    cmake -S $ozzSourceDir -B $ozzBuildDir -A Win32 `
+    cmake -S $ozzSourceDir -B $ozzBuildDir -A Win32 -T v142 `
         -DBUILD_SHARED_LIBS=OFF `
+        -DCMAKE_CXX_STANDARD=17 `
+        -DCMAKE_CXX_STANDARD_REQUIRED=ON `
+        -DCMAKE_CXX_EXTENSIONS=OFF `
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
         -Dozz_build_tools=OFF `
         -Dozz_build_fbx=OFF `
         -Dozz_build_gltf=OFF `
@@ -145,17 +177,30 @@ if (-not (Test-OzzInstallReady)) {
         -Dozz_build_tests=OFF `
         -Dozz_build_postfix=OFF `
         -Dozz_build_msvc_rt_dll=ON
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to configure ozz-animation $ozzVersion Win32/v142."
+    }
 
     foreach ($configuration in @("Debug", "Release")) {
         Write-Host "Building and installing ozz-animation $configuration Win32..."
         $stageDir = Join-Path $tempDir "ozz-animation-install-$configuration"
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stageDir
         cmake --build $ozzBuildDir --config $configuration -- /m
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build ozz-animation $ozzVersion $configuration Win32/v142."
+        }
+
         cmake --install $ozzBuildDir --config $configuration --prefix $stageDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install ozz-animation $ozzVersion $configuration Win32/v142."
+        }
 
         Copy-DirectoryContents (Join-Path $stageDir "include") $ozzIncludeDir
         Copy-RequiredLibraries (Join-Path $stageDir "lib") (Join-Path $ozzLibRoot $configuration)
     }
+
+    Copy-Item -Force -Path $ozzSourceLicense -Destination $ozzLicenseFile
+    Set-Content -NoNewline -Encoding ASCII -Path $ozzVersionFile -Value $ozzVersionMarker
 }
 
 if (-not (Test-OzzInstallReady)) {
@@ -164,5 +209,5 @@ if (-not (Test-OzzInstallReady)) {
 
 Remove-UnneededOzzFiles
 
-Write-Host "VR hand dependencies are ready. Only compact installed headers and static libraries were kept."
+Write-Host "VR hand dependencies are ready. ozz-animation $ozzVersion ($ozzCommit), its license, installed headers, and static libraries were kept."
 Write-Host "Rebuild L4D2VR Win32."

@@ -279,6 +279,179 @@ bool VR::ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot)
     return outSnapshot.initialized;
 }
 
+void VR::BeginWorldModelVRPoseCalibration()
+{
+    std::lock_guard<std::mutex> lock(m_WorldModelVRPoseCalibrationMutex);
+    m_WorldModelVRPoseCalibrationValid.store(false, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationRequested.store(true, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationStage.store(1, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationProgress.store(0.0f, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationHoldStartMs = 0u;
+    m_WorldModelVRPoseCalibrationCandidateHmdLocal = Vector{};
+    m_WorldModelVRPoseCalibrationCandidateLeftHandLocal = Vector{};
+    m_WorldModelVRPoseCalibrationCandidateRightHandLocal = Vector{};
+    m_WorldModelVRPoseCalibrationSumHmdLocal = Vector{};
+    m_WorldModelVRPoseCalibrationSumLeftHandLocal = Vector{};
+    m_WorldModelVRPoseCalibrationSumRightHandLocal = Vector{};
+    m_WorldModelVRPoseCalibrationSampleCount = 0u;
+}
+
+bool VR::GetWorldModelVRPoseCalibrationSnapshot(
+    WorldModelVRPoseCalibrationSnapshot& outSnapshot) const
+{
+    std::lock_guard<std::mutex> lock(m_WorldModelVRPoseCalibrationMutex);
+    outSnapshot.valid = m_WorldModelVRPoseCalibrationValid.load(
+        std::memory_order_acquire);
+    outSnapshot.stage = m_WorldModelVRPoseCalibrationStage.load(
+        std::memory_order_acquire);
+    outSnapshot.progress = m_WorldModelVRPoseCalibrationProgress.load(
+        std::memory_order_acquire);
+    outSnapshot.hmdLocal = m_WorldModelVRPoseCalibrationHmdLocal;
+    outSnapshot.leftHandLocal = m_WorldModelVRPoseCalibrationLeftHandLocal;
+    outSnapshot.rightHandLocal = m_WorldModelVRPoseCalibrationRightHandLocal;
+    return outSnapshot.valid;
+}
+
+void VR::UpdateWorldModelVRPoseCalibration(
+    const VRWorldPoseTrackingSnapshot& snapshot)
+{
+    if (!m_WorldModelVRPoseCalibrationRequested.load(
+            std::memory_order_acquire))
+    {
+        return;
+    }
+    if (!snapshot.initialized ||
+        !snapshot.hmdValid ||
+        !snapshot.leftHandValid ||
+        !snapshot.rightHandValid ||
+        !snapshot.bodyYawValid)
+    {
+        m_WorldModelVRPoseCalibrationStage.store(1, std::memory_order_release);
+        m_WorldModelVRPoseCalibrationProgress.store(0.0f, std::memory_order_release);
+        return;
+    }
+
+    Vector forward{};
+    Vector right{};
+    Vector up{};
+    QAngle::AngleVectors(
+        QAngle(0.0f, snapshot.bodyYaw, 0.0f),
+        &forward,
+        &right,
+        &up);
+    auto toBodyLocal = [&](const Vector& world)
+        {
+            const Vector delta = world - snapshot.referenceOrigin;
+            return Vector(
+                DotProduct(delta, forward),
+                DotProduct(delta, right),
+                DotProduct(delta, up));
+        };
+    const Vector hmdLocal = toBodyLocal(snapshot.hmdPosition);
+    const Vector leftLocal = toBodyLocal(snapshot.leftHandPosition);
+    const Vector rightLocal = toBodyLocal(snapshot.rightHandPosition);
+    const Vector leftFromHmd = leftLocal - hmdLocal;
+    const Vector rightFromHmd = rightLocal - hmdLocal;
+
+    const bool finite =
+        std::isfinite(hmdLocal.x) && std::isfinite(hmdLocal.y) &&
+        std::isfinite(hmdLocal.z) && std::isfinite(leftLocal.x) &&
+        std::isfinite(leftLocal.y) && std::isfinite(leftLocal.z) &&
+        std::isfinite(rightLocal.x) && std::isfinite(rightLocal.y) &&
+        std::isfinite(rightLocal.z);
+    const bool tPose =
+        finite &&
+        leftFromHmd.y <= -14.0f &&
+        rightFromHmd.y >= 14.0f &&
+        (rightFromHmd.y - leftFromHmd.y) >= 34.0f &&
+        std::fabs(leftFromHmd.z - rightFromHmd.z) <= 7.0f &&
+        leftFromHmd.z >= -18.0f && leftFromHmd.z <= 1.0f &&
+        rightFromHmd.z >= -18.0f && rightFromHmd.z <= 1.0f &&
+        std::fabs(leftFromHmd.x - rightFromHmd.x) <= 10.0f &&
+        std::fabs(leftFromHmd.y) > std::fabs(leftFromHmd.x) * 1.15f &&
+        std::fabs(rightFromHmd.y) > std::fabs(rightFromHmd.x) * 1.15f;
+
+    std::lock_guard<std::mutex> lock(m_WorldModelVRPoseCalibrationMutex);
+    if (!m_WorldModelVRPoseCalibrationRequested.load(
+            std::memory_order_relaxed))
+    {
+        return;
+    }
+    if (!tPose)
+    {
+        m_WorldModelVRPoseCalibrationHoldStartMs = 0u;
+        m_WorldModelVRPoseCalibrationSampleCount = 0u;
+        m_WorldModelVRPoseCalibrationSumHmdLocal = Vector{};
+        m_WorldModelVRPoseCalibrationSumLeftHandLocal = Vector{};
+        m_WorldModelVRPoseCalibrationSumRightHandLocal = Vector{};
+        m_WorldModelVRPoseCalibrationStage.store(1, std::memory_order_release);
+        m_WorldModelVRPoseCalibrationProgress.store(0.0f, std::memory_order_release);
+        return;
+    }
+
+    const std::uint64_t now = static_cast<std::uint64_t>(GetTickCount64());
+    if (m_WorldModelVRPoseCalibrationHoldStartMs == 0u)
+    {
+        m_WorldModelVRPoseCalibrationHoldStartMs = now;
+        m_WorldModelVRPoseCalibrationCandidateHmdLocal = hmdLocal;
+        m_WorldModelVRPoseCalibrationCandidateLeftHandLocal = leftLocal;
+        m_WorldModelVRPoseCalibrationCandidateRightHandLocal = rightLocal;
+    }
+
+    const Vector candidateLeftFromHmd =
+        m_WorldModelVRPoseCalibrationCandidateLeftHandLocal -
+        m_WorldModelVRPoseCalibrationCandidateHmdLocal;
+    const Vector candidateRightFromHmd =
+        m_WorldModelVRPoseCalibrationCandidateRightHandLocal -
+        m_WorldModelVRPoseCalibrationCandidateHmdLocal;
+    constexpr float kMaximumTPoseDrift = 4.0f;
+    if ((leftFromHmd - candidateLeftFromHmd).Length() > kMaximumTPoseDrift ||
+        (rightFromHmd - candidateRightFromHmd).Length() > kMaximumTPoseDrift)
+    {
+        m_WorldModelVRPoseCalibrationHoldStartMs = now;
+        m_WorldModelVRPoseCalibrationCandidateHmdLocal = hmdLocal;
+        m_WorldModelVRPoseCalibrationCandidateLeftHandLocal = leftLocal;
+        m_WorldModelVRPoseCalibrationCandidateRightHandLocal = rightLocal;
+        m_WorldModelVRPoseCalibrationSampleCount = 0u;
+        m_WorldModelVRPoseCalibrationSumHmdLocal = Vector{};
+        m_WorldModelVRPoseCalibrationSumLeftHandLocal = Vector{};
+        m_WorldModelVRPoseCalibrationSumRightHandLocal = Vector{};
+    }
+
+    m_WorldModelVRPoseCalibrationSumHmdLocal += hmdLocal;
+    m_WorldModelVRPoseCalibrationSumLeftHandLocal += leftLocal;
+    m_WorldModelVRPoseCalibrationSumRightHandLocal += rightLocal;
+    ++m_WorldModelVRPoseCalibrationSampleCount;
+    constexpr std::uint64_t kCalibrationHoldMs = 5000u;
+    const std::uint64_t heldMs = now >= m_WorldModelVRPoseCalibrationHoldStartMs
+        ? now - m_WorldModelVRPoseCalibrationHoldStartMs
+        : 0u;
+    const float progress = std::clamp(
+        static_cast<float>(heldMs) / static_cast<float>(kCalibrationHoldMs),
+        0.0f,
+        1.0f);
+    m_WorldModelVRPoseCalibrationStage.store(2, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationProgress.store(progress, std::memory_order_release);
+    if (heldMs < kCalibrationHoldMs ||
+        m_WorldModelVRPoseCalibrationSampleCount == 0u)
+    {
+        return;
+    }
+
+    const float inverseSamples =
+        1.0f / static_cast<float>(m_WorldModelVRPoseCalibrationSampleCount);
+    m_WorldModelVRPoseCalibrationHmdLocal =
+        m_WorldModelVRPoseCalibrationSumHmdLocal * inverseSamples;
+    m_WorldModelVRPoseCalibrationLeftHandLocal =
+        m_WorldModelVRPoseCalibrationSumLeftHandLocal * inverseSamples;
+    m_WorldModelVRPoseCalibrationRightHandLocal =
+        m_WorldModelVRPoseCalibrationSumRightHandLocal * inverseSamples;
+    m_WorldModelVRPoseCalibrationValid.store(true, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationRequested.store(false, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationStage.store(3, std::memory_order_release);
+    m_WorldModelVRPoseCalibrationProgress.store(1.0f, std::memory_order_release);
+}
+
 void VR::UpdateTracking()
 {
     GetPoses();
@@ -1285,6 +1458,15 @@ void VR::UpdateTracking()
             physicalRightIndex < vr::k_unMaxTrackedDeviceCount &&
             m_Poses[physicalRightIndex].bPoseIsValid;
 
+		// World-model poses are player-relative, not camera-anchor-relative. The
+		// camera anchor contains both roomscale recentering and HeightOffset; using
+		// any of its axes here makes a view turn rotate that anchor error into the
+		// hands and can put the IK target a full arm length away. Capture the live
+		// player origin in this same locked tracking sample instead. This retains
+		// locomotion phase coherence without changing the coordinate space.
+		snapshot.referenceOrigin = localPlayer->GetAbsOrigin();
+		snapshot.bodyYaw = localPlayer->GetAbsAngles().y;
+		snapshot.bodyYawValid = std::isfinite(snapshot.bodyYaw);
         snapshot.hmdPosition = m_HmdPosAbs;
         snapshot.hmdAngles = m_HmdAngAbs;
         snapshot.leftHandPosition = m_LeftHanded
@@ -1300,8 +1482,11 @@ void VR::UpdateTracking()
             ? m_LeftControllerTrackedAngAbs
             : m_RightControllerTrackedAngAbs;
 
-        std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
-        m_WorldPoseTrackingSnapshot = snapshot;
+        {
+            std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+            m_WorldPoseTrackingSnapshot = snapshot;
+        }
+        UpdateWorldModelVRPoseCalibration(snapshot);
     }
 
     QAngle::AngleVectors(leftControllerAngSmoothed, &m_LeftControllerForward, &m_LeftControllerRight, &m_LeftControllerUp);

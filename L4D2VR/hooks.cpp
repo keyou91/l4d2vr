@@ -10,6 +10,8 @@
 #include "offsets.h"
 #include "vr_hands/vr_hand_math.h"
 #include "vr_hands/vr_hand_vm_pose.h"
+#include "ozz/animation/runtime/ik_two_bone_job.h"
+#include "ozz/base/maths/simd_quaternion.h"
 #include "sdk/ivdebugoverlay.h"
 #include <iostream>
 #include <cstdint>
@@ -44,6 +46,7 @@ namespace
     bool HooksWorldPoseEnsureWeaponSetupBonesHookMainThread(
         VR* vr,
         Game* game);
+    void HooksWorldPoseBeginStereoFrame();
 
     // The local player is hidden in first person at multiple renderable stages:
     // ShouldDraw can unregister it, GetModel can return null, and the player
