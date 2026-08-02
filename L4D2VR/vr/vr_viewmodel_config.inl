@@ -3963,7 +3963,13 @@ void VR::ApplyShadowSettingsIfNeeded(bool forceApply)
     applyInt("r_shadowrendertotexture", m_ShadowCvarRenderToTexture);
     applyInt("r_flashlightdepthtexture", m_ShadowCvarFlashlightDepthTexture);
     applyInt("r_flashlightdepthres", m_ShadowCvarFlashlightDepthRes);
-    applyInt("r_shadow_half_update_rate", m_ShadowCvarHalfUpdateRate);
+    // Source's half-rate dirty-shadow scheduler advances once per game frame, not
+    // once per stereo view. In queued VR the second eye can otherwise consume the
+    // half-updated simple-shadow set and turn its full-UV quads into opaque blocks.
+    // Keep the inexpensive simple-shadow profile, but update its dirty set every
+    // frame whenever multicore rendering is active.
+    const bool queuedRendering = m_Game->GetMatQueueMode() != 0;
+    applyInt("r_shadow_half_update_rate", queuedRendering ? 0 : m_ShadowCvarHalfUpdateRate);
     applyInt("r_shadowmaxrendered", m_ShadowCvarMaxRendered);
     if (m_Game->SetConVarFloat("cl_max_shadow_renderable_dist", m_ShadowCvarMaxRenderableDist))
     {

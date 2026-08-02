@@ -565,7 +565,10 @@ namespace
         snapshot.valid = true;
     }
 
-    inline void RestoreFocusShadowCvars(Game* game, const FocusShadowCvarSnapshot& snapshot)
+    inline void RestoreFocusShadowCvars(
+        Game* game,
+        const FocusShadowCvarSnapshot& snapshot,
+        bool queuedRendering)
     {
         if (!game || !snapshot.valid)
             return;
@@ -574,7 +577,10 @@ namespace
         game->SetConVarInt("r_shadowrendertotexture", snapshot.renderToTexture);
         game->SetConVarInt("r_flashlightdepthtexture", snapshot.flashlightDepthTexture);
         game->SetConVarInt("r_flashlightdepthres", snapshot.flashlightDepthRes);
-        game->SetConVarInt("r_shadow_half_update_rate", snapshot.halfUpdateRate);
+        // Queued stereo consumes the simple-shadow dirty list once per eye, while
+        // Source's half-rate scheduler advances once per game frame. Never let a
+        // focus restore re-enable that mismatched cadence.
+        game->SetConVarInt("r_shadow_half_update_rate", queuedRendering ? 0 : snapshot.halfUpdateRate);
         game->SetConVarInt("r_shadowmaxrendered", snapshot.maxRendered);
     }
 
@@ -638,7 +644,10 @@ namespace
             state.rebuildRenderToTexture = false;
         }
 
-        RestoreFocusShadowCvars(vr->m_Game, state.shadow);
+        RestoreFocusShadowCvars(
+            vr->m_Game,
+            state.shadow,
+            vr->m_Game->GetMatQueueMode() != 0);
         --state.restoreFrames;
     }
 
@@ -1672,6 +1681,9 @@ void VR::Update()
     static int s_LastObservedQueueMode = -999;
     if (s_LastObservedQueueMode != queueModeAfterAuto)
     {
+        // The queued shadow profile hardens half-rate updates differently from the
+        // single-threaded profile, so a live queue-mode transition must reapply it.
+        m_ShadowSettingsDirty.store(true, std::memory_order_release);
         const uint32_t completedFrameId = m_RenderCompletedFrameId.load(std::memory_order_acquire);
         if (queueModeAfterAuto != 0 && m_CreatedVRTextures.load(std::memory_order_acquire))
         {
