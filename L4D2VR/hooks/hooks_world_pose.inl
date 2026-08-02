@@ -82,7 +82,6 @@
         vr_vm_stabilize::Mat3x4 headReferenceLocal{};
         bool visualBodyYawValid = false;
         bool visualBodyYawTurning = false;
-        bool handRetargetScaleLogged = false;
         float visualBodyYaw = 0.0f;
         std::uint64_t visualBodyYawTickMs = 0u;
         void Reset(const C_BaseEntity* newEntity, const uint8_t* newStudioHdr)
@@ -4143,83 +4142,6 @@
         return true;
     }
 
-    inline bool HooksWorldPoseComputeCalibratedHandRetargetScale(
-        const HooksWorldPoseBoneLayout& layout,
-        const WorldModelVRPoseCalibrationSnapshot& calibration,
-        float& outScale,
-        float& outTrackedSpan,
-        float& outModelSpan)
-    {
-        outScale = 1.0f;
-        outTrackedSpan = 0.0f;
-        outModelSpan = 0.0f;
-        if (!calibration.valid ||
-            !layout.left.bindHandFromHeadValid ||
-            !layout.right.bindHandFromHeadValid)
-        {
-            return false;
-        }
-
-        // Both measurements are full wrist-to-wrist T-pose spans, so shoulder
-        // width is included on both sides of the ratio. This avoids guessing a
-        // shoulder position from the HMD and works with differently sized
-        // workshop survivor skeletons.
-        outTrackedSpan =
-            (calibration.rightHandLocal -
-             calibration.leftHandLocal).Length();
-        outModelSpan =
-            (layout.right.bindHandFromHeadModel -
-             layout.left.bindHandFromHeadModel).Length();
-        if (!std::isfinite(outTrackedSpan) ||
-            !std::isfinite(outModelSpan) ||
-            outTrackedSpan <= 8.0f ||
-            outModelSpan <= 8.0f)
-        {
-            return false;
-        }
-
-        // Never amplify physical controller travel. A large model can still
-        // use 1:1 tracking, while a smaller model compresses the user's motion
-        // to its calibrated proportions.
-        outScale = std::clamp(
-            outModelSpan / outTrackedSpan,
-            0.50f,
-            1.00f);
-        return std::isfinite(outScale);
-    }
-
-    inline bool HooksWorldPoseApplyHandRetargetScale(
-        const vr_vm_stabilize::Mat3x4& hmdWorld,
-        const vr_vm_stabilize::Mat3x4& controllerWorld,
-        float scale,
-        vr_vm_stabilize::Mat3x4& handTarget)
-    {
-        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(hmdWorld) ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(controllerWorld) ||
-            !HooksNativeViewmodelHandsOnlyMatrixFinite(handTarget) ||
-            !std::isfinite(scale) ||
-            scale <= 0.0f ||
-            scale > 1.0f)
-        {
-            return false;
-        }
-
-        const Vector hmdOrigin =
-            vr_vm_stabilize::GetOrigin(hmdWorld);
-        const Vector controllerOrigin =
-            vr_vm_stabilize::GetOrigin(controllerWorld);
-        const Vector targetWorld =
-            hmdOrigin +
-            (controllerOrigin - hmdOrigin) * scale;
-        if (!HooksNativeViewmodelHandsOnlyVectorFinite(targetWorld))
-            return false;
-
-        handTarget.m[0][3] = targetWorld.x;
-        handTarget.m[1][3] = targetWorld.y;
-        handTarget.m[2][3] = targetWorld.z;
-        return true;
-    }
-
     inline ozz::math::Float4x4 HooksWorldPoseToOzzMatrix(
         const vr_vm_stabilize::Mat3x4& source)
     {
@@ -5561,46 +5483,6 @@
                 bones[layout->right.hand],
                 rightHandTarget);
 
-        float handRetargetScale = 1.0f;
-        float calibratedTrackedSpan = 0.0f;
-        float calibratedModelSpan = 0.0f;
-        const bool handRetargetScaleValid =
-            localPlayer &&
-            hmdTransformValid &&
-            HooksWorldPoseComputeCalibratedHandRetargetScale(
-                *layout,
-                localCalibration,
-                handRetargetScale,
-                calibratedTrackedSpan,
-                calibratedModelSpan);
-        if (handRetargetScaleValid)
-        {
-            if (leftPoseValid)
-            {
-                HooksWorldPoseApplyHandRetargetScale(
-                    hmdWorld,
-                    leftControllerWorld,
-                    handRetargetScale,
-                    leftHandTarget);
-            }
-            if (rightPoseValid)
-            {
-                HooksWorldPoseApplyHandRetargetScale(
-                    hmdWorld,
-                    rightControllerWorld,
-                    handRetargetScale,
-                    rightHandTarget);
-            }
-            if (!calibration.handRetargetScaleLogged)
-            {
-                calibration.handRetargetScaleLogged = true;
-                Game::logMsg(
-                    "[VR][WorldPose] calibrated hand retarget span tracked=%.2f model=%.2f scale=%.3f",
-                    calibratedTrackedSpan,
-                    calibratedModelSpan,
-                    handRetargetScale);
-            }
-        }
         bool weaponGripRotationValid = false;
         if (rightPoseValid)
         {
