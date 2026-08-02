@@ -78,8 +78,12 @@
         Vector rightGripShotImpulseAxis{};
         bool neckReferenceLocalValid = false;
         bool headReferenceLocalValid = false;
+        bool leftArmRootBodyReferenceValid = false;
+        bool rightArmRootBodyReferenceValid = false;
         vr_vm_stabilize::Mat3x4 neckReferenceLocal{};
         vr_vm_stabilize::Mat3x4 headReferenceLocal{};
+        vr_vm_stabilize::Mat3x4 leftArmRootBodyReference{};
+        vr_vm_stabilize::Mat3x4 rightArmRootBodyReference{};
         bool visualBodyYawValid = false;
         bool visualBodyYawTurning = false;
         float visualBodyYaw = 0.0f;
@@ -4077,6 +4081,144 @@
             bones);
     }
 
+    inline bool HooksWorldPoseEnsureArmRootBodyReference(
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        const vr_vm_stabilize::Mat3x4& bodyFrame,
+        const vr_vm_stabilize::Mat3x4* bones,
+        bool& referenceValid,
+        vr_vm_stabilize::Mat3x4& reference)
+    {
+        if (referenceValid)
+            return true;
+        if (!bones ||
+            arm.clavicle < 0 ||
+            arm.clavicle >= layout.numBones ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyFrame))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 armRootRigid{};
+        vr_vm_stabilize::Mat3x4 inverseBody{};
+        if (!HooksWorldPoseBuildRigidBoneTransform(
+                bones[arm.clavicle],
+                armRootRigid) ||
+            !vr_vm_stabilize::InvertAffine(
+                bodyFrame,
+                inverseBody))
+        {
+            return false;
+        }
+        vr_vm_stabilize::Mul(
+            inverseBody,
+            armRootRigid,
+            reference);
+        referenceValid =
+            HooksNativeViewmodelHandsOnlyMatrixFinite(reference);
+        return referenceValid;
+    }
+
+    inline bool HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        const vr_vm_stabilize::Mat3x4& bodyFrame,
+        const vr_vm_stabilize::Mat3x4& bodyReference,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!bones ||
+            arm.clavicle < 0 ||
+            arm.clavicle >= layout.numBones ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyFrame) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(bodyReference))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 stableRoot{};
+        vr_vm_stabilize::Mat3x4 currentRoot{};
+        vr_vm_stabilize::Mat3x4 inverseCurrent{};
+        vr_vm_stabilize::Mat3x4 delta{};
+        vr_vm_stabilize::Mul(
+            bodyFrame,
+            bodyReference,
+            stableRoot);
+        if (!HooksWorldPoseBuildRigidBoneTransform(
+                bones[arm.clavicle],
+                currentRoot))
+        {
+            return false;
+        }
+
+        // Body animation remains visible, but it is not allowed to drive the
+        // arm solver at full amplitude. Preserve one third of horizontal
+        // shoulder sway. Ignore breathing/bob vertically, while retaining a
+        // genuine crouch or stand transition so the sleeve stays attached.
+        Vector bodyUp(
+            bodyFrame.m[0][2],
+            bodyFrame.m[1][2],
+            bodyFrame.m[2][2]);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(bodyUp) ||
+            VectorNormalize(bodyUp) == 0.0f)
+        {
+            return false;
+        }
+        const Vector stableOrigin =
+            vr_vm_stabilize::GetOrigin(stableRoot);
+        const Vector currentOrigin =
+            vr_vm_stabilize::GetOrigin(currentRoot);
+        const Vector animatedDelta =
+            currentOrigin - stableOrigin;
+        const float verticalDelta =
+            DotProduct(animatedDelta, bodyUp);
+        const Vector horizontalDelta =
+            animatedDelta - bodyUp * verticalDelta;
+        constexpr float kArmBodyAnimationHorizontalGain =
+            1.0f / 3.0f;
+        // Fade stance height back in continuously. A hard threshold here
+        // makes the complete clavicle branch alternate between two origins
+        // when a crouch transition hovers around the cutoff.
+        constexpr float kVerticalBobDeadzone = 2.0f;
+        constexpr float kFullStanceVertical = 8.0f;
+        const float verticalMagnitude = std::fabs(verticalDelta);
+        const float verticalRetention = std::clamp(
+            (verticalMagnitude - kVerticalBobDeadzone) /
+                (kFullStanceVertical - kVerticalBobDeadzone),
+            0.0f,
+            1.0f);
+        const float retainedVertical =
+            verticalDelta *
+            verticalRetention *
+            verticalRetention *
+            (3.0f - 2.0f * verticalRetention);
+        const Vector stabilizedOrigin =
+            stableOrigin +
+            horizontalDelta *
+                kArmBodyAnimationHorizontalGain +
+            bodyUp * retainedVertical;
+        stableRoot.m[0][3] = stabilizedOrigin.x;
+        stableRoot.m[1][3] = stabilizedOrigin.y;
+        stableRoot.m[2][3] = stabilizedOrigin.z;
+
+        if (!vr_vm_stabilize::InvertAffine(
+                currentRoot,
+                inverseCurrent))
+        {
+            return false;
+        }
+        vr_vm_stabilize::Mul(
+            stableRoot,
+            inverseCurrent,
+            delta);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(delta))
+            return false;
+        return HooksWorldPoseApplyDeltaToBranch(
+            layout,
+            arm.clavicle,
+            delta,
+            bones);
+    }
+
     inline bool HooksWorldPoseRestoreHeadChain(
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseCalibration& calibration,
@@ -5391,6 +5533,18 @@
                 appliedHmdLocalDelta -=
                     nativeHeadCompensation;
             }
+
+            // Room-scale leaning is only a subtle upper-body layer. Never let
+            // physical HMD height translate the torso vertically; crouch and
+            // jump height remain owned by Source's body animation. Horizontal
+            // lean is deliberately reduced to one third of tracked travel.
+            constexpr float kUpperBodyHorizontalTrackingGain =
+                1.0f / 3.0f;
+            appliedHmdLocalDelta.x *=
+                kUpperBodyHorizontalTrackingGain;
+            appliedHmdLocalDelta.y *=
+                kUpperBodyHorizontalTrackingGain;
+            appliedHmdLocalDelta.z = 0.0f;
             const float horizontalLength =
                 std::sqrt(
                     appliedHmdLocalDelta.x *
@@ -5400,7 +5554,7 @@
             // Saturate continuously at the anatomical limit. Do not rebase
             // the reference while the user remains outside it: rebasing makes
             // the torso snap to zero and repeatedly oscillate at the boundary.
-            constexpr float kMaximumHmdHorizontalOffset = 3.0f;
+            constexpr float kMaximumHmdHorizontalOffset = 1.0f;
             if (std::isfinite(horizontalLength) &&
                 horizontalLength >
                     kMaximumHmdHorizontalOffset)
@@ -5411,11 +5565,7 @@
                 appliedHmdLocalDelta.x *= scale;
                 appliedHmdLocalDelta.y *= scale;
             }
-            appliedHmdLocalDelta.z =
-                std::clamp(
-                    appliedHmdLocalDelta.z,
-                    -2.0f,
-                    2.0f);
+            appliedHmdLocalDelta.z = 0.0f;
 
             Vector bodyForwardForHead{};
             Vector bodyRightForHead{};
@@ -5600,6 +5750,58 @@
             &bodyForward,
             &bodyRight,
             &bodyUp);
+
+        vr_vm_stabilize::Mat3x4 armBodyFrame{};
+        const Vector armBodyFrameOrigin =
+            info.origin +
+            appliedHmdWorldDelta * trackingWeight;
+        vr_vm_stabilize::BuildFromOrgAngles(
+            armBodyFrameOrigin,
+            QAngle(0.0f, appliedBodyYaw, 0.0f),
+            armBodyFrame);
+        const bool leftArmRootReferenceReady =
+            leftPoseValid &&
+            HooksWorldPoseEnsureArmRootBodyReference(
+                *layout,
+                layout->left,
+                armBodyFrame,
+                bones,
+                calibration.leftArmRootBodyReferenceValid,
+                calibration.leftArmRootBodyReference);
+        const bool rightArmRootReferenceReady =
+            rightPoseValid &&
+            HooksWorldPoseEnsureArmRootBodyReference(
+                *layout,
+                layout->right,
+                armBodyFrame,
+                bones,
+                calibration.rightArmRootBodyReferenceValid,
+                calibration.rightArmRootBodyReference);
+        bool leftArmRootStabilized = false;
+        bool rightArmRootStabilized = false;
+        if (leftArmRootReferenceReady)
+        {
+            leftArmRootStabilized =
+                HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+                    *layout,
+                    layout->left,
+                    armBodyFrame,
+                    calibration.leftArmRootBodyReference,
+                    bones);
+        }
+        if (rightArmRootReferenceReady)
+        {
+            rightArmRootStabilized =
+                HooksWorldPoseStabilizeArmRootAgainstBodyAnimation(
+                    *layout,
+                    layout->right,
+                    armBodyFrame,
+                    calibration.rightArmRootBodyReference,
+                    bones);
+        }
+        changed = leftArmRootStabilized ||
+            rightArmRootStabilized ||
+            changed;
 
         // Calibration validates a coherent HMD/controller body scale; it must
         // not replace the live wrist goal. The static hand target above is the
