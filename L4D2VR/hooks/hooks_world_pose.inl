@@ -48,6 +48,8 @@
         bool hmdToHeadValid = false;
         bool leftPoleBodyLocalValid = false;
         bool rightPoleBodyLocalValid = false;
+        bool leftArmTargetDirectionBodyLocalValid = false;
+        bool rightArmTargetDirectionBodyLocalValid = false;
         bool hmdToHeadUsesSourceEyeAngles = false;
         const C_BaseCombatWeapon* rightGripWeapon = nullptr;
         bool rightGripPreviousLocalValid = false;
@@ -71,6 +73,8 @@
         vr_vm_stabilize::Mat3x4 hmdToHead{};
         Vector leftPoleBodyLocal{};
         Vector rightPoleBodyLocal{};
+        Vector leftArmTargetDirectionBodyLocal{};
+        Vector rightArmTargetDirectionBodyLocal{};
         vr_vm_stabilize::Mat3x4 rightGripPreviousLocal{};
         vr_vm_stabilize::Mat3x4 rightGripShotBaselineLocal{};
         Vector rightGripShotAxisHemisphere{};
@@ -96,7 +100,7 @@
     };
 
     // Player-bone rendering can migrate between worker threads. Keep only the
-    // genuinely temporal state (body yaw, pole continuity and shot impulse)
+    // genuinely temporal state (body yaw, pole/near-target continuity and shot impulse)
     // per player and serialize that player's world-pose solve. Wrist basis and
     // hinge axis are immutable bind-pose data stored in the bone layout.
     std::array<
@@ -3340,6 +3344,7 @@
         const HooksWorldPoseArmLayout& arm,
         const vr_vm_stabilize::Mat3x4& controllerWorld,
         const vr_vm_stabilize::Mat3x4& currentHand,
+        const Vector& rotationOffsetDeg,
         vr_vm_stabilize::Mat3x4& outHandTarget)
     {
         const Vector controllerOrigin =
@@ -3399,6 +3404,32 @@
             outHandTarget.m[1][3] = controllerOrigin.y;
             outHandTarget.m[2][3] = controllerOrigin.z;
         }
+
+        // Apply user wrist tuning strictly as a local orientation. Preserve
+        // the tracked controller origin explicitly so rotating either palm
+        // cannot feed a false positional target into the elbow IK.
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(
+                rotationOffsetDeg))
+        {
+            return false;
+        }
+        vr_vm_stabilize::Mat3x4 localRotation{};
+        vr_vm_stabilize::Mat3x4 rotatedTarget{};
+        vr_vm_stabilize::BuildFromOrgAngles(
+            Vector(0.0f, 0.0f, 0.0f),
+            QAngle(
+                rotationOffsetDeg.x,
+                rotationOffsetDeg.y,
+                rotationOffsetDeg.z),
+            localRotation);
+        vr_vm_stabilize::Mul(
+            outHandTarget,
+            localRotation,
+            rotatedTarget);
+        rotatedTarget.m[0][3] = controllerOrigin.x;
+        rotatedTarget.m[1][3] = controllerOrigin.y;
+        rotatedTarget.m[2][3] = controllerOrigin.z;
+        outHandTarget = rotatedTarget;
 
         return HooksNativeViewmodelHandsOnlyMatrixFinite(
             outHandTarget);
@@ -4442,6 +4473,8 @@
         const Vector& middle,
         const Vector& end,
         const Vector& rawTarget,
+        bool& stableDirectionBodyLocalValid,
+        Vector& stableDirectionBodyLocal,
         Vector& outTarget,
         float& outArmLength)
     {
@@ -4531,24 +4564,103 @@
             return false;
         }
 
-        if (targetDistance <= 0.001f)
+        // Inside the arm's minimum reachable radius the shoulder-to-wrist
+        // direction is underdetermined. Normalizing that very short vector
+        // magnifies the tiny positional arc/noise produced while rotating a
+        // controller and makes the elbow appear to follow wrist rotation.
+        // Preserve a body-local direction through that singular region and
+        // blend back to the measured direction after the wrist moves clear.
+        Vector stableDirection{};
+        if (stableDirectionBodyLocalValid)
         {
-            constrainedDelta =
-                anatomicalOutward * 0.55f +
-                bodyForward * 0.65f -
-                bodyUp * 0.25f;
-            if (VectorNormalize(constrainedDelta) == 0.0f)
-                return false;
-            constrainedDelta *= minDistance;
+            stableDirection =
+                bodyForward * stableDirectionBodyLocal.x +
+                bodyRight * stableDirectionBodyLocal.y +
+                bodyUp * stableDirectionBodyLocal.z;
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(stableDirection) ||
+                VectorNormalize(stableDirection) == 0.0f)
+            {
+                stableDirectionBodyLocalValid = false;
+            }
         }
-        else if (targetDistance < minDistance ||
-                 targetDistance > maxDistance)
+
+        constexpr float kNearTargetBandRatio = 0.12f;
+        const float nearTargetBand = std::max(
+            2.0f,
+            armLength * kNearTargetBandRatio);
+        const float nearTargetReleaseDistance =
+            minDistance + nearTargetBand;
+
+        Vector measuredDirection = constrainedDelta;
+        const bool measuredDirectionValid =
+            targetDistance > 0.001f &&
+            VectorNormalize(measuredDirection) != 0.0f;
+
+        if (!stableDirectionBodyLocalValid)
         {
-            const float legalDistance = std::clamp(
+            stableDirection = end - start;
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(stableDirection) ||
+                VectorNormalize(stableDirection) == 0.0f)
+            {
+                stableDirection =
+                    anatomicalOutward * 0.55f +
+                    bodyForward * 0.65f -
+                    bodyUp * 0.25f;
+                if (VectorNormalize(stableDirection) == 0.0f)
+                    return false;
+            }
+
+            stableDirectionBodyLocal = Vector(
+                DotProduct(stableDirection, bodyForward),
+                DotProduct(stableDirection, bodyRight),
+                DotProduct(stableDirection, bodyUp));
+            stableDirectionBodyLocalValid =
+                HooksNativeViewmodelHandsOnlyVectorFinite(
+                    stableDirectionBodyLocal) &&
+                VectorNormalize(stableDirectionBodyLocal) != 0.0f;
+        }
+
+        if (targetDistance < nearTargetReleaseDistance)
+        {
+            Vector direction = stableDirection;
+            if (measuredDirectionValid)
+            {
+                float measuredWeight = std::clamp(
+                    (targetDistance - minDistance) /
+                        nearTargetBand,
+                    0.0f,
+                    1.0f);
+                measuredWeight =
+                    measuredWeight * measuredWeight *
+                    (3.0f - 2.0f * measuredWeight);
+                direction =
+                    stableDirection * (1.0f - measuredWeight) +
+                    measuredDirection * measuredWeight;
+                if (VectorNormalize(direction) == 0.0f)
+                    direction = stableDirection;
+            }
+
+            constrainedDelta = direction * std::clamp(
                 targetDistance,
                 minDistance,
                 maxDistance);
-            constrainedDelta *= legalDistance / targetDistance;
+        }
+        else
+        {
+            if (measuredDirectionValid)
+            {
+                stableDirectionBodyLocal = Vector(
+                    DotProduct(measuredDirection, bodyForward),
+                    DotProduct(measuredDirection, bodyRight),
+                    DotProduct(measuredDirection, bodyUp));
+                stableDirectionBodyLocalValid =
+                    HooksNativeViewmodelHandsOnlyVectorFinite(
+                        stableDirectionBodyLocal) &&
+                    VectorNormalize(stableDirectionBodyLocal) != 0.0f;
+            }
+
+            if (targetDistance > maxDistance)
+                constrainedDelta = measuredDirection * maxDistance;
         }
 
         outTarget = start + constrainedDelta;
@@ -4727,6 +4839,8 @@
         float weight,
         bool& poleBodyLocalValid,
         Vector& poleBodyLocal,
+        bool& targetDirectionBodyLocalValid,
+        Vector& targetDirectionBodyLocal,
         bool& outReached,
         vr_vm_stabilize::Mat3x4* bones)
     {
@@ -4769,6 +4883,8 @@
                 middle,
                 end,
                 rawTarget,
+                targetDirectionBodyLocalValid,
+                targetDirectionBodyLocal,
                 target,
                 armLength) ||
             !HooksWorldPoseBuildExplicitPoleVector(
@@ -5639,6 +5755,7 @@
                 layout->left,
                 leftControllerWorld,
                 bones[layout->left.hand],
+                vr->m_WorldModelVRPoseLeftHandRotationOffsetDeg,
                 leftHandTarget);
 
         const bool rightPoseValid =
@@ -5657,6 +5774,7 @@
                 layout->right,
                 rightControllerWorld,
                 bones[layout->right.hand],
+                vr->m_WorldModelVRPoseRightHandRotationOffsetDeg,
                 rightHandTarget);
 
         bool weaponGripRotationValid = false;
@@ -5972,6 +6090,8 @@
                     trackingWeight,
                     calibration.leftPoleBodyLocalValid,
                     calibration.leftPoleBodyLocal,
+                    calibration.leftArmTargetDirectionBodyLocalValid,
+                    calibration.leftArmTargetDirectionBodyLocal,
                     leftArmReached,
                     bones);
             changed = leftArmSolved || changed;
@@ -5990,6 +6110,8 @@
                     trackingWeight,
                     calibration.rightPoleBodyLocalValid,
                     calibration.rightPoleBodyLocal,
+                    calibration.rightArmTargetDirectionBodyLocalValid,
+                    calibration.rightArmTargetDirectionBodyLocal,
                     rightArmReached,
                     bones);
             changed = rightArmSolved || changed;

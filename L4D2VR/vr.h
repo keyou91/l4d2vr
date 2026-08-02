@@ -1514,6 +1514,10 @@ public:
 	bool m_WorldModelVRPoseEnabled = true;
 	bool m_WorldModelVRPoseLocalThirdPerson = true;
 	bool m_WorldModelVRPoseDebugLog = false;
+	// Final palm-only local rotation offsets. These are deliberately applied
+	// after the positional two-bone solve so wrist tuning cannot move an elbow.
+	Vector m_WorldModelVRPoseLeftHandRotationOffsetDeg{};
+	Vector m_WorldModelVRPoseRightHandRotationOffsetDeg{};
 	std::atomic<bool> m_WorldModelVRPoseCalibrationValid{ false };
 	std::atomic<bool> m_WorldModelVRPoseCalibrationRequested{ false };
 	std::atomic<int> m_WorldModelVRPoseCalibrationStage{ 0 };

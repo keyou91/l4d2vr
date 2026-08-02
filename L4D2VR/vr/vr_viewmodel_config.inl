@@ -1239,6 +1239,18 @@ void VR::ParseConfigFile()
             1.0f);
         m_VrHandsLeftHandedViewmodelPoseOffsetMeters = clampVector(getVector3("VrHandsLeftHandedViewmodelPoseOffsetMeters", m_VrHandsLeftHandedViewmodelPoseOffsetMeters), -1.0f, 1.0f);
         m_VrHandsLeftHandedViewmodelPoseRotationOffsetDeg = clampVector(getVector3("VrHandsLeftHandedViewmodelPoseRotationOffsetDeg", m_VrHandsLeftHandedViewmodelPoseRotationOffsetDeg), -180.0f, 180.0f);
+        m_WorldModelVRPoseLeftHandRotationOffsetDeg = clampVector(
+            getVector3(
+                "WorldModelVRPoseLeftHandRotationOffsetDeg",
+                m_WorldModelVRPoseLeftHandRotationOffsetDeg),
+            -180.0f,
+            180.0f);
+        m_WorldModelVRPoseRightHandRotationOffsetDeg = clampVector(
+            getVector3(
+                "WorldModelVRPoseRightHandRotationOffsetDeg",
+                m_WorldModelVRPoseRightHandRotationOffsetDeg),
+            -180.0f,
+            180.0f);
     }
     // Built-in config overlay placement. Keep this in the normal hot-reload path.
     m_ConfigOverlayDistanceMeters = std::clamp(getFloat("ConfigOverlayDistanceMeters", m_ConfigOverlayDistanceMeters), 0.6f, 3.0f);
