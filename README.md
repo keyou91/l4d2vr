@@ -67,7 +67,7 @@ It's best to subscribe to this mod directly on the Workshop to avoid missing upd
 * Disabling all add-ons, then Steam > Left 4 Dead 2 > Verifying integrity of game files.
 * Re-installing the game.
 
-###How to disable it
+### How to disable it
 If you want to return to normal game mode, there are two methods:
 Method 1: add the startup parameter -nohmd.
 Method 2: find d3d9.dll in the game root directory and rename it or move it somewhere else. After launching the game, open the console and enter crosshair 1 to enable the crosshair again, since VRMod disables it.
