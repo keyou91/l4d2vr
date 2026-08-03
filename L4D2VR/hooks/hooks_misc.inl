@@ -13314,8 +13314,7 @@ namespace
         int numBones,
         const HooksNativeViewmodelHandsOnlySideInfo& keepSide,
         const vr_vm_stabilize::Mat3x4* sourcePoseBones,
-        vr_vm_stabilize::Mat3x4* currentBones,
-        bool forceRestFingerLocals = false)
+        vr_vm_stabilize::Mat3x4* currentBones)
     {
         const bool emptyHandsPlaceholderActive =
             vr && vr->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
@@ -13372,11 +13371,7 @@ namespace
         std::vector<vr_vm_stabilize::Mat3x4> baseWorld(static_cast<size_t>(numBones));
         std::vector<vr_vm_stabilize::Mat3x4> baseLocal(static_cast<size_t>(numBones));
         const vr_vm_stabilize::Mat3x4* localPoseSource =
-            forceRestFingerLocals
-                ? currentBones
-                : ((applyEmptyRightHand && sourcePoseBones)
-                    ? sourcePoseBones
-                    : currentBones);
+            (applyEmptyRightHand && sourcePoseBones) ? sourcePoseBones : currentBones;
         for (int bone = 0; bone < numBones; ++bone)
         {
             if (!vr_vm_stabilize::SafeRead(
@@ -13428,11 +13423,9 @@ namespace
                 const bool thumbRoot =
                     bone < static_cast<int>(thumbRootMask.size()) &&
                     thumbRootMask[static_cast<size_t>(bone)] != 0u;
-                const bool mappedFingerJoint =
-                    thumbRoot ||
-                    hasAngle[static_cast<size_t>(bone)] != 0u;
-                if ((applyEmptyRightHand || forceRestFingerLocals) &&
-                    mappedFingerJoint)
+                if (applyEmptyRightHand &&
+                    !thumbRoot &&
+                    hasAngle[static_cast<size_t>(bone)])
                 {
                     vr_vm_stabilize::Mat3x4 restLocal{};
                     if (HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
@@ -15846,22 +15839,42 @@ namespace
         return result;
     }
 
-    inline void HooksMaybeLogLocalPlayerModelMaterialsOnce(
+    inline void HooksMaybeLogLocalPlayerModelMaterials(
+        VR* vr,
         Game* game,
         void* drawState,
         const ModelRenderInfo_t& info,
         bool shadowDepthDraw)
     {
-        static std::atomic<bool> s_Logged{ false };
-        if (s_Logged.load(std::memory_order_acquire) ||
-            shadowDepthDraw ||
-            !game ||
-            !game->m_EngineClient ||
+        static std::mutex s_LogStateMutex;
+        static bool s_HasLogged = false;
+        static uint32_t s_LoggedSession = 0;
+        static int s_LoggedEntityIndex = 0;
+        static const void* s_LoggedRenderable = nullptr;
+        static std::string s_LoggedModelName;
+
+        if (!game || !game->m_EngineClient)
+            return;
+
+        const bool inGame = game->m_EngineClient->IsInGame();
+        const int localPlayerIndex =
+            inGame ? game->m_EngineClient->GetLocalPlayer() : -1;
+        if (!inGame || localPlayerIndex <= 0)
+        {
+            std::lock_guard<std::mutex> lock(s_LogStateMutex);
+            s_HasLogged = false;
+            s_LoggedSession = 0;
+            s_LoggedEntityIndex = 0;
+            s_LoggedRenderable = nullptr;
+            s_LoggedModelName.clear();
+            return;
+        }
+
+        if (shadowDepthDraw ||
             !game->m_ModelInfo ||
             !info.pModel ||
             info.entity_index <= 0 ||
-            info.entity_index != game->m_EngineClient->GetLocalPlayer() ||
-            !info.pModel)
+            info.entity_index != localPlayerIndex)
         {
             return;
         }
@@ -15883,18 +15896,8 @@ namespace
             return;
         }
 
-        std::string joinedMaterialNames;
-        for (const std::string& materialName : materialNames)
-        {
-            if (!joinedMaterialNames.empty())
-                joinedMaterialNames += ",";
-            joinedMaterialNames += materialName;
-        }
-        if (joinedMaterialNames.empty() ||
-            s_Logged.exchange(true, std::memory_order_acq_rel))
-        {
+        if (materialNames.empty())
             return;
-        }
 
         const char* modelName = "<unknown>";
         const char* resolvedModelName = nullptr;
@@ -15906,12 +15909,45 @@ namespace
             modelName = resolvedModelName;
         }
 
+        const uint32_t logSession =
+            vr
+                ? vr->m_PlayerModelMaterialsLogSession.load(
+                    std::memory_order_acquire)
+                : 0u;
+        {
+            std::lock_guard<std::mutex> lock(s_LogStateMutex);
+            if (s_HasLogged &&
+                s_LoggedSession == logSession &&
+                s_LoggedEntityIndex == info.entity_index &&
+                s_LoggedRenderable == info.pRenderable &&
+                s_LoggedModelName == modelName)
+            {
+                return;
+            }
+
+            s_HasLogged = true;
+            s_LoggedSession = logSession;
+            s_LoggedEntityIndex = info.entity_index;
+            s_LoggedRenderable = info.pRenderable;
+            s_LoggedModelName = modelName;
+        }
+
         Game::logMsg(
-            "[VR][PlayerModelMaterials] character=%s model=%s count=%u materials=%s",
+            "[VR][PlayerModelMaterials] character=%s model=%s count=%u",
             characterName.c_str(),
             modelName,
-            static_cast<unsigned int>(materialNames.size()),
-            joinedMaterialNames.c_str());
+            static_cast<unsigned int>(materialNames.size()));
+        for (size_t materialIndex = 0;
+             materialIndex < materialNames.size();
+             ++materialIndex)
+        {
+            Game::logMsg(
+                "[VR][PlayerModelMaterials] character=%s material[%u/%u]=%s",
+                characterName.c_str(),
+                static_cast<unsigned int>(materialIndex + 1),
+                static_cast<unsigned int>(materialNames.size()),
+                materialNames[materialIndex].c_str());
+        }
     }
 
     inline bool HooksFirstPersonBodyCollectHiddenMaterials(
@@ -18009,7 +18045,8 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 	const bool shadowDepthDraw =
 		(info.flags & kStudioShadowDepthTexture) != 0;
 
-	HooksMaybeLogLocalPlayerModelMaterialsOnce(
+	HooksMaybeLogLocalPlayerModelMaterials(
+		m_VR,
 		m_Game,
 		state,
 		info,

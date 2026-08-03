@@ -410,6 +410,10 @@ public:
 	bool m_ThirdPersonMapLoadCooldownPending = false;
 	bool m_HadLocalPlayerPrev = false;
 	bool m_WasInGamePrev = false;
+	// Increments whenever the local player is recovered after a map load or reconnect.
+	// Render-thread diagnostics use this to distinguish otherwise identical player models
+	// across map sessions without relying on transient entity pointer addresses.
+	std::atomic<uint32_t> m_PlayerModelMaterialsLogSession{ 0 };
 	std::chrono::steady_clock::time_point m_ThirdPersonMapLoadCooldownEnd{};
 	int m_ThirdPersonHoldFrames = 0;
 	Vector m_ThirdPersonViewOrigin = { 0,0,0 };

@@ -567,6 +567,7 @@ void VR::UpdateTracking()
     if (!m_HadLocalPlayerPrev)
     {
         m_HadLocalPlayerPrev = true;
+        m_PlayerModelMaterialsLogSession.fetch_add(1u, std::memory_order_acq_rel);
         if (m_ThirdPersonMapLoadCooldownPending && m_ThirdPersonMapLoadCooldownMs > 0)
         {
             const auto now = std::chrono::steady_clock::now();

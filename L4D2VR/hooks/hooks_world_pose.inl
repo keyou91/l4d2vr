@@ -28,6 +28,18 @@
         Vector bindHandFromHeadModel{};
     };
 
+    struct HooksWorldPoseFingerLayout
+    {
+        std::array<int, 15> bones{
+            -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1,
+        };
+        std::array<vr_vm_stabilize::Mat3x4, 15> restLocals{};
+        std::array<uint8_t, 15> restLocalValid{};
+        int mappedSegments = 0;
+    };
+
     struct HooksWorldPoseBoneLayout
     {
         const uint8_t* studioHdr = nullptr;
@@ -38,9 +50,8 @@
         int upperChest = -1;
         HooksWorldPoseArmLayout left{};
         HooksWorldPoseArmLayout right{};
-        int boneTableOffset = 0;
-        int boneStride = 0;
-        std::vector<std::string> boneNames;
+        HooksWorldPoseFingerLayout leftFingers{};
+        HooksWorldPoseFingerLayout rightFingers{};
         std::vector<int> parents;
     };
 
@@ -172,6 +183,14 @@
         g_HooksWorldPoseOzzFirstRunLogged{ false };
     std::atomic<bool>
         g_HooksWorldPoseOzzFirstRunCompletedLogged{ false };
+    std::atomic<bool>
+        g_HooksWorldPoseFingerRuntimeDisabled{ false };
+    std::atomic<bool>
+        g_HooksWorldPoseFingerFaultLogged{ false };
+    std::atomic<bool>
+        g_HooksWorldPoseFingerFirstRunLogged{ false };
+    std::atomic<bool>
+        g_HooksWorldPoseFingerFirstRunCompletedLogged{ false };
     std::array<
         HooksWorldPoseWeaponStereoBoneCache,
         Game::kMaxPlayers * 4> g_HooksWorldPoseWeaponStereoBoneCaches{};
@@ -967,6 +986,76 @@
         return true;
     }
 
+    inline void HooksWorldPoseBuildFingerLayout(
+        void* drawState,
+        int boneTableOffset,
+        int boneStride,
+        const std::vector<std::string>& boneNames,
+        int numBones,
+        int side,
+        HooksWorldPoseFingerLayout& out)
+    {
+        out = HooksWorldPoseFingerLayout{};
+        if (!drawState || boneTableOffset <= 0 || boneStride <= 0 ||
+            numBones <= 0 || numBones > 512 ||
+            static_cast<int>(boneNames.size()) < numBones ||
+            (side != -1 && side != 1))
+        {
+            return;
+        }
+
+        static const char* kLeftFingerBones[5][3] =
+        {
+            { "bip01_l_finger0", "bip01_l_finger01", "bip01_l_finger02" },
+            { "bip01_l_finger1", "bip01_l_finger11", "bip01_l_finger12" },
+            { "bip01_l_finger2", "bip01_l_finger21", "bip01_l_finger22" },
+            { "bip01_l_finger3", "bip01_l_finger31", "bip01_l_finger32" },
+            { "bip01_l_finger4", "bip01_l_finger41", "bip01_l_finger42" },
+        };
+        static const char* kRightFingerBones[5][3] =
+        {
+            { "bip01_r_finger0", "bip01_r_finger01", "bip01_r_finger02" },
+            { "bip01_r_finger1", "bip01_r_finger11", "bip01_r_finger12" },
+            { "bip01_r_finger2", "bip01_r_finger21", "bip01_r_finger22" },
+            { "bip01_r_finger3", "bip01_r_finger31", "bip01_r_finger32" },
+            { "bip01_r_finger4", "bip01_r_finger41", "bip01_r_finger42" },
+        };
+
+        for (int finger = 0; finger < 5; ++finger)
+        {
+            for (int segment = 0; segment < 3; ++segment)
+            {
+                const int slot = finger * 3 + segment;
+                int bone = -1;
+                if (!HooksNativeViewmodelHandsOnlyFindBoneByLowerSuffix(
+                        boneNames,
+                        side < 0
+                            ? kLeftFingerBones[finger][segment]
+                            : kRightFingerBones[finger][segment],
+                        bone) ||
+                    bone < 0 || bone >= numBones)
+                {
+                    continue;
+                }
+
+                out.bones[static_cast<size_t>(slot)] = bone;
+                ++out.mappedSegments;
+                vr_vm_stabilize::Mat3x4 restLocal{};
+                if (HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
+                        drawState,
+                        boneTableOffset,
+                        boneStride,
+                        bone,
+                        restLocal) &&
+                    HooksNativeViewmodelHandsOnlyMatrixFinite(restLocal))
+                {
+                    out.restLocals[static_cast<size_t>(slot)] = restLocal;
+                    out.restLocalValid[static_cast<size_t>(slot)] = 1u;
+                }
+            }
+        }
+    }
+
     inline bool HooksWorldPoseBuildBoneLayout(
         void* drawState,
         HooksWorldPoseBoneLayout& layout)
@@ -1002,9 +1091,6 @@
         {
             return false;
         }
-        layout.boneTableOffset = boneIndex;
-        layout.boneStride = stride;
-        layout.boneNames = boneNames;
         HooksFirstPersonBodyFindBone(
             boneNames,
             {
@@ -1085,6 +1171,22 @@
             layout.numBones,
             1,
             layout.right);
+        HooksWorldPoseBuildFingerLayout(
+            drawState,
+            boneIndex,
+            stride,
+            boneNames,
+            layout.numBones,
+            -1,
+            layout.leftFingers);
+        HooksWorldPoseBuildFingerLayout(
+            drawState,
+            boneIndex,
+            stride,
+            boneNames,
+            layout.numBones,
+            1,
+            layout.rightFingers);
 
         int studioLength = 0;
         vr_vm_stabilize::SafeRead(
@@ -1145,7 +1247,7 @@
         if (layout.valid)
         {
             Game::logMsg(
-                "[VR][WorldPose] bone layout ready hdr=%p bones=%d head=%d neck=%d chest=%d left=(%d %d %d %d bindPalm=%d bindAxis=%d) right=(%d %d %d %d bindPalm=%d bindAxis=%d)",
+                "[VR][WorldPose] bone layout ready hdr=%p bones=%d head=%d neck=%d chest=%d left=(%d %d %d %d bindPalm=%d bindAxis=%d fingers=%d) right=(%d %d %d %d bindPalm=%d bindAxis=%d fingers=%d)",
                 layout.studioHdr,
                 layout.numBones,
                 layout.head,
@@ -1157,12 +1259,14 @@
                 layout.left.hand,
                 layout.left.palmToHandValid ? 1 : 0,
                 layout.left.midAxisValid ? 1 : 0,
+                layout.leftFingers.mappedSegments,
                 layout.right.clavicle,
                 layout.right.upperArm,
                 layout.right.forearm,
                 layout.right.hand,
                 layout.right.palmToHandValid ? 1 : 0,
-                layout.right.midAxisValid ? 1 : 0);
+                layout.right.midAxisValid ? 1 : 0,
+                layout.rightFingers.mappedSegments);
             if (HooksWorldPoseArmChainValid(
                     layout.left,
                     layout.parents,
@@ -4191,45 +4295,258 @@
             bones);
     }
 
-    inline bool HooksWorldPoseApplyLocalTrackedFingerPose(
+    __declspec(noinline) bool HooksWorldPoseApplyLocalTrackedFingerPose(
         VR* vr,
-        void* drawState,
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseArmLayout& arm,
         int side,
-        const vr_vm_stabilize::Mat3x4* sourceBones,
         vr_vm_stabilize::Mat3x4* bones)
     {
-        if (!vr || !drawState || !sourceBones || !bones ||
+        const HooksWorldPoseFingerLayout& fingers =
+            side < 0 ? layout.leftFingers : layout.rightFingers;
+        if (!vr || !bones ||
             (side != -1 && side != 1) ||
             arm.hand < 0 || arm.hand >= layout.numBones ||
-            layout.boneTableOffset <= 0 ||
-            layout.boneStride <= 0 ||
-            static_cast<int>(layout.boneNames.size()) <
-                layout.numBones ||
+            fingers.mappedSegments <= 0 ||
             static_cast<int>(layout.parents.size()) <
                 layout.numBones)
         {
             return false;
         }
 
-        HooksNativeViewmodelHandsOnlySideInfo trackedSide{};
-        trackedSide.side = side;
-        trackedSide.hand = arm.hand;
-        trackedSide.wrist = arm.hand;
-        trackedSide.forearm = arm.forearm;
-        return HooksNativeViewmodelHandsOnlyApplyOpenVRFingerPose(
-            vr,
-            drawState,
-            layout.boneTableOffset,
-            layout.boneStride,
-            layout.boneNames,
-            layout.parents,
-            layout.numBones,
-            trackedSide,
-            sourceBones,
-            bones,
-            true);
+        std::array<float, 5> curls{};
+        const bool haveCurls = side < 0
+            ? HooksNativeViewmodelHandsOnlyReadOpenVRLeftFingerCurls(
+                vr,
+                curls)
+            : HooksNativeViewmodelHandsOnlyReadOpenVRRightFingerCurls(
+                vr,
+                curls);
+        if (!haveCurls)
+            return false;
+
+        const float strength = std::clamp(
+            vr->m_NativeViewmodelLeftHandOpenVRCurlStrength,
+            0.0f,
+            2.0f);
+        const float direction = std::clamp(
+            vr->m_NativeViewmodelLeftHandOpenVRCurlDirection,
+            -1.0f,
+            1.0f);
+        if (strength <= 0.0001f ||
+            std::fabs(direction) <= 0.0001f)
+        {
+            return false;
+        }
+
+        static const float kMaxCurlRadians[5][3] =
+        {
+            { 0.75f, 0.90f, 0.65f },
+            { 1.15f, 1.25f, 0.90f },
+            { 1.15f, 1.25f, 0.90f },
+            { 1.15f, 1.25f, 0.90f },
+            { 1.15f, 1.25f, 0.90f },
+        };
+
+        std::array<vr_vm_stabilize::Mat3x4, 15> capturedLocals{};
+        std::array<uint8_t, 15> capturedLocalValid{};
+        for (int slot = 0; slot < 15; ++slot)
+        {
+            const int bone = fingers.bones[static_cast<size_t>(slot)];
+            if (bone < 0 || bone >= layout.numBones ||
+                !HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.parents,
+                    bone,
+                    arm.hand,
+                    layout.numBones))
+            {
+                continue;
+            }
+            if (HooksWorldPoseCaptureBoneLocalTransform(
+                    layout,
+                    bones,
+                    bone,
+                    capturedLocals[static_cast<size_t>(slot)]))
+            {
+                capturedLocalValid[static_cast<size_t>(slot)] = 1u;
+            }
+        }
+
+        int applied = 0;
+        for (int finger = 0; finger < 5; ++finger)
+        {
+            for (int segment = 0; segment < 3; ++segment)
+            {
+                const int slot = finger * 3 + segment;
+                const int bone =
+                    fingers.bones[static_cast<size_t>(slot)];
+                if (bone < 0 || bone >= layout.numBones ||
+                    !capturedLocalValid[static_cast<size_t>(slot)])
+                {
+                    continue;
+                }
+                const int parent =
+                    layout.parents[static_cast<size_t>(bone)];
+                if (parent < 0 || parent >= layout.numBones)
+                    continue;
+
+                vr_vm_stabilize::Mat3x4 local =
+                    capturedLocals[static_cast<size_t>(slot)];
+                if (fingers.restLocalValid[static_cast<size_t>(slot)])
+                {
+                    local = fingers.restLocals[static_cast<size_t>(slot)];
+                    const auto& captured =
+                        capturedLocals[static_cast<size_t>(slot)];
+                    local.m[0][3] = captured.m[0][3];
+                    local.m[1][3] = captured.m[1][3];
+                    local.m[2][3] = captured.m[2][3];
+                }
+
+                const bool thumbRoot =
+                    finger == 0 && segment == 0;
+                if (thumbRoot)
+                {
+                    local =
+                        HooksNativeViewmodelHandsOnlyApplyThumbRootAdjust(
+                            vr,
+                            side,
+                            local);
+                }
+                else
+                {
+                    const float radians =
+                        curls[static_cast<size_t>(finger)] *
+                        kMaxCurlRadians[finger][segment] *
+                        strength * direction;
+                    const vr_vm_stabilize::Mat3x4 rotation =
+                        HooksNativeViewmodelHandsOnlyMakeLocalAxisRotation(
+                            vr->m_NativeViewmodelLeftHandOpenVRCurlAxis,
+                            radians);
+                    vr_vm_stabilize::Mat3x4 adjusted{};
+                    vr_vm_stabilize::Mul(local, rotation, adjusted);
+                    local = adjusted;
+                }
+
+                vr_vm_stabilize::Mat3x4 world{};
+                vr_vm_stabilize::Mul(bones[parent], local, world);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(world))
+                    return false;
+                bones[bone] = world;
+                ++applied;
+            }
+        }
+        return applied > 0;
+    }
+
+#ifdef _MSC_VER
+    __declspec(noinline) bool HooksWorldPoseApplyLocalTrackedFingerPoseGuarded(
+        VR* vr,
+        const HooksWorldPoseBoneLayout* layout,
+        const HooksWorldPoseArmLayout* arm,
+        int side,
+        vr_vm_stabilize::Mat3x4* bones,
+        unsigned long& outExceptionCode)
+    {
+        outExceptionCode = 0ul;
+        if (!layout || !arm)
+            return false;
+        __try
+        {
+            return HooksWorldPoseApplyLocalTrackedFingerPose(
+                vr,
+                *layout,
+                *arm,
+                side,
+                bones);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            outExceptionCode = static_cast<unsigned long>(
+                GetExceptionCode());
+            return false;
+        }
+    }
+#else
+    inline bool HooksWorldPoseApplyLocalTrackedFingerPoseGuarded(
+        VR* vr,
+        const HooksWorldPoseBoneLayout* layout,
+        const HooksWorldPoseArmLayout* arm,
+        int side,
+        vr_vm_stabilize::Mat3x4* bones,
+        unsigned long& outExceptionCode)
+    {
+        outExceptionCode = 0ul;
+        return layout && arm &&
+            HooksWorldPoseApplyLocalTrackedFingerPose(
+                vr,
+                *layout,
+                *arm,
+                side,
+                bones);
+    }
+#endif
+
+    inline bool HooksWorldPoseTryApplyLocalTrackedFingerPose(
+        VR* vr,
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        int side,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (g_HooksWorldPoseFingerRuntimeDisabled.load(
+                std::memory_order_acquire))
+        {
+            return false;
+        }
+        if (!g_HooksWorldPoseFingerFirstRunLogged.exchange(
+                true,
+                std::memory_order_acq_rel))
+        {
+            const int mapped = side < 0
+                ? layout.leftFingers.mappedSegments
+                : layout.rightFingers.mappedSegments;
+            Game::logMsg(
+                "[VR][WorldPose] tracked fingers first run begin side=%d mapped=%d",
+                side,
+                mapped);
+        }
+
+        unsigned long exceptionCode = 0ul;
+        const bool applied =
+            HooksWorldPoseApplyLocalTrackedFingerPoseGuarded(
+                vr,
+                &layout,
+                &arm,
+                side,
+                bones,
+                exceptionCode);
+        if (exceptionCode != 0ul)
+        {
+            g_HooksWorldPoseFingerRuntimeDisabled.store(
+                true,
+                std::memory_order_release);
+            bool expected = false;
+            if (g_HooksWorldPoseFingerFaultLogged.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel))
+            {
+                Game::logMsg(
+                    "[VR][WorldPose] tracked fingers exception=0x%08lX; finger takeover disabled for this process",
+                    exceptionCode);
+            }
+            return false;
+        }
+        if (applied &&
+            !g_HooksWorldPoseFingerFirstRunCompletedLogged.exchange(
+                true,
+                std::memory_order_acq_rel))
+        {
+            Game::logMsg(
+                "[VR][WorldPose] tracked fingers first run completed side=%d",
+                side);
+        }
+        return applied;
     }
 
     inline bool HooksWorldPoseApplyBodyCarryToArmTarget(
@@ -6222,13 +6539,11 @@
         if (localPlayer && leftArmSolved)
         {
             changed =
-                HooksWorldPoseApplyLocalTrackedFingerPose(
+                HooksWorldPoseTryApplyLocalTrackedFingerPose(
                     vr,
-                    drawState,
                     *layout,
                     layout->left,
                     -1,
-                    sourceBones,
                     bones) ||
                 changed;
         }
@@ -6236,13 +6551,11 @@
             localEmptyHandsPlaceholder)
         {
             changed =
-                HooksWorldPoseApplyLocalTrackedFingerPose(
+                HooksWorldPoseTryApplyLocalTrackedFingerPose(
                     vr,
-                    drawState,
                     *layout,
                     layout->right,
                     1,
-                    sourceBones,
                     bones) ||
                 changed;
         }
