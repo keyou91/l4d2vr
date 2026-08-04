@@ -111,7 +111,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>$(SolutionDir)dxvk_new\src\d3d9\d3d9.def</ModuleDefinitionFile>
     </Link>
     <PostBuildEvent>
@@ -140,7 +140,7 @@
       <EnableUAC>false</EnableUAC>
       <ModuleDefinitionFile>$(SolutionDir)dxvk_new\src\d3d9\d3d9.def</ModuleDefinitionFile>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;d3dx9.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;setupapi.lib;ozz_animation.lib;ozz_animation_offline.lib;ozz_base.lib;$(SolutionDir)dxvk_new\lib32\vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(OutDir)$(TargetName)$(TargetExt)" "E:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2\$(TargetName)$(TargetExt)"</Command>
@@ -499,6 +499,7 @@
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_volume.cpp" />
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_vr.cpp" />
     <ClCompile Include="..\dxvk_new\src\d3d9\d3d9_reshade_vr.cpp" />
+    <ClCompile Include="..\thirdparty\directx\d3dx9\src\d3dx9_proxy.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_analysis.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_chunk_isgn.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxbc\dxbc_chunk_shex.cpp" />
