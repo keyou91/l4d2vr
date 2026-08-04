@@ -78,6 +78,33 @@ and both arms locally while preserving the game's native lower-body animation.
 ### If the game is stuttering: 
 * Steam Settings -> Shader Pre-Caching -> Allow background processing of Vulkan shaders.
 
+### DXVK async compilation and low-latency frame pacing
+
+The bundled DXVK 2.6.1 includes a source port from
+[DXVK-GPLALL 2.6.1-6](https://github.com/Digger1955/dxvk-gplall/tree/7927e64ac836da1ae31e4205f15a8e653d81d654):
+
+* Asynchronous graphics-pipeline compilation is enabled by default. Set
+  `DXVK_ASYNC=0`, or `dxvk.enableAsync = False` in `dxvk.conf`, to disable it
+  if a newly encountered shader causes temporary missing draws or other visual
+  problems.
+* GPL/Async state-cache integration is enabled by default. It can be disabled
+  with `DXVK_GPLASYNCCACHE=0` or `dxvk.gplAsyncCache = False`.
+* Low-latency frame pacing is enabled by default. Select
+  `max-frame-latency`, `low-latency`, or `min-latency` with
+  `DXVK_FRAME_PACE`, or the matching `dxvk.framePace` value. Fine tuning is
+  available through `DXVK_LOW_LATENCY_OFFSET` and
+  `DXVK_LOW_LATENCY_ALLOW_CPU_FRAMES_OVERLAP`; see `dxvk_new/dxvk.conf`.
+* A per-game `dxvk.conf` next to `left4dead2.exe` takes priority over the
+  optional global `%APPDATA%/dxvk.conf`.
+
+The frame pacer controls DXVK's D3D9 CPU/GPU and desktop-present scheduling.
+It complements, but does not replace, SteamVR compositor timing or
+reprojection. Async compilation originates from work by
+[jomihaka](https://github.com/jomihaka/dxvk-poe-hack) and
+[Sporif](https://github.com/Sporif/dxvk-async), GPL/Async integration from
+[Ph42oN](https://gitlab.com/Ph42oN/dxvk-gplasync/), and low-latency frame
+pacing from [netborg-afps](https://github.com/netborg-afps/dxvk/releases).
+
 ### If the game is crashing:
 * Lowering video settings.
 * Disabling all add-ons, then Steam > Left 4 Dead 2 > Verifying integrity of game files.

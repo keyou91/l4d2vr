@@ -1203,7 +1203,7 @@ namespace dxvk {
   private:
 
     template<bool AllowFlush = true, typename Cmd>
-    void EmitCs(Cmd&& command) {
+    void EmitCs(Cmd&& command, bool disableFlush = false) {
       // L4D2VR queued rendering can hit unusual cross-thread Present/EndFrame
       // timing. Do not assume m_csChunk is always non-null after a move/flush;
       // recover a fresh chunk instead of dereferencing null in DxvkCsChunk::alloc.
@@ -1217,8 +1217,10 @@ namespace dxvk {
         EmitCsChunk(std::move(m_csChunk));
         m_csChunk = AllocCsChunk();
 
-        if constexpr (AllowFlush)
-          ConsiderFlush(GpuFlushType::ImplicitWeakHint);
+        if constexpr (AllowFlush) {
+          if (!disableFlush)
+            ConsiderFlush(GpuFlushType::ImplicitWeakHint);
+        }
 
         if (unlikely(!m_csChunk))
           return;

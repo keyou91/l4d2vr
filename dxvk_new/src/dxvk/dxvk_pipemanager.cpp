@@ -34,14 +34,15 @@ namespace dxvk {
   void DxvkPipelineWorkers::compileGraphicsPipeline(
           DxvkGraphicsPipeline*           pipeline,
     const DxvkGraphicsPipelineStateInfo&  state,
-          DxvkPipelinePriority            priority) {
+          DxvkPipelinePriority            priority,
+          bool                            async) {
     std::unique_lock lock(m_lock);
     this->startWorkers();
 
     pipeline->acquirePipeline();
     m_tasksTotal += 1;
 
-    m_buckets[uint32_t(priority)].queue.emplace(pipeline, state);
+    m_buckets[uint32_t(priority)].queue.emplace(pipeline, state, async);
     notifyWorkers(priority);
   }
 
@@ -82,10 +83,17 @@ namespace dxvk {
 
   void DxvkPipelineWorkers::startWorkers() {
     if (!std::exchange(m_workersRunning, true)) {
-      // Use all available cores by default
+      // Get number of CPU logical threads
       uint32_t workerCount = dxvk::thread::hardware_concurrency();
 
+      // Use (number of CPU logical threads - 2) pipeline workers.
+      // Less stuttering when compiling shaders while playing,
+      // in comparison to using all CPU logical threads.
+      workerCount = workerCount > 2 ? workerCount - 2 : 1;
+
+      // Catch systems with fewer than four reported logical threads.
       if (workerCount <  1) workerCount =  1;
+      // Catching systems with more than 64 threads
       if (workerCount > 64) workerCount = 64;
 
       // Reduce worker count on 32-bit to save adderss space
@@ -162,7 +170,7 @@ namespace dxvk {
       if (entry.pipelineLibrary) {
         entry.pipelineLibrary->compilePipeline();
       } else if (entry.graphicsPipeline) {
-        entry.graphicsPipeline->compilePipeline(entry.graphicsState);
+        entry.graphicsPipeline->compilePipeline(entry.graphicsState, entry.async);
         entry.graphicsPipeline->releasePipeline();
       }
 

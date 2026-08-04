@@ -630,6 +630,21 @@
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_options.h">
       <Filter>dxvk</Filter>
     </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_low_latency.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_min_latency.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_latency_markers.h">
+      <Filter>dxvk</Filter>
+    </ClInclude>
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_pipecache.h">
       <Filter>dxvk</Filter>
     </ClInclude>
@@ -1176,6 +1191,12 @@
       <Filter>dxvk</Filter>
     </ClCompile>
     <ClCompile Include="..\dxvk_new\src\dxvk\dxvk_util.cpp">
+      <Filter>dxvk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer.cpp">
+      <Filter>dxvk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_low_latency.cpp">
       <Filter>dxvk</Filter>
     </ClCompile>
     <ClCompile Include="..\dxvk_new\src\dxvk\hud\dxvk_hud.cpp">

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 
 #include "../util/sync/sync_list.h"
@@ -556,11 +557,13 @@ namespace dxvk {
      * Retrieves a pipeline handle for the given pipeline
      * state. If necessary, a new pipeline will be created.
      * \param [in] state Pipeline state vector
+     * \param [in] async Compile asynchronously
      * \returns Pipeline handle and handle type
      */
     DxvkGraphicsPipelineHandle getPipelineHandle(
-      const DxvkGraphicsPipelineStateInfo&    state);
-    
+      const DxvkGraphicsPipelineStateInfo&    state,
+            bool                              async);
+
     /**
      * \brief Compiles a pipeline
      * 
@@ -569,7 +572,8 @@ namespace dxvk {
      * \param [in] state Pipeline state vector
      */
     void compilePipeline(
-      const DxvkGraphicsPipelineStateInfo&    state);
+      const DxvkGraphicsPipelineStateInfo&    state,
+            bool                              async);
 
     /**
      * \brief Acquires the pipeline
@@ -624,6 +628,9 @@ namespace dxvk {
 
     alignas(CACHE_LINE_SIZE)
     dxvk::mutex                                   m_mutex;
+    alignas(CACHE_LINE_SIZE)
+    dxvk::mutex                                   m_asyncMutex;
+    bool                                          gplAsyncCache;
     sync::List<DxvkGraphicsPipelineInstance>      m_pipelines;
     uint32_t                                      m_useCount = 0;
 

@@ -92,13 +92,15 @@ namespace dxvk {
     /**
      * \brief Compiles an optimized graphics pipeline
      *
-     * \param [in] pipeline Compute pipeline
+     * \param [in] pipeline Graphics pipeline
      * \param [in] state Pipeline state
+     * \param [in] async Whether this was requested by the draw-time Async path
      */
     void compileGraphicsPipeline(
             DxvkGraphicsPipeline*           pipeline,
       const DxvkGraphicsPipelineStateInfo&  state,
-            DxvkPipelinePriority            priority);
+            DxvkPipelinePriority            priority,
+            bool                            async = false);
 
     /**
      * \brief Stops all worker threads
@@ -112,17 +114,18 @@ namespace dxvk {
 
     struct PipelineEntry {
       PipelineEntry()
-      : pipelineLibrary(nullptr), graphicsPipeline(nullptr) { }
+      : pipelineLibrary(nullptr), graphicsPipeline(nullptr), async(false) { }
 
       PipelineEntry(DxvkShaderPipelineLibrary* l)
-      : pipelineLibrary(l), graphicsPipeline(nullptr) { }
+      : pipelineLibrary(l), graphicsPipeline(nullptr), async(false) { }
 
-      PipelineEntry(DxvkGraphicsPipeline* p, const DxvkGraphicsPipelineStateInfo& s)
-      : pipelineLibrary(nullptr), graphicsPipeline(p), graphicsState(s) { }
+      PipelineEntry(DxvkGraphicsPipeline* p, const DxvkGraphicsPipelineStateInfo& s, bool a)
+      : pipelineLibrary(nullptr), graphicsPipeline(p), graphicsState(s), async(a) { }
 
       DxvkShaderPipelineLibrary*    pipelineLibrary;
       DxvkGraphicsPipeline*         graphicsPipeline;
       DxvkGraphicsPipelineStateInfo graphicsState;
+      bool                          async;
     };
 
     struct PipelineBucket {

@@ -366,6 +366,11 @@
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_openvr.h" />
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_openxr.h" />
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_options.h" />
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer.h" />
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode.h" />
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_low_latency.h" />
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_min_latency.h" />
+    <ClInclude Include="..\dxvk_new\src\dxvk\framepacer\dxvk_latency_markers.h" />
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_pipecache.h" />
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_pipecompiler.h" />
     <ClInclude Include="..\dxvk_new\src\dxvk\dxvk_pipelayout.h" />
@@ -560,6 +565,8 @@
     <ClCompile Include="..\dxvk_new\src\dxvk\dxvk_swapchain_blitter.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxvk\dxvk_unbound.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxvk\dxvk_util.cpp" />
+    <ClCompile Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer.cpp" />
+    <ClCompile Include="..\dxvk_new\src\dxvk\framepacer\dxvk_framepacer_mode_low_latency.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxvk\hud\dxvk_hud.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxvk\hud\dxvk_hud_font.cpp" />
     <ClCompile Include="..\dxvk_new\src\dxvk\hud\dxvk_hud_item.cpp" />
