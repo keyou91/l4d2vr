@@ -1,3 +1,7 @@
+#ifdef _WIN32
+#include <mutex>
+#include <unordered_map>
+#endif
 #include <tuple>
 
 #include "vulkan_loader.h"
@@ -8,6 +12,46 @@
 #include "../util/util_win32_compat.h"
 
 namespace dxvk::vk {
+
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
+  namespace {
+
+    struct BandicamDeviceFunctions {
+      PFN_vkDeviceWaitIdle          waitIdle         = nullptr;
+      PFN_vkDestroySwapchainKHR     destroySwapchain = nullptr;
+    };
+
+    std::mutex g_bandicamMutex;
+    std::unordered_map<VkDevice, BandicamDeviceFunctions> g_bandicamDevices;
+
+    bool isBandicamVulkanHookLoaded() {
+      return ::GetModuleHandleW(L"bdcamvk32.dll") != nullptr
+          || ::GetModuleHandleW(L"bdcamvk64.dll") != nullptr;
+    }
+
+    VKAPI_ATTR void VKAPI_CALL destroySwapchainBandicamCompat(
+            VkDevice                    device,
+            VkSwapchainKHR              swapchain,
+      const VkAllocationCallbacks*      allocator) {
+      BandicamDeviceFunctions functions;
+
+      {
+        std::lock_guard lock(g_bandicamMutex);
+        auto entry = g_bandicamDevices.find(device);
+
+        if (entry != g_bandicamDevices.end())
+          functions = entry->second;
+      }
+
+      if (functions.waitIdle)
+        functions.waitIdle(device);
+
+      if (functions.destroySwapchain)
+        functions.destroySwapchain(device, swapchain, allocator);
+    }
+
+  }
+#endif
 
   static std::pair<HMODULE, PFN_vkGetInstanceProcAddr> loadVulkanLibrary() {
     static const std::array<const char*, 2> dllNames = {{
@@ -103,10 +147,33 @@ namespace dxvk::vk {
   
   
   DeviceFn::DeviceFn(const Rc<InstanceLoader>& library, bool owned, VkDevice device)
-  : DeviceLoader(library, owned, device) { }
+  : DeviceLoader(library, owned, device) {
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
+    if (isBandicamVulkanHookLoaded()
+     && this->vkDeviceWaitIdle
+     && this->vkDestroySwapchainKHR) {
+      {
+        std::lock_guard lock(g_bandicamMutex);
+        g_bandicamDevices[device] = {
+          this->vkDeviceWaitIdle,
+          this->vkDestroySwapchainKHR,
+        };
+      }
+
+      this->vkDestroySwapchainKHR = &destroySwapchainBandicamCompat;
+      Logger::warn("Vulkan: Bandicam hook detected; synchronizing the device before swapchain destruction.");
+    }
+#endif
+  }
+
   DeviceFn::~DeviceFn() {
     if (m_owned)
       this->vkDestroyDevice(m_device, nullptr);
+
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
+    std::lock_guard lock(g_bandicamMutex);
+    g_bandicamDevices.erase(m_device);
+#endif
   }
   
 }
