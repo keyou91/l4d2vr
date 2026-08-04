@@ -7,6 +7,10 @@
 ## Video demo
 [<img width="640" height="360" alt="image" src="https://github.com/user-attachments/assets/63a16c57-621e-40fc-a581-5f64eafa9633" />](https://www.youtube.com/watch?v=J9vw8VXJWZM)
 
+## About updates
+It's best to subscribe to this mod directly on the Workshop to avoid missing updates
+ [Click here](https://steamcommunity.com/sharedfiles/filedetails/?id=3724995607) to go to the Workshop
+
 ## Things that work
 * Singleplayer and [multiplayer](#how-to-play-multiplayer)
 * 6DoF VR view
@@ -23,26 +27,6 @@
 ## How to play multiplayer
 * You can join any server to play, but if the server wasn't created by VR some VR-exclusive features. 
 * Versus works, but it's barely been tested.
-
-### Multiplayer VR body poses
-
-The updated client sends a compact HMD + left controller + right controller
-pose at 25 Hz. Observing clients reconstruct the survivor's head, upper body,
-and both arms locally while preserving the game's native lower-body animation.
-
-* Every player who should see VR body motion needs the updated L4D2VR client.
-* A listen server is handled directly by the host's updated `d3d9.dll`; no
-  extra server plugin is required.
-* A standalone dedicated server still needs `l4d2vr_pose_server.dll` and
-  `l4d2vr_pose_server.vdf` in `left4dead2/addons`.
-* A client without the update continues to see the original L4D2 animation.
-* The pose override is visual only; it does not change collision or hitboxes.
-* `WorldModelVRPoseLocalThirdPerson=true` lets the local player verify the same
-  reconstruction path in a third-person camera.
-* `WorldModelVRPoseBodyYawDeadzoneDeg=35` lets the head and hands move inside a
-  visual comfort cone before the lower body starts turning.
-* `WorldModelVRPoseBodyYawTurnSpeedDegPerSecond=180` controls the smooth
-  lower-body catch-up speed after that threshold is crossed.
 
 ## How to use
 1. Download [L4D2VR.zip](https://github.com/liu547161153/l4d2vr/releases) and extract the files to your Left 4 Dead 2 directory `steamapps/common/Left 4 Dead 2`
@@ -110,6 +94,12 @@ pacing from [netborg-afps](https://github.com/netborg-afps/dxvk/releases).
 * Disabling all add-ons, then Steam > Left 4 Dead 2 > Verifying integrity of game files.
 * Re-installing the game.
 
+### How to disable it
+If you want to return to normal game mode, there are two methods:
+Method 1: add the startup parameter -nohmd.
+Method 2: find d3d9.dll in the game root directory and rename it or move it somewhere else. After launching the game, open the console and enter crosshair 1 to enable the crosshair again, since VRMod disables it.
+I still recommend keeping it, because it can also be used as DXVK.
+
 ## Build instructions
 1. `git clone --recurse-submodules https://github.com/liu547161153/l4d2vr.git`
 2. Initialize submodules:
@@ -141,4 +131,5 @@ It can be used for `server.dll`-side symbols and also for `engine.dll` targets (
 * [VirtualFortress2](https://github.com/PinkMilkProductions/VirtualFortress2)
 * [gmcl_openvr](https://github.com/Planimeter/gmcl_openvr/)
 * [DXVK](https://github.com/doitsujin/dxvk)
-* [source-sdk-2013](https://github.com/ValveSoftware/source-sdk-2013/)
+* [hl2sdk/l4d2](https://github.com/alliedmodders/hl2sdk/tree/l4d2)
+* [ozz-animation](https://github.com/guillaumeblanc/ozz-animation)
