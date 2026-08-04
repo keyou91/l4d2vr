@@ -1,5 +1,7 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
 #include <Windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "Winmm.lib")
 #ifdef _MSC_VER
 #pragma execution_character_set("utf-8")
 #endif
@@ -2618,6 +2620,8 @@ bool L4D2VR_ApplyRecommendedVideoSettings()
 
 DWORD WINAPI InitL4D2VR(HMODULE hModule)
 {
+    timeBeginPeriod(1);
+
 #ifdef _DEBUG
     AllocConsole();
     FILE* fp;
@@ -2688,6 +2692,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         L4D2VR_ShutdownReShadeVRBridge();
         L4D2VR_ShutdownSystemMouseInputSuppression();
         Game::UninstallVertexFormatWarningFilter();
+        timeEndPeriod(1);
         break;
     }
     return TRUE;

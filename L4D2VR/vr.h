@@ -588,6 +588,10 @@ public:
 	// Render thread id (captured in dRenderView) used to gate render-only snapshot reads.
 	std::atomic<uint32_t> m_RenderThreadId{ 0 };
 
+	// Queued Source render-worker thread priority:
+	// 0 = default, 1 = ABOVE_NORMAL, 2 = HIGHEST.
+	int m_QueuedRenderThreadPriorityBoost = 1;
+
 	// Queued render camera -> update-thread bridge. The render hook must not write
 	// plain m_SetupOrigin/m_SetupAngles while UpdateTracking is using them to
 	// advance m_CameraAnchor. The update thread consumes this coherent snapshot.
@@ -1172,6 +1176,22 @@ public:
 	std::atomic<uint32_t> m_LastSubmittedPoseToken{ 0 };
 	std::atomic<bool> m_SubmitInFlight{ false };
 	std::atomic<uint32_t> m_LastSubmittedCompositorFrameIndex{ 0 };
+	// RenderPipelineDebugLog-only counters and timings. All writers check the
+	// switch before touching these atomics, keeping the normal hot path clean.
+	std::atomic<uint32_t> m_SubmitInFlightSkipCount{ 0 };
+	std::atomic<uint32_t> m_CompositorFrameIndexDedupSkipCount{ 0 };
+	std::atomic<uint32_t> m_ActualCompositorSubmitCount{ 0 };
+	std::atomic<uint32_t> m_SubmitVRTexturesEntryCount{ 0 };
+	std::atomic<uint32_t> m_SubmitEyeNoneCount{ 0 };
+	std::atomic<uint32_t> m_SubmitEyeAlreadySubmittedCount{ 0 };
+	std::atomic<uint32_t> m_SubmitEyeOtherErrorCount{ 0 };
+	std::atomic<uint32_t> m_PoseWaitCount{ 0 };
+	std::atomic<uint32_t> m_PoseWaitOvershootCount{ 0 };
+	std::atomic<uint64_t> m_PoseWaitOvershootUsMax{ 0 };
+	std::atomic<uint64_t> m_PresentExclusiveLockWaitUsLast{ 0 };
+	std::atomic<uint64_t> m_PresentExclusiveLockWaitUsMax{ 0 };
+	std::atomic<uint64_t> m_PresentCallCount{ 0 };
+	std::atomic<uint64_t> m_PresentFrameIntervalUsMax{ 0 };
 	// Render-thread -> submit-thread frame handoff (queued/multicore mode).
 	// dRenderView increments m_RenderCompletedFrameId and signals m_RenderFrameReadyEvent
 	// when a full stereo frame is rendered into eye textures.

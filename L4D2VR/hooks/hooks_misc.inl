@@ -36,6 +36,24 @@ namespace vr_vm_stabilize
 #endif
     }
 
+    inline bool SafeReadBytes(const void* p, void* out, size_t len)
+    {
+#if defined(_MSC_VER)
+        __try
+        {
+            memcpy(out, p, len);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        memcpy(out, p, len);
+        return true;
+#endif
+    }
+
     inline Vector GetOrigin(const Mat3x4& a)
     {
         return Vector(a.m[0][3], a.m[1][3], a.m[2][3]);
@@ -326,17 +344,25 @@ namespace vr_vm_stabilize
         if (!ptr)
             return false;
 
-        for (size_t i = 0; i < maxLen; ++i)
+        constexpr size_t kChunkSize = 16;
+        char chunk[kChunkSize];
+
+        for (size_t base = 0; base < maxLen; base += kChunkSize)
         {
-            char c = '\0';
-            if (!SafeRead(ptr + i, c))
+            const size_t want = (std::min)(kChunkSize, maxLen - base);
+            if (!SafeReadBytes(ptr + base, chunk, want))
                 return false;
-            if (c == '\0')
-                return !out.empty();
-            const unsigned char uc = static_cast<unsigned char>(c);
-            if (uc < 32 || uc > 126)
-                return false;
-            out.push_back(c);
+
+            for (size_t i = 0; i < want; ++i)
+            {
+                const char c = chunk[i];
+                if (c == '\0')
+                    return !out.empty();
+                const unsigned char uc = static_cast<unsigned char>(c);
+                if (uc < 32 || uc > 126)
+                    return false;
+                out.push_back(c);
+            }
         }
         return false;
     }
@@ -575,8 +601,23 @@ namespace vr_vm_stabilize
         return true;
     }
 
-    inline bool TryCollectBoneNamesFromDrawState(
+    struct CachedBoneLayout
+    {
+        int id = 0;
+        int version = 0;
+        int studioLength = 0;
+        bool success = false;
+        std::vector<std::string> names;
+        std::vector<int> parents;
+        int numBones = 0;
+        int boneIndex = 0;
+        int stride = 0;
+        int numBonesOffset = 0;
+    };
+
+    inline bool TryCollectBoneNamesFromDrawStateUncached(
         void* drawState,
+        const uint8_t* studioHdr,
         std::vector<std::string>& outNames,
         std::vector<int>& outParents,
         int& outNumBones,
@@ -591,9 +632,6 @@ namespace vr_vm_stabilize
         outStride = 0;
         outNumBonesOffset = 0;
 
-        const uint8_t* studioHdr = nullptr;
-        if (!TryGetStudioHdrFromDrawState(drawState, studioHdr))
-            return false;
         if (!TryGetBoneTableLayout(drawState, outNumBones, outBoneIndex, outNumBonesOffset))
             return false;
 
@@ -688,6 +726,84 @@ namespace vr_vm_stabilize
         outNames.swap(bestNames);
         outParents.swap(bestParents);
         return true;
+    }
+
+    inline bool TryCollectBoneNamesFromDrawState(
+        void* drawState,
+        std::vector<std::string>& outNames,
+        std::vector<int>& outParents,
+        int& outNumBones,
+        int& outBoneIndex,
+        int& outStride,
+        int& outNumBonesOffset)
+    {
+        outNames.clear();
+        outParents.clear();
+        outNumBones = 0;
+        outBoneIndex = 0;
+        outStride = 0;
+        outNumBonesOffset = 0;
+
+        const uint8_t* studioHdr = nullptr;
+        if (!TryGetStudioHdrFromDrawState(drawState, studioHdr))
+            return false;
+
+        int id = 0;
+        int version = 0;
+        int studioLength = 0;
+        SafeRead(studioHdr + 0x00, id);
+        SafeRead(studioHdr + 0x04, version);
+        SafeRead(studioHdr + 0x4C, studioLength);
+
+        static thread_local std::unordered_map<const void*, CachedBoneLayout>
+            s_BoneLayoutCache;
+        auto cachedIt = s_BoneLayoutCache.find(studioHdr);
+        if (cachedIt != s_BoneLayoutCache.end())
+        {
+            const CachedBoneLayout& cached = cachedIt->second;
+            if (cached.id == id &&
+                cached.version == version &&
+                cached.studioLength == studioLength)
+            {
+                if (cached.success)
+                {
+                    outNames = cached.names;
+                    outParents = cached.parents;
+                    outNumBones = cached.numBones;
+                    outBoneIndex = cached.boneIndex;
+                    outStride = cached.stride;
+                    outNumBonesOffset = cached.numBonesOffset;
+                }
+                return cached.success;
+            }
+        }
+
+        CachedBoneLayout fresh;
+        fresh.id = id;
+        fresh.version = version;
+        fresh.studioLength = studioLength;
+        fresh.success = TryCollectBoneNamesFromDrawStateUncached(
+            drawState,
+            studioHdr,
+            outNames,
+            outParents,
+            outNumBones,
+            outBoneIndex,
+            outStride,
+            outNumBonesOffset);
+        if (fresh.success)
+        {
+            fresh.names = outNames;
+            fresh.parents = outParents;
+            fresh.numBones = outNumBones;
+            fresh.boneIndex = outBoneIndex;
+            fresh.stride = outStride;
+            fresh.numBonesOffset = outNumBonesOffset;
+        }
+
+        const bool success = fresh.success;
+        s_BoneLayoutCache[studioHdr] = std::move(fresh);
+        return success;
     }
 }
 

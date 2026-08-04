@@ -1,3 +1,35 @@
+static DWORD TimedWaitForPoseEvent(HANDLE event, DWORD timeoutMs)
+{
+	VR* const vr = Hooks::m_VR;
+	if (!vr || !vr->m_RenderPipelineDebugLog)
+		return WaitForSingleObject(event, timeoutMs);
+
+	const auto waitStart = std::chrono::steady_clock::now();
+	const DWORD result = WaitForSingleObject(event, timeoutMs);
+	const auto waitEnd = std::chrono::steady_clock::now();
+
+	vr->m_PoseWaitCount.fetch_add(1, std::memory_order_relaxed);
+	const uint64_t waitUs = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::microseconds>(
+			waitEnd - waitStart).count());
+	const uint64_t requestedUs = static_cast<uint64_t>(timeoutMs) * 1000ull;
+	if (waitUs > requestedUs + 3000ull)
+	{
+		vr->m_PoseWaitOvershootCount.fetch_add(1, std::memory_order_relaxed);
+		uint64_t previousMax =
+			vr->m_PoseWaitOvershootUsMax.load(std::memory_order_relaxed);
+		while (waitUs > previousMax &&
+			!vr->m_PoseWaitOvershootUsMax.compare_exchange_weak(
+				previousMax,
+				waitUs,
+				std::memory_order_relaxed))
+		{
+		}
+	}
+
+	return result;
+}
+
 bool __fastcall Hooks::dFirstPersonBodyRenderableShouldDraw(void* ecx, void* edx)
 {
 	const bool originalResult = hkFirstPersonBodyRenderableShouldDraw.fOriginal
@@ -820,6 +852,26 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		// Remember which thread is producing render snapshots (used by other render-time hooks).
 		m_VR->m_RenderThreadId.store(static_cast<uint32_t>(GetCurrentThreadId()), std::memory_order_relaxed);
 
+		// Apply the requested priority once for each worker thread. If Source replaces
+		// its queued render worker, the new thread gets its own thread_local state.
+		static thread_local bool s_renderThreadPriorityBoosted = false;
+		if (!s_renderThreadPriorityBoosted && m_VR->m_QueuedRenderThreadPriorityBoost > 0)
+		{
+			const int desiredPriority = (m_VR->m_QueuedRenderThreadPriorityBoost >= 2)
+				? THREAD_PRIORITY_HIGHEST
+				: THREAD_PRIORITY_ABOVE_NORMAL;
+			s_renderThreadPriorityBoosted =
+				SetThreadPriority(GetCurrentThread(), desiredPriority) != 0;
+
+			if (m_VR->m_RenderPipelineDebugLog)
+			{
+				Game::logMsg(
+					"[VR][Queued][RenderThreadPriority] tid=%lu requested=%d boosted=%d",
+					GetCurrentThreadId(),
+					desiredPriority,
+					s_renderThreadPriorityBoosted ? 1 : 0);
+			}
+		}
 
 		static thread_local bool s_paceInit = false;
 		static thread_local std::chrono::steady_clock::time_point s_nextPace{};
@@ -1364,7 +1416,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					DWORD remaining = timeoutMs;
 					while (remaining > 0)
 					{
-						const DWORD wr = WaitForSingleObject(m_VR->m_PoseWaiterEvent, remaining);
+						const DWORD wr = TimedWaitForPoseEvent(m_VR->m_PoseWaiterEvent, remaining);
 						if (wr != WAIT_OBJECT_0)
 							break;
 
@@ -1406,7 +1458,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			if (!renderPoseUsesTrackingPrediction && fullSyncSubmitGate && !havePoses && m_VR->m_PoseWaiterEvent)
 			{
 				const DWORD firstWait = std::min<DWORD>(hmdFramePoseWaitMs(), 5u);
-				if (WaitForSingleObject(m_VR->m_PoseWaiterEvent, firstWait) == WAIT_OBJECT_0)
+				if (TimedWaitForPoseEvent(m_VR->m_PoseWaiterEvent, firstWait) == WAIT_OBJECT_0)
 					havePoses = m_VR->ReadPoseWaiterSnapshot(renderPoses.data(), &poseSeq);
 			}
 
@@ -1553,7 +1605,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				if (!havePoses && effectiveTimeoutMs > 0)
 				{
 					const DWORD firstWait = (effectiveTimeoutMs < 5u) ? effectiveTimeoutMs : 5u;
-					if (WaitForSingleObject(m_VR->m_PoseWaiterEvent, firstWait) == WAIT_OBJECT_0)
+					if (TimedWaitForPoseEvent(m_VR->m_PoseWaiterEvent, firstWait) == WAIT_OBJECT_0)
 						havePoses = m_VR->ReadPoseWaiterSnapshot(renderPoses.data(), &poseSeq);
 				}
 
@@ -1603,7 +1655,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 						DWORD remaining = effectiveTimeoutMs;
 						while (remaining > 0)
 						{
-							const DWORD wr = WaitForSingleObject(m_VR->m_PoseWaiterEvent, remaining);
+							const DWORD wr = TimedWaitForPoseEvent(m_VR->m_PoseWaiterEvent, remaining);
 							if (wr != WAIT_OBJECT_0)
 								break;
 

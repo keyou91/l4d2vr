@@ -5331,7 +5331,30 @@ namespace dxvk {
                 // Swapchain Present is outside Source's material call queue. Drain
                 // already-active Source calls and isolate only this transaction rather
                 // than making every draw in the rendered frame contend on one spinlock.
-                queuedPresentLock = LockDeviceExclusive();
+                VR* const timingVr = g_Game->m_VR;
+                if (timingVr->m_RenderPipelineDebugLog) {
+                    const auto lockWaitStart = std::chrono::steady_clock::now();
+                    queuedPresentLock = LockDeviceExclusive();
+                    const auto lockWaitEnd = std::chrono::steady_clock::now();
+                    const uint64_t lockWaitUs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            lockWaitEnd - lockWaitStart).count());
+                    timingVr->m_PresentExclusiveLockWaitUsLast.store(
+                        lockWaitUs,
+                        std::memory_order_relaxed);
+                    uint64_t previousMax =
+                        timingVr->m_PresentExclusiveLockWaitUsMax.load(
+                            std::memory_order_relaxed);
+                    while (lockWaitUs > previousMax &&
+                        !timingVr->m_PresentExclusiveLockWaitUsMax.compare_exchange_weak(
+                            previousMax,
+                            lockWaitUs,
+                            std::memory_order_relaxed)) {
+                    }
+                }
+                else {
+                    queuedPresentLock = LockDeviceExclusive();
+                }
             }
 
             result = m_implicitSwapchain->Present(
@@ -5340,6 +5363,41 @@ namespace dxvk {
                 hDestWindowOverride,
                 pDirtyRegion,
                 dwFlags);
+        }
+
+        if (g_Game && g_Game->m_VR) {
+            VR* const timingVr = g_Game->m_VR;
+            static thread_local bool s_presentTimingWasEnabled = false;
+            static thread_local std::chrono::steady_clock::time_point
+                s_lastPresentCallTime{};
+            if (timingVr->m_RenderPipelineDebugLog) {
+                const auto presentCallNow = std::chrono::steady_clock::now();
+                if (!s_presentTimingWasEnabled)
+                    s_lastPresentCallTime = {};
+
+                timingVr->m_PresentCallCount.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+                if (s_lastPresentCallTime.time_since_epoch().count() != 0) {
+                    const uint64_t frameIntervalUs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            presentCallNow - s_lastPresentCallTime).count());
+                    uint64_t previousMax =
+                        timingVr->m_PresentFrameIntervalUsMax.load(
+                            std::memory_order_relaxed);
+                    while (frameIntervalUs > previousMax &&
+                        !timingVr->m_PresentFrameIntervalUsMax.compare_exchange_weak(
+                            previousMax,
+                            frameIntervalUs,
+                            std::memory_order_relaxed)) {
+                    }
+                }
+                s_lastPresentCallTime = presentCallNow;
+                s_presentTimingWasEnabled = true;
+            }
+            else {
+                s_presentTimingWasEnabled = false;
+            }
         }
 
         if (g_Game && g_Game->m_VR && g_Game->m_VR->m_CreatedVRTextures) {
@@ -5356,19 +5414,93 @@ namespace dxvk {
                     : 0;
 
                 if (minIntervalMs == 0 || nowMs - s_lastRenderPipelinePresentLogMs >= minIntervalMs) {
+                    const DWORD wallClockGapMs = s_lastRenderPipelinePresentLogMs != 0
+                        ? nowMs - s_lastRenderPipelinePresentLogMs
+                        : 0;
                     s_lastRenderPipelinePresentLogMs = nowMs;
                     const uint32_t completed = vr->m_RenderCompletedFrameId.load(std::memory_order_acquire);
                     const uint32_t submitted = vr->m_LastSubmittedFrameId.load(std::memory_order_acquire);
                     const uint32_t staleStreak = vr->m_QueuedSubmitStaleStreak.load(std::memory_order_acquire);
 
-                    Game::logMsg("[VR][RenderPipe][Present] tid=%lu q=%d inGame=%d completed=%u submitted=%u renderedNew=%d waitCfg=%d stale=%u result=0x%08lX flags=0x%08lX renderTid=%u",
+                    const uint64_t lockWaitUsLast =
+                        vr->m_PresentExclusiveLockWaitUsLast.load(
+                            std::memory_order_relaxed);
+                    const uint64_t lockWaitUsMax =
+                        vr->m_PresentExclusiveLockWaitUsMax.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint64_t presentCalls =
+                        vr->m_PresentCallCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint64_t frameIntervalUsMax =
+                        vr->m_PresentFrameIntervalUsMax.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitEntries =
+                        vr->m_SubmitVRTexturesEntryCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitInFlightSkips =
+                        vr->m_SubmitInFlightSkipCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t frameIndexMatches =
+                        vr->m_CompositorFrameIndexDedupSkipCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitCalls =
+                        vr->m_ActualCompositorSubmitCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitNone =
+                        vr->m_SubmitEyeNoneCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitAlready =
+                        vr->m_SubmitEyeAlreadySubmittedCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t submitOtherError =
+                        vr->m_SubmitEyeOtherErrorCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t poseWaits =
+                        vr->m_PoseWaitCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint32_t poseWaitOvershoots =
+                        vr->m_PoseWaitOvershootCount.exchange(
+                            0,
+                            std::memory_order_relaxed);
+                    const uint64_t poseWaitOvershootUsMax =
+                        vr->m_PoseWaitOvershootUsMax.exchange(
+                            0,
+                            std::memory_order_relaxed);
+
+                    Game::logMsg("[VR][RenderPipe][Present] tid=%lu q=%d inGame=%d completed=%u submitted=%u renderedNew=%d waitCfg=%d stale=%u result=0x%08lX flags=0x%08lX renderTid=%u lockWaitUsLast=%llu lockWaitUsMax=%llu presentCalls=%llu wallClockGapMs=%lu frameIntervalUsMax=%llu submitEntries=%u inFlightSkips=%u frameIndexMatches=%u submitCalls=%u submitNone=%u submitAlready=%u submitOtherErr=%u poseWaits=%u poseWaitOvershoots=%u poseWaitOvershootUsMax=%llu",
                         presentThreadId, queued ? 1 : 0, inGame ? 1 : 0,
                         completed, submitted,
                         vr->m_RenderedNewFrame.load(std::memory_order_acquire) ? 1 : 0,
                         vr->m_QueuedSubmitWaitMs, staleStreak,
                         static_cast<unsigned long>(result),
                         static_cast<unsigned long>(dwFlags),
-                        vr->m_RenderThreadId.load(std::memory_order_acquire));
+                        vr->m_RenderThreadId.load(std::memory_order_acquire),
+                        static_cast<unsigned long long>(lockWaitUsLast),
+                        static_cast<unsigned long long>(lockWaitUsMax),
+                        static_cast<unsigned long long>(presentCalls),
+                        static_cast<unsigned long>(wallClockGapMs),
+                        static_cast<unsigned long long>(frameIntervalUsMax),
+                        submitEntries,
+                        submitInFlightSkips,
+                        frameIndexMatches,
+                        submitCalls,
+                        submitNone,
+                        submitAlready,
+                        submitOtherError,
+                        poseWaits,
+                        poseWaitOvershoots,
+                        static_cast<unsigned long long>(poseWaitOvershootUsMax));
                 }
             }
         }

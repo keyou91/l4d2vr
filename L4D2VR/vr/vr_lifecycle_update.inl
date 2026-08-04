@@ -3036,6 +3036,10 @@ vr::EVROverlayError VR::SetOverlayTextureSynchronized(
 
 void VR::SubmitVRTextures()
 {
+    const bool renderPipelineDiagnostics = m_RenderPipelineDebugLog;
+    if (renderPipelineDiagnostics)
+        m_SubmitVRTexturesEntryCount.fetch_add(1, std::memory_order_relaxed);
+
     if (!m_Compositor)
         return;
 
@@ -3157,7 +3161,7 @@ void VR::SubmitVRTextures()
             }
         }
 
-        Game::logMsg("[VR][DesktopHUD][Submit] tid=%lu q=%d inGame=%d renderedNew=%d completed=%u submitted=%u pose=%u lastPose=%u submitInFlight=%d renderedHud=%d hudPainted=%d menuBlank=%d win=%dx%d bb=%dx%d hudTex=%dx%d actual=%dx%d",
+        Game::logMsg("[VR][DesktopHUD][Submit] tid=%lu q=%d inGame=%d renderedNew=%d completed=%u submitted=%u pose=%u lastPose=%u submitInFlight=%d renderedHud=%d hudPainted=%d menuBlank=%d win=%dx%d bb=%dx%d hudTex=%dx%d actual=%dx%d inFlightSkips=%u frameIndexMatches=%u submitCalls=%u",
             GetCurrentThreadId(), queued ? 1 : 0, inGame ? 1 : 0,
             renderedNewFrame ? 1 : 0,
             renderCompletedFrameId, lastSubmittedFrameId,
@@ -3166,7 +3170,10 @@ void VR::SubmitVRTextures()
             m_RenderedHud.load(std::memory_order_acquire) ? 1 : 0,
             m_HudPaintedThisFrame.load(std::memory_order_acquire) ? 1 : 0,
             m_MenuBlankSubmitted ? 1 : 0,
-            windowW, windowH, backBufferW, backBufferH, hudMapW, hudMapH, hudActualW, hudActualH);
+            windowW, windowH, backBufferW, backBufferH, hudMapW, hudMapH, hudActualW, hudActualH,
+            m_SubmitInFlightSkipCount.load(std::memory_order_relaxed),
+            m_CompositorFrameIndexDedupSkipCount.load(std::memory_order_relaxed),
+            m_ActualCompositorSubmitCount.load(std::memory_order_relaxed));
     }
 
     struct SubmitInFlightGuard
@@ -3186,7 +3193,30 @@ void VR::SubmitVRTextures()
     {
         bool expectedSubmitInFlight = false;
         if (!m_SubmitInFlight.compare_exchange_strong(expectedSubmitInFlight, true, std::memory_order_acq_rel))
+        {
+            if (renderPipelineDiagnostics)
+            {
+                const uint32_t skipCount =
+                    m_SubmitInFlightSkipCount.fetch_add(
+                        1,
+                        std::memory_order_relaxed) + 1;
+                static std::chrono::steady_clock::time_point
+                    s_lastSubmitInFlightSkipLog{};
+                if (!ShouldThrottle(
+                        s_lastSubmitInFlightSkipLog,
+                        m_RenderPipelineDebugLogHz))
+                {
+                    Game::logMsg(
+                        "[VR][Queued][SubmitInFlightSkip] tid=%lu skipCount=%u completed=%u submitted=%u submitCalls=%u",
+                        GetCurrentThreadId(),
+                        skipCount,
+                        m_RenderCompletedFrameId.load(std::memory_order_acquire),
+                        m_LastSubmittedFrameId.load(std::memory_order_acquire),
+                        m_ActualCompositorSubmitCount.load(std::memory_order_relaxed));
+                }
+            }
             return;
+        }
         submitInFlightGuard.flag = &m_SubmitInFlight;
 
         poseToken = m_SubmitPoseToken.load(std::memory_order_acquire);
@@ -3196,23 +3226,31 @@ void VR::SubmitVRTextures()
         if (!m_QueuedSubmitUseRenderPoseToken && poseToken == lastSubmittedTokenAtPoseRead)
             return;
 
-        auto queryCompositorFrameIndex = [&]() -> uint32_t
-            {
-                vr::Compositor_FrameTiming timing{};
-                timing.m_nSize = sizeof(timing);
-                if (m_Compositor->GetFrameTiming(&timing, 0) && timing.m_nFrameIndex != 0)
-                    return timing.m_nFrameIndex;
-                return 0;
-            };
-
-        compositorFrameIndex = queryCompositorFrameIndex();
-        const uint32_t lastSubmittedCompositorFrameIndex = m_LastSubmittedCompositorFrameIndex.load(std::memory_order_acquire);
-        if (compositorFrameIndex != 0 && compositorFrameIndex == lastSubmittedCompositorFrameIndex)
+        // Do not pre-emptively discard this submit when GetFrameTiming reports
+        // the same compositor frame index. That index advances on compositor
+        // vsync and is not phase-aligned with the engine Present path, so equality
+        // does not prove that the new eye textures are duplicates. Let Submit()
+        // decide and handle VRCompositorError_AlreadySubmitted below.
+        if (renderPipelineDiagnostics)
         {
-            // Same compositor frame index: treat as already handled for this submit token.
-            if (!m_QueuedSubmitUseRenderPoseToken)
-                m_LastSubmittedPoseToken.store(poseToken, std::memory_order_release);
-            return;
+            vr::Compositor_FrameTiming timing{};
+            timing.m_nSize = sizeof(timing);
+            if (m_Compositor->GetFrameTiming(&timing, 0) &&
+                timing.m_nFrameIndex != 0)
+            {
+                compositorFrameIndex = timing.m_nFrameIndex;
+            }
+
+            const uint32_t lastSubmittedCompositorFrameIndex =
+                m_LastSubmittedCompositorFrameIndex.load(
+                    std::memory_order_acquire);
+            if (compositorFrameIndex != 0 &&
+                compositorFrameIndex == lastSubmittedCompositorFrameIndex)
+            {
+                m_CompositorFrameIndexDedupSkipCount.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+            }
         }
     }
 
@@ -3477,6 +3515,32 @@ void VR::SubmitVRTextures()
         }
     }
 
+    auto recordCompositorSubmit = [&](vr::EVRCompositorError submitError)
+        {
+            if (!renderPipelineDiagnostics)
+                return;
+
+            m_ActualCompositorSubmitCount.fetch_add(
+                1,
+                std::memory_order_relaxed);
+            if (submitError == vr::VRCompositorError_None)
+            {
+                m_SubmitEyeNoneCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (submitError == vr::VRCompositorError_AlreadySubmitted)
+            {
+                m_SubmitEyeAlreadySubmittedCount.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+            }
+            else
+            {
+                m_SubmitEyeOtherErrorCount.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+            }
+        };
+
     auto submitEye = [&](vr::EVREye eye, vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds)
         {
             if (!texture || !texture->handle)
@@ -3505,7 +3569,9 @@ void VR::SubmitVRTextures()
                 }
             }
 
-            vr::EVRCompositorError submitError = m_Compositor->Submit(eye, submitTexture, bounds, submitFlags);
+            vr::EVRCompositorError submitError =
+                m_Compositor->Submit(eye, submitTexture, bounds, submitFlags);
+            recordCompositorSubmit(submitError);
             if (submitError != vr::VRCompositorError_None &&
                 useRenderPoseTextureSubmit &&
                 submitError != vr::VRCompositorError_AlreadySubmitted)
@@ -3524,7 +3590,13 @@ void VR::SubmitVRTextures()
                             m_LastSubmittedFrameId.load(std::memory_order_acquire));
                     }
                 }
-                submitError = m_Compositor->Submit(eye, &textureCopy, bounds, vr::Submit_Default);
+                submitError =
+                    m_Compositor->Submit(
+                        eye,
+                        &textureCopy,
+                        bounds,
+                        vr::Submit_Default);
+                recordCompositorSubmit(submitError);
             }
             if (submitError != vr::VRCompositorError_None)
             {

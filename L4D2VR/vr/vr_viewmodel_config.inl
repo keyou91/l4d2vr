@@ -3195,6 +3195,12 @@ void VR::ParseConfigFile()
     // Multicore rendering: present-side wait budget (ms) for a fresh dRenderView frame before submit.
     // 0 = no wait (max FPS, can increase stale-frame submits), 1~3 = usually best balance.
     m_QueuedSubmitWaitMs = std::clamp(getInt("QueuedSubmitWaitMs", m_QueuedSubmitWaitMs), 0, 20);
+    // OS priority boost for the queued Source render-worker thread.
+    // 0 = default, 1 = ABOVE_NORMAL, 2 = HIGHEST.
+    m_QueuedRenderThreadPriorityBoost = std::clamp(
+        getInt("QueuedRenderThreadPriorityBoost", m_QueuedRenderThreadPriorityBoost),
+        0,
+        2);
     // true = only submit frames whose render-completed pose advanced (less ghosting, can skip frames).
     // false = original submit-pose-token route (smoother cadence, can submit stale render-pose frames).
     m_QueuedSubmitUseRenderPoseToken = getBool("QueuedSubmitUseRenderPoseToken", m_QueuedSubmitUseRenderPoseToken);
