@@ -2354,8 +2354,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	else if (localPlayerValid && !allowStateThirdPerson && !tpStateDbg.selfMedkit && m_VR->m_ThirdPersonHoldFrames > 0)
 		m_VR->m_ThirdPersonHoldFrames--;
 
+	const bool materialPreviewActive =
+		m_VR->m_MaterialPreviewActive.load(std::memory_order_acquire) &&
+		!stateIsDeadOrObserver && !hasViewEntityOverride;
 	const bool defaultThirdPersonNow = m_VR->m_ThirdPersonDefault && !stateIsDeadOrObserver && !hasViewEntityOverride;
-	bool renderThirdPerson = defaultThirdPersonNow || customWalkThirdPersonNow || engineThirdPersonNow || tpStateDbg.selfMedkit || (m_VR->m_ThirdPersonHoldFrames > 0);
+	bool renderThirdPerson = materialPreviewActive || defaultThirdPersonNow || customWalkThirdPersonNow || engineThirdPersonNow || tpStateDbg.selfMedkit || (m_VR->m_ThirdPersonHoldFrames > 0);
 	if (usingMountedGun)
 	{
 		renderThirdPerson = false;
@@ -2603,7 +2606,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	Vector viewAngles = m_VR->GetViewAngle();
 	Vector renderViewAngles = viewAngles;
 	const bool thirdPersonFrontViewActive = renderThirdPerson
-		&& m_VR->m_ThirdPersonFrontViewEnabled
+		&& (materialPreviewActive || m_VR->m_ThirdPersonFrontViewEnabled)
 		&& !hasViewEntityOverride
 		&& !stateIsDeadOrObserver;
 	auto wrapYawDeg = [](float yaw)
@@ -2683,7 +2686,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			cameraBasisAng = engineCamAngles;
 			m_VR->m_ThirdPersonPoseInitialized = false;
 		}
-		else if (!m_VR->m_ThirdPersonCameraFollowHmd)
+		else if (materialPreviewActive || !m_VR->m_ThirdPersonCameraFollowHmd)
 		{
 			if (!m_VR->m_ThirdPersonPoseInitialized)
 			{
@@ -2712,7 +2715,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			// In front-view mode, keep the main third-person camera yaw aligned with the scope yaw
 			// so thumbstick/scope turning also recenters the character in the main view.
 			float frontYaw = 0.0f;
-			if (m_VR->ShouldRenderScope())
+			if (!materialPreviewActive && m_VR->ShouldRenderScope())
 			{
 				frontYaw = m_VR->GetScopeCameraAbsAngle().y;
 			}
@@ -2724,6 +2727,19 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			frontYaw = wrapYawDeg(frontYaw + 180.0f);
 			renderCamAng.y = frontYaw;
 			cameraBasisAng.y = frontYaw;
+			if (materialPreviewActive)
+			{
+				renderCamAng.x += m_VR->m_MaterialPreviewCameraPitch.load(
+					std::memory_order_acquire);
+				renderCamAng.y = wrapYawDeg(
+					renderCamAng.y +
+					m_VR->m_MaterialPreviewCameraYaw.load(
+						std::memory_order_acquire));
+				renderCamAng.z = wrapYawDeg(
+					renderCamAng.z +
+					m_VR->m_MaterialPreviewCameraRoll.load(
+						std::memory_order_acquire));
+			}
 		}
 
 		renderViewAngles.x = renderCamAng.x;
@@ -2756,7 +2772,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			// Death, observer and scripted cameras keep their authored engine position.
 			baseCenter = engineCamOrigin;
 		}
-		else if (m_VR->m_ThirdPersonCameraFollowHmd &&
+		else if (!materialPreviewActive &&
+			m_VR->m_ThirdPersonCameraFollowHmd &&
 			(engineThirdPersonNow || customWalkThirdPersonNow))
 		{
 			// Legacy follow mode keeps the engine's shoulder-camera origin.
@@ -2779,7 +2796,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		Vector camCenter = baseCenter + (basisFwd * (-eyeZ));
 		if (thirdPersonFrontViewActive)
 		{
-			const Vector& configuredOffset = m_VR->m_ThirdPersonFrontVRCameraOffset;
+			const float materialPreviewCmToWorld = m_VR->m_VRScale * 0.01f;
+			const Vector configuredOffset = materialPreviewActive
+				? Vector{
+					m_VR->m_MaterialPreviewCameraDistance.load(std::memory_order_acquire) * materialPreviewCmToWorld,
+					m_VR->m_MaterialPreviewCameraHorizontal.load(std::memory_order_acquire) * materialPreviewCmToWorld,
+					m_VR->m_MaterialPreviewCameraVertical.load(std::memory_order_acquire) * materialPreviewCmToWorld }
+				: m_VR->m_ThirdPersonFrontVRCameraOffset;
 			camCenter = camCenter
 				+ (basisFwd * (-configuredOffset.x))
 				+ (basisRight * configuredOffset.y)

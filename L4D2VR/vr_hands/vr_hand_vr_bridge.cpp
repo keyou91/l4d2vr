@@ -3409,6 +3409,75 @@ bool VR::GetMagazineInteractionCalibrationSnapshot(MagazineInteractionCalibratio
     return true;
 }
 
+void VR::PublishPlayerModelMaterialsSnapshot(
+    uint32_t session,
+    int entityIndex,
+    const std::string& characterName,
+    const std::string& modelName,
+    const std::vector<std::string>& materialNames,
+    bool localPlayer)
+{
+    if (characterName.empty() || modelName.empty() || materialNames.empty())
+        return;
+
+    std::lock_guard<std::mutex> lock(m_PlayerModelMaterialsSnapshotMutex);
+    auto existing = m_LoadedPlayerModelMaterialsSnapshots.find(characterName);
+    const bool cacheMatches =
+        existing != m_LoadedPlayerModelMaterialsSnapshots.end() &&
+        existing->second.session == session &&
+        existing->second.entityIndex == entityIndex &&
+        existing->second.modelName == modelName &&
+        existing->second.materialNames == materialNames;
+    if (!cacheMatches)
+    {
+        PlayerModelMaterialsSnapshot snapshot{};
+        snapshot.valid = true;
+        snapshot.session = session;
+        snapshot.publishSeq = ++m_PlayerModelMaterialsSnapshotPublishSeq;
+        snapshot.entityIndex = entityIndex;
+        snapshot.characterName = characterName;
+        snapshot.modelName = modelName;
+        snapshot.materialNames = materialNames;
+        existing = m_LoadedPlayerModelMaterialsSnapshots.insert_or_assign(
+            characterName,
+            std::move(snapshot)).first;
+    }
+
+    if (localPlayer && existing != m_LoadedPlayerModelMaterialsSnapshots.end())
+        m_PlayerModelMaterialsSnapshot = existing->second;
+}
+
+void VR::ClearPlayerModelMaterialsSnapshot()
+{
+    std::lock_guard<std::mutex> lock(m_PlayerModelMaterialsSnapshotMutex);
+    if (!m_PlayerModelMaterialsSnapshot.valid &&
+        m_LoadedPlayerModelMaterialsSnapshots.empty())
+        return;
+
+    PlayerModelMaterialsSnapshot snapshot{};
+    snapshot.publishSeq = ++m_PlayerModelMaterialsSnapshotPublishSeq;
+    m_PlayerModelMaterialsSnapshot = std::move(snapshot);
+    m_LoadedPlayerModelMaterialsSnapshots.clear();
+}
+
+bool VR::GetPlayerModelMaterialsSnapshot(
+    PlayerModelMaterialsSnapshot& outSnapshot) const
+{
+    std::lock_guard<std::mutex> lock(m_PlayerModelMaterialsSnapshotMutex);
+    outSnapshot = m_PlayerModelMaterialsSnapshot;
+    return outSnapshot.valid;
+}
+
+void VR::GetLoadedPlayerModelMaterialsSnapshots(
+    std::vector<PlayerModelMaterialsSnapshot>& outSnapshots) const
+{
+    std::lock_guard<std::mutex> lock(m_PlayerModelMaterialsSnapshotMutex);
+    outSnapshots.clear();
+    outSnapshots.reserve(m_LoadedPlayerModelMaterialsSnapshots.size());
+    for (const auto& entry : m_LoadedPlayerModelMaterialsSnapshots)
+        outSnapshots.push_back(entry.second);
+}
+
 bool VR::IsMagazineInteractionLeftHandActive() const
 {
     if (m_MagazineInteractionShotgunShellMode &&

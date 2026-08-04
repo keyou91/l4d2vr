@@ -271,6 +271,17 @@ struct MagazineInteractionCalibrationSnapshot
 	std::chrono::steady_clock::time_point publishedAt{};
 };
 
+struct PlayerModelMaterialsSnapshot
+{
+	bool valid = false;
+	uint32_t session = 0;
+	uint32_t publishSeq = 0;
+	int entityIndex = -1;
+	std::string characterName;
+	std::string modelName;
+	std::vector<std::string> materialNames;
+};
+
 struct D3DAimLineOverlayEyeState
 {
 	bool valid = false;
@@ -402,6 +413,16 @@ public:
 	// In third-person front view, if true use eye/HMD as the scope+aim source.
 	// If false, keep scope+aim driven by right controller (recommended).
 	bool m_ThirdPersonFrontScopeFromEye = false;
+	// Character-material panel preview camera. The overlay thread only publishes
+	// atomics; the render hook consumes them without changing the user's normal
+	// third-person/front-view configuration.
+	std::atomic<bool> m_MaterialPreviewActive{ false };
+	std::atomic<float> m_MaterialPreviewCameraDistance{ 38.0f };
+	std::atomic<float> m_MaterialPreviewCameraHorizontal{ 0.0f };
+	std::atomic<float> m_MaterialPreviewCameraVertical{ 0.0f };
+	std::atomic<float> m_MaterialPreviewCameraPitch{ 0.0f };
+	std::atomic<float> m_MaterialPreviewCameraYaw{ 0.0f };
+	std::atomic<float> m_MaterialPreviewCameraRoll{ 0.0f };
 	bool m_ObserverThirdPerson = false;
 	// Map-load / reconnect camera stabilization.
 	// Source can transiently report observer-like netvars right after joining/changing maps.
@@ -973,7 +994,7 @@ public:
 	};
 	static constexpr size_t kObjectPullUsercmdSnapshotCount = 150;
 	std::array<ObjectPullUsercmdSnapshot, kObjectPullUsercmdSnapshotCount> m_ObjectPullUsercmdSnapshots{};
-	bool m_ObjectPullEnabled = true;
+	bool m_ObjectPullEnabled = false;
 	bool m_ObjectPullVisualsEnabled = true;
 	float m_ObjectPullMaxDistanceMeters = 12.0f;
 	float m_ObjectPullMinimumDistanceMeters = 0.25f;
@@ -1510,13 +1531,13 @@ public:
 	// Draw the local CTerrorPlayer world model during the two first-person VR eye scenes.
 	// Visibility and native model submission use exact local-renderable
 	// ShouldDraw/GetModel/DrawModel hooks.
-	bool m_FirstPersonBodyEnabled = true;
+	bool m_FirstPersonBodyEnabled = false;
 	bool m_FirstPersonBodyHideHead = true;
 	bool m_FirstPersonBodyHideArms = true;
 	// Multiplayer world-model reconstruction. The server only relays the compact
 	// HMD + two-controller packet; observers apply this visual IK locally.
-	bool m_WorldModelVRPoseEnabled = true;
-	bool m_WorldModelVRPoseLocalThirdPerson = true;
+	bool m_WorldModelVRPoseEnabled = false;
+	bool m_WorldModelVRPoseLocalThirdPerson = false;
 	bool m_WorldModelVRPoseDebugLog = false;
 	// Local third-person switches replace the submitted survivor draw and its
 	// queued bone buffers. Delay IK takeover until that render state has
@@ -1560,8 +1581,14 @@ public:
 	};
 	// Hide material slots only when both the survivor character and material
 	// base name match an explicit rule.
-	bool m_ClothingMaterials = true;
+	std::atomic<bool> m_ClothingMaterials{ true };
+	mutable std::mutex m_HiddenMaterialNamesMutex;
 	std::vector<HiddenMaterialNameRule> m_HiddenMaterialNames;
+	mutable std::mutex m_PlayerModelMaterialsSnapshotMutex;
+	PlayerModelMaterialsSnapshot m_PlayerModelMaterialsSnapshot{};
+	std::unordered_map<std::string, PlayerModelMaterialsSnapshot>
+		m_LoadedPlayerModelMaterialsSnapshots;
+	uint32_t m_PlayerModelMaterialsSnapshotPublishSeq = 0;
 	// Visible upper-arm length retained below each shoulder before the rest is collapsed.
 	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
 	// HMD-yaw-local meters: X=forward, Y=right, Z=up.
@@ -3579,6 +3606,17 @@ public:
 	bool GetMagazineInteractionNativeLeftWristAnchor(VrHandMatrix4& outWorld) const;
 	bool HasFreshMagazineInteractionDebugBoxWork() const;
 	bool GetMagazineInteractionCalibrationSnapshot(MagazineInteractionCalibrationSnapshot& outSnapshot) const;
+	void PublishPlayerModelMaterialsSnapshot(
+		uint32_t session,
+		int entityIndex,
+		const std::string& characterName,
+		const std::string& modelName,
+		const std::vector<std::string>& materialNames,
+		bool localPlayer);
+	void ClearPlayerModelMaterialsSnapshot();
+	bool GetPlayerModelMaterialsSnapshot(PlayerModelMaterialsSnapshot& outSnapshot) const;
+	void GetLoadedPlayerModelMaterialsSnapshots(
+		std::vector<PlayerModelMaterialsSnapshot>& outSnapshots) const;
 	void UpdateNativeViewmodelLeftHandOpenVRFingerCurls();
 	bool GetNativeViewmodelLeftHandOpenVRFingerCurls(std::array<float, 5>& outCurls) const;
 	void UpdateNativeViewmodelRightHandOpenVRFingerCurls();

@@ -1397,27 +1397,14 @@ void VR::ParseConfigFile()
                 std::memory_order_release);
         }
     }
-    m_ClothingMaterials = getBool(
-        "ClothingMaterials",
-        m_ClothingMaterials);
-    if (hasConfigKey("HiddenMaterialNames"))
-    {
-        const std::vector<std::string> hiddenMaterialRules =
-            getStringList("HiddenMaterialNames");
-        m_HiddenMaterialNames.clear();
-        for (const std::string& rawRule : hiddenMaterialRules)
-        {
-            const size_t separator = rawRule.find(':');
-            if (separator == std::string::npos ||
-                separator == 0 ||
-                separator + 1 >= rawRule.size() ||
-                rawRule.find(':', separator + 1) != std::string::npos)
-            {
-                continue;
-            }
-
-            std::string characterName = rawRule.substr(0, separator);
-            std::string materialName = rawRule.substr(separator + 1);
+    m_ClothingMaterials.store(
+        getBool(
+            "ClothingMaterials",
+            m_ClothingMaterials.load(std::memory_order_acquire)),
+        std::memory_order_release);
+    std::vector<HiddenMaterialNameRule> parsedHiddenMaterialRules;
+    auto addHiddenMaterialRule =
+        [&](std::string characterName, std::string materialName) {
             trim(characterName);
             trim(materialName);
             std::transform(
@@ -1464,29 +1451,83 @@ void VR::ParseConfigFile()
                     characterName) != std::end(kValidCharacterNames);
             if (!validCharacter ||
                 materialName.empty() ||
-                materialName.size() > 128)
+                materialName.size() > 128 ||
+                parsedHiddenMaterialRules.size() >= 2048)
             {
-                continue;
+                return;
             }
 
             const auto duplicate = std::find_if(
-                m_HiddenMaterialNames.begin(),
-                m_HiddenMaterialNames.end(),
+                parsedHiddenMaterialRules.begin(),
+                parsedHiddenMaterialRules.end(),
                 [&](const HiddenMaterialNameRule& existing) {
                     return
                         existing.characterName == characterName &&
                         existing.materialName == materialName;
                 });
-            if (duplicate == m_HiddenMaterialNames.end())
+            if (duplicate == parsedHiddenMaterialRules.end())
             {
-                m_HiddenMaterialNames.push_back(
+                parsedHiddenMaterialRules.push_back(
                     HiddenMaterialNameRule{
                         std::move(characterName),
                         std::move(materialName) });
             }
-            if (m_HiddenMaterialNames.size() >= 64)
-                break;
+        };
+
+    if (hasConfigKey("HiddenMaterialNames"))
+    {
+        for (const std::string& rawRule : getStringList("HiddenMaterialNames"))
+        {
+            const size_t separator = rawRule.find(':');
+            if (separator == std::string::npos ||
+                separator == 0 ||
+                separator + 1 >= rawRule.size() ||
+                rawRule.find(':', separator + 1) != std::string::npos)
+            {
+                continue;
+            }
+            addHiddenMaterialRule(
+                rawRule.substr(0, separator),
+                rawRule.substr(separator + 1));
         }
+    }
+
+    // Once the dedicated material UI has written this file it becomes the
+    // authoritative rule store. config.txt remains a migration fallback only.
+    std::ifstream materialConfig("VR\\clothing_materials.txt");
+    if (materialConfig.good())
+    {
+        parsedHiddenMaterialRules.clear();
+        std::string materialLine;
+        while (std::getline(materialConfig, materialLine))
+        {
+            trim(materialLine);
+            if (materialLine.empty() || materialLine[0] == '#' || materialLine[0] == ';')
+                continue;
+            const size_t equals = materialLine.find('=');
+            if (equals == std::string::npos)
+                continue;
+
+            std::string characterName = materialLine.substr(0, equals);
+            trim(characterName);
+            std::transform(
+                characterName.begin(),
+                characterName.end(),
+                characterName.begin(),
+                [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+            std::string materials = materialLine.substr(equals + 1);
+            std::stringstream materialStream(materials);
+            std::string materialName;
+            while (std::getline(materialStream, materialName, ','))
+                addHiddenMaterialRule(characterName, materialName);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_HiddenMaterialNamesMutex);
+        m_HiddenMaterialNames = std::move(parsedHiddenMaterialRules);
     }
     m_FirstPersonBodyVisibleUpperArmLengthMeters = std::clamp(
         getFloat(

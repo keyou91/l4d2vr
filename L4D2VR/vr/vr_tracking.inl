@@ -477,6 +477,7 @@ void VR::UpdateTracking()
         ? (C_BasePlayer*)m_Game->GetClientEntity(playerIndex)
         : nullptr;
     if (!localPlayer) {
+        ClearPlayerModelMaterialsSnapshot();
         // Never let a reconnect/map transition publish tracking coordinates
         // anchored to the previous local player or map.
         {

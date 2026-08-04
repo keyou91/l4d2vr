@@ -75,9 +75,34 @@ namespace
     constexpr int kCfgMenuButtonW = 260;
     constexpr int kCfgMenuButtonH = 90;
 
+    // Character material manager: intentionally smaller and independently
+    // placed from the main 1280x900 config panel.
+    constexpr int kCfgMaterialOverlayW = 900;
+    constexpr int kCfgMaterialOverlayH = 830;
+    constexpr int kCfgMaterialRowsX = 24;
+    constexpr int kCfgMaterialRowsY = 148;
+    constexpr int kCfgMaterialRowH = 38;
+    constexpr int kCfgMaterialRowsVisible = 6;
+    constexpr int kCfgMaterialPageY = 382;
+    constexpr int kCfgMaterialPageButtonW = 112;
+    constexpr int kCfgMaterialScanX = 24;
+    constexpr int kCfgMaterialScanY = 78;
+    constexpr int kCfgMaterialScanW = 92;
+    constexpr int kCfgMaterialScanH = 32;
+    constexpr int kCfgMaterialCharacterX = 124;
+    constexpr int kCfgMaterialCharacterY = 78;
+    constexpr int kCfgMaterialCharacterW = 86;
+    constexpr int kCfgMaterialCharacterH = 32;
+    constexpr int kCfgMaterialCharacterGap = 6;
+    constexpr int kCfgMaterialCloseX = 786;
+    constexpr int kCfgMaterialCloseY = 18;
+    constexpr int kCfgMaterialCloseW = 90;
+    constexpr int kCfgMaterialCloseH = 40;
+
     constexpr uint32_t kCfgOverlaySortOrderBase = 0x7FFFFF00u;
     constexpr uint32_t kCfgOverlaySortOrderActive = 0x7FFFFF10u;
     constexpr uint32_t kCfgMenuButtonSortOrder = 0x7FFFFF20u;
+    constexpr uint32_t kCfgMaterialOverlaySortOrder = 0x7FFFFF18u;
     // After joystick/trackpad scrolling, temporarily ignore hover-to-select mouse move
     // events from the VR laser pointer. Without this guard, a stationary pointer over a
     // row can immediately steal selection back from the scroll target.
@@ -699,7 +724,9 @@ namespace
         vr::VROverlayHandle_t handle = vr::k_ulOverlayHandleInvalid;
         vr::VROverlayHandle_t backHandle = vr::k_ulOverlayHandleInvalid;
         vr::VROverlayHandle_t menuButtonHandle = vr::k_ulOverlayHandleInvalid;
+        vr::VROverlayHandle_t materialHandle = vr::k_ulOverlayHandleInvalid;
         bool visible = false;
+        bool materialVisible = false;
         bool prevF8 = false;
         bool dirty = true;
         bool needsUpload = true;
@@ -745,8 +772,39 @@ namespace
         std::vector<int> visibleSpecIndexes;
         std::vector<uint8_t> rgba;
         std::vector<uint8_t> menuButtonRgba;
+        std::vector<uint8_t> materialRgba;
         bool menuButtonNeedsUpload = true;
         bool menuButtonRenderedChinese = true;
+        bool materialDirty = true;
+        bool materialNeedsUpload = true;
+        bool materialOverlayShown = false;
+        bool materialThirdPersonCommandActive = false;
+        int materialScroll = 0;
+        int materialHovered = -1;
+        uint32_t materialSeenPublishSeq = 0;
+        PlayerModelMaterialsSnapshot materialSnapshot{};
+        std::vector<PlayerModelMaterialsSnapshot> materialCharacterSnapshots;
+        std::string materialSelectedCharacter;
+        bool materialCharacterSelectionPinned = false;
+        float materialDistanceMeters = 1.05f;
+        float materialSizeMeters = 1.00f;
+        float materialXOffsetMeters = 0.0f;
+        float materialYOffsetMeters = -0.05f;
+        float materialPitchDeg = 0.0f;
+        float materialYawDeg = 0.0f;
+        float materialRollDeg = 0.0f;
+        float materialCameraDistance = 38.0f;
+        float materialCameraHorizontal = 0.0f;
+        float materialCameraVertical = 0.0f;
+        float materialCameraPitchDeg = 0.0f;
+        float materialCameraYawDeg = 0.0f;
+        float materialCameraRollDeg = 0.0f;
+        bool materialPlacementValid = false;
+        bool materialPlacementApplied = false;
+        vr::ETrackingUniverseOrigin materialPlacementOrigin = vr::TrackingUniverseStanding;
+        vr::HmdMatrix34_t materialPlacementTransform{};
+        float materialAppliedSizeMeters = -1.0f;
+        std::string materialStatus;
         bool hasUnsavedEdits = false;
         bool configWriteTimeValid = false;
         std::filesystem::file_time_type configWriteTime{};
@@ -784,6 +842,8 @@ namespace
     static void CfgApplyOverlayPlacement(CfgOverlayState& s, vr::IVROverlay* ov = nullptr);
     static void CfgInvalidateFixedPlacement(CfgOverlayState& s);
     static void CfgOpenPanelFromMenuButton(CfgOverlayState& s, vr::IVROverlay* ov = nullptr);
+    static void CfgOpenMaterialPanel(CfgOverlayState& s, vr::IVROverlay* ov = nullptr);
+    static void CfgCloseMaterialPanel(CfgOverlayState& s, bool reopenConfig, vr::IVROverlay* ov = nullptr);
     static vr::HmdMatrix34_t CfgMul34(const vr::HmdMatrix34_t& a, const vr::HmdMatrix34_t& b);
     static bool CfgGetCurrentDeviceAbsolutePose(vr::ETrackingUniverseOrigin& origin, vr::HmdMatrix34_t& deviceAbs, CfgDevice device);
 
@@ -992,6 +1052,10 @@ namespace
 
     static const char* CfgTitleText(const CfgOverlayState& s, const CfgOptionSpec& spec)
     {
+        if (std::strcmp(spec.key, "HiddenMaterialNames") == 0)
+            return s.useChinese
+                ? "\xE5\xBD\x93\xE5\x89\x8D\xE8\xA7\x92\xE8\x89\xB2\xE6\x9D\x90\xE8\xB4\xA8"
+                : "Current Character Materials";
         const CfgEnglishTextOverride* o = !s.useChinese ? CfgFindEnglishTextOverride(spec.key) : nullptr;
         if (o && o->titleEnUtf8 && *o->titleEnUtf8)
             return o->titleEnUtf8;
@@ -1005,6 +1069,10 @@ namespace
 
     static const char* CfgDescText(const CfgOverlayState& s, const CfgOptionSpec& spec)
     {
+        if (std::strcmp(spec.key, "HiddenMaterialNames") == 0)
+            return s.useChinese
+                ? "\xE6\x89\x93\xE5\xBC\x80\xE7\x8B\xAC\xE7\xAB\x8B\xE9\x9D\xA2\xE6\x9D\xBF\xEF\xBC\x8C\xE5\x88\x97\xE5\x87\xBA\xE5\xBD\x93\xE5\x89\x8D\xE8\xA7\x92\xE8\x89\xB2\xE6\x9D\x90\xE8\xB4\xA8\xE5\xB9\xB6\xE5\x8D\xB3\xE6\x97\xB6\xE5\x88\x87\xE6\x8D\xA2\xE9\x9A\x90\xE8\x97\x8F\xE6\x88\x96\xE6\x98\xBE\xE7\xA4\xBA\xE3\x80\x82"
+                : "Open the independent panel to inspect the current character and toggle each material immediately.";
         if (std::strcmp(spec.key, "AutoMatQueueMode") == 0)
             return s.useChinese
             ? "\xE5\xBC\x80\xE5\x90\xAF\xE5\xA4\x9A\xE6\xA0\xB8\xE6\xB8\xB2\xE6\x9F\x93\xE3\x80\x82\xE5\xA4\x9A\xE6\xA0\xB8\xE4\xB8\x8B\xE4\xBD\xBF\xE7\x94\xA8\xE6\xA1\x8C\xE9\x9D\xA2\xE9\x95\x9C\xE5\x83\x8F\xE5\xBF\x85\xE9\xA1\xBB\xE5\x90\x8C\xE6\x97\xB6\xE6\x89\x93\xE5\xBC\x80\xE9\x98\xB4\xE5\xBD\xB1\xE4\xBC\x98\xE5\x8C\x96\xEF\xBC\x8C\xE5\x90\xA6\xE5\x88\x99\xE6\xA1\x8C\xE9\x9D\xA2\xE9\x95\x9C\xE5\x83\x8F\xE6\x97\xA0\xE6\xB3\x95\xE6\x9B\xB4\xE6\x96\xB0\xE3\x80\x82"
@@ -1022,6 +1090,14 @@ namespace
 
     static const char* CfgTipText(const CfgOverlayState& s, const CfgOptionSpec& spec)
     {
+        if (std::strcmp(spec.key, "ClothingMaterials") == 0)
+            return s.useChinese
+                ? "\xE5\xBC\x80\xE5\x90\xAF\xE5\x90\x8E\xEF\xBC\x8C\xE4\xB8\x8B\xE6\x96\xB9\xE4\xBC\x9A\xE6\x98\xBE\xE7\xA4\xBA\xE5\xBD\x93\xE5\x89\x8D\xE8\xA7\x92\xE8\x89\xB2\xE6\x9D\x90\xE8\xB4\xA8\xE7\xAE\xA1\xE7\x90\x86\xE5\x85\xA5\xE5\x8F\xA3\xE3\x80\x82"
+                : "After enabling this option, the current-character material manager appears directly below it.";
+        if (std::strcmp(spec.key, "HiddenMaterialNames") == 0)
+            return s.useChinese
+                ? "\xE8\x87\xAA\xE5\x8A\xA8\xE4\xBF\x9D\xE5\xAD\x98\xE5\x88\xB0 VR\\clothing_materials.txt\xEF\xBC\x9B\xE9\x9D\xA2\xE6\x9D\xBF\xE5\x86\x85\xE5\x8F\xAF\xE8\xB0\x83\xE6\x95\xB4\xE9\xA2\x84\xE8\xA7\x88\xE7\x9B\xB8\xE6\x9C\xBA\xE5\x92\x8C\xE9\x9D\xA2\xE6\x9D\xBF\xE4\xBD\x8D\xE7\xBD\xAE\xE3\x80\x82"
+                : "Changes auto-save to VR\\clothing_materials.txt; preview-camera and panel placement controls are included.";
         if (std::strcmp(spec.key, "AutoMatQueueMode") == 0)
             return s.useChinese
             ? "\xE5\x8B\xBE\xE9\x80\x89\xE5\xA4\x9A\xE6\xA0\xB8\xE6\xB8\xB2\xE6\x9F\x93\xE6\x97\xB6\xE4\xBC\x9A\xE8\x87\xAA\xE5\x8A\xA8\xE5\x8B\xBE\xE9\x80\x89\xE9\x98\xB4\xE5\xBD\xB1\xE4\xBC\x98\xE5\x8C\x96\xEF\xBC\x9B\xE4\xB9\x8B\xE5\x90\x8E\xE4\xBB\x8D\xE5\x8F\xAF\xE5\x8D\x95\xE7\x8B\xAC\xE8\xB0\x83\xE6\x95\xB4\xE9\x98\xB4\xE5\xBD\xB1\xE4\xBC\x98\xE5\x8C\x96\xE3\x80\x82"
@@ -1572,6 +1648,8 @@ namespace
             return false;
         if (std::strcmp(key, "HitIndicatorEnabled") == 0)
             return false;
+        if (std::strcmp(key, "HiddenMaterialNames") == 0)
+            return CfgIsEnabled(s, "ClothingMaterials", false);
 
         // --- Roomscale Movement ---
         if (CfgStartsWith(key, "Roomscale1To1") && std::strcmp(key, "Roomscale1To1Movement") != 0)
@@ -5507,6 +5585,40 @@ namespace
                 CfgDrawSlider(g, kCfgSliderX, rowY + 10, kCfgSliderW, kCfgSliderH, t, selected);
                 CfgGdiText(g, kCfgSliderX, rowY + 7, kCfgSliderW, 32, value, g.normalFont, { 226, 232, 242 }, DT_CENTER);
             }
+            else if (std::strcmp(spec.key, "HiddenMaterialNames") == 0)
+            {
+                CfgGdiText(
+                    g,
+                    42,
+                    rowY + 3,
+                    450,
+                    34,
+                    s.useChinese
+                        ? "\xE5\xBD\x93\xE5\x89\x8D\xE8\xA7\x92\xE8\x89\xB2\xE6\x9D\x90\xE8\xB4\xA8\xE7\xAE\xA1\xE7\x90\x86"
+                        : "Current Character Materials",
+                    selected ? g.boldFont : g.normalFont,
+                    { 232, 236, 244 });
+                CfgGdiText(
+                    g,
+                    500,
+                    rowY + 4,
+                    485,
+                    34,
+                    s.useChinese
+                        ? "\xE5\x88\x97\xE5\x87\xBA\xE5\xBD\x93\xE5\x89\x8D\xE8\xA7\x92\xE8\x89\xB2\xEF\xBC\x8C\xE7\x82\xB9\xE5\x87\xBB\xE5\x88\x87\xE6\x8D\xA2\xE9\x9A\x90\xE8\x97\x8F/\xE6\x98\xBE\xE7\xA4\xBA"
+                        : "Inspect the current character and toggle materials",
+                    g.smallFont,
+                    { 170, 190, 216 });
+                CfgGdiButton(
+                    g,
+                    1010,
+                    rowY + 6,
+                    210,
+                    30,
+                    s.useChinese
+                        ? "\xE6\x89\x93\xE5\xBC\x80\xE6\x9D\x90\xE8\xB4\xA8\xE9\x9D\xA2\xE6\x9D\xBF"
+                        : "Open Material Panel");
+            }
             else
             {
                 CfgGdiText(g, 42, rowY + 3, 420, 26, CfgTitleText(s, spec), selected ? g.boldFont : g.normalFont, { 232, 236, 244 });
@@ -6211,7 +6323,8 @@ namespace
         if (!ov)
             return;
 
-        const bool shouldShowButton = !s.visible && CfgIsPauseMenuActive();
+        const bool shouldShowButton =
+            !s.visible && !s.materialVisible && CfgIsPauseMenuActive();
         if (!shouldShowButton)
         {
             CfgHideMenuButton(s);
@@ -6280,6 +6393,36 @@ namespace
                 out.m[r][c] = a.m[r][0] * b.m[0][c] + a.m[r][1] * b.m[1][c] + a.m[r][2] * b.m[2][c];
             out.m[r][3] = a.m[r][0] * b.m[0][3] + a.m[r][1] * b.m[1][3] + a.m[r][2] * b.m[2][3] + a.m[r][3];
         }
+        return out;
+    }
+
+    static vr::HmdMatrix34_t CfgEulerRotation34(
+        float pitchDeg,
+        float yawDeg,
+        float rollDeg)
+    {
+        constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+        const float x = pitchDeg * kDegToRad;
+        const float y = yawDeg * kDegToRad;
+        const float z = rollDeg * kDegToRad;
+        const float cx = std::cos(x);
+        const float sx = std::sin(x);
+        const float cy = std::cos(y);
+        const float sy = std::sin(y);
+        const float cz = std::cos(z);
+        const float sz = std::sin(z);
+
+        // Local Euler rotation: Rz(roll) * Ry(yaw) * Rx(pitch).
+        vr::HmdMatrix34_t out{};
+        out.m[0][0] = cz * cy;
+        out.m[0][1] = cz * sy * sx - sz * cx;
+        out.m[0][2] = cz * sy * cx + sz * sx;
+        out.m[1][0] = sz * cy;
+        out.m[1][1] = sz * sy * sx + cz * cx;
+        out.m[1][2] = sz * sy * cx - cz * sx;
+        out.m[2][0] = -sy;
+        out.m[2][1] = cy * sx;
+        out.m[2][2] = cy * cx;
         return out;
     }
 
@@ -6451,6 +6594,1303 @@ namespace
         CfgInvalidateFixedPlacement(s);
         CfgApplyOverlayPlacement(s, ov);
         return true;
+    }
+
+    static std::string CfgMaterialConfigPath()
+    {
+        const std::string dir = CfgGetModuleDir();
+        return dir.empty()
+            ? std::string("vr\\clothing_materials.txt")
+            : dir + "\\vr\\clothing_materials.txt";
+    }
+
+    static bool CfgMaterialValidCharacter(const std::string& characterName)
+    {
+        static constexpr const char* kCharacters[] = {
+            "bill", "coach", "ellis", "francis",
+            "louis", "nick", "rochelle", "zoey"
+        };
+        return std::find(
+            std::begin(kCharacters),
+            std::end(kCharacters),
+            characterName) != std::end(kCharacters);
+    }
+
+    static std::string CfgNormalizeMaterialRuleName(std::string materialName)
+    {
+        materialName = CfgLower(CfgTrim(std::move(materialName)));
+        std::replace(materialName.begin(), materialName.end(), '\\', '/');
+        const size_t slash = materialName.find_last_of('/');
+        if (slash != std::string::npos)
+            materialName.erase(0, slash + 1);
+        if (materialName.size() > 4 &&
+            materialName.compare(materialName.size() - 4, 4, ".vmt") == 0)
+        {
+            materialName.resize(materialName.size() - 4);
+        }
+        return materialName;
+    }
+
+    static void CfgSyncLegacyHiddenMaterialsValue(CfgOverlayState& s)
+    {
+        if (!g_Game || !g_Game->m_VR)
+            return;
+
+        std::vector<VR::HiddenMaterialNameRule> rules;
+        {
+            std::lock_guard<std::mutex> lock(
+                g_Game->m_VR->m_HiddenMaterialNamesMutex);
+            rules = g_Game->m_VR->m_HiddenMaterialNames;
+        }
+        std::sort(
+            rules.begin(),
+            rules.end(),
+            [](const VR::HiddenMaterialNameRule& a,
+               const VR::HiddenMaterialNameRule& b) {
+                if (a.characterName != b.characterName)
+                    return a.characterName < b.characterName;
+                return a.materialName < b.materialName;
+            });
+
+        std::string flattened;
+        for (const VR::HiddenMaterialNameRule& rule : rules)
+        {
+            if (!flattened.empty())
+                flattened += ",";
+            flattened += rule.characterName + ":" + rule.materialName;
+        }
+        s.values["HiddenMaterialNames"] = std::move(flattened);
+    }
+
+    static void CfgLoadMaterialPanelConfig(CfgOverlayState& s)
+    {
+        s.materialDistanceMeters = 1.05f;
+        s.materialSizeMeters = 1.00f;
+        s.materialXOffsetMeters = 0.0f;
+        s.materialYOffsetMeters = -0.05f;
+        s.materialPitchDeg = 0.0f;
+        s.materialYawDeg = 0.0f;
+        s.materialRollDeg = 0.0f;
+        s.materialCameraDistance = 38.0f;
+        s.materialCameraHorizontal = 0.0f;
+        s.materialCameraVertical = 0.0f;
+        s.materialCameraPitchDeg = 0.0f;
+        s.materialCameraYawDeg = 0.0f;
+        s.materialCameraRollDeg = 0.0f;
+
+        const std::string path = CfgMaterialConfigPath();
+        std::ifstream in(path, std::ios::binary);
+        const bool hasDedicatedConfig = in.good();
+        std::vector<VR::HiddenMaterialNameRule> fileRules;
+        auto addRule = [&](const std::string& rawCharacter,
+                           const std::string& rawMaterial) {
+            const std::string character = CfgLower(CfgTrim(rawCharacter));
+            const std::string material =
+                CfgNormalizeMaterialRuleName(rawMaterial);
+            if (!CfgMaterialValidCharacter(character) ||
+                material.empty() ||
+                material.size() > 128 ||
+                fileRules.size() >= 2048)
+            {
+                return;
+            }
+            const auto duplicate = std::find_if(
+                fileRules.begin(),
+                fileRules.end(),
+                [&](const VR::HiddenMaterialNameRule& existing) {
+                    return existing.characterName == character &&
+                        existing.materialName == material;
+                });
+            if (duplicate == fileRules.end())
+                fileRules.push_back({ character, material });
+        };
+
+        std::string line;
+        while (std::getline(in, line))
+        {
+            line = CfgTrim(line);
+            if (line.empty() || line[0] == '#' || line[0] == ';')
+                continue;
+            const size_t equals = line.find('=');
+            if (equals == std::string::npos)
+                continue;
+            const std::string key = CfgLower(CfgTrim(line.substr(0, equals)));
+            const std::string value = CfgTrim(line.substr(equals + 1));
+
+            float parsed = 0.0f;
+            if (key == "overlaydistancemeters" && CfgTryFloat(value, parsed))
+                s.materialDistanceMeters = parsed;
+            else if (key == "overlaysizemeters" && CfgTryFloat(value, parsed))
+                s.materialSizeMeters = parsed;
+            else if (key == "overlayxoffsetmeters" && CfgTryFloat(value, parsed))
+                s.materialXOffsetMeters = parsed;
+            else if (key == "overlayyoffsetmeters" && CfgTryFloat(value, parsed))
+                s.materialYOffsetMeters = parsed;
+            else if (key == "overlaypitchdeg" && CfgTryFloat(value, parsed))
+                s.materialPitchDeg = parsed;
+            else if (key == "overlayyawdeg" && CfgTryFloat(value, parsed))
+                s.materialYawDeg = parsed;
+            else if (key == "overlayrolldeg" && CfgTryFloat(value, parsed))
+                s.materialRollDeg = parsed;
+            else if ((key == "cameradistancecm" || key == "cameradistance") && CfgTryFloat(value, parsed))
+                s.materialCameraDistance = parsed;
+            else if ((key == "camerahorizontalcm" || key == "camerahorizontal") && CfgTryFloat(value, parsed))
+                s.materialCameraHorizontal = parsed;
+            else if ((key == "cameraverticalcm" || key == "cameravertical") && CfgTryFloat(value, parsed))
+                s.materialCameraVertical = parsed;
+            else if (key == "camerapitchdeg" && CfgTryFloat(value, parsed))
+                s.materialCameraPitchDeg = parsed;
+            else if (key == "camerayawdeg" && CfgTryFloat(value, parsed))
+                s.materialCameraYawDeg = parsed;
+            else if (key == "camerarolldeg" && CfgTryFloat(value, parsed))
+                s.materialCameraRollDeg = parsed;
+            else if (CfgMaterialValidCharacter(key))
+            {
+                std::stringstream values(value);
+                std::string material;
+                while (std::getline(values, material, ','))
+                    addRule(key, material);
+            }
+        }
+
+        s.materialDistanceMeters = std::clamp(s.materialDistanceMeters, 0.45f, 3.0f);
+        s.materialSizeMeters = std::clamp(s.materialSizeMeters, 0.45f, 2.0f);
+        s.materialXOffsetMeters = std::clamp(s.materialXOffsetMeters, -1.0f, 1.0f);
+        s.materialYOffsetMeters = std::clamp(s.materialYOffsetMeters, -1.0f, 1.0f);
+        s.materialPitchDeg = std::clamp(s.materialPitchDeg, -180.0f, 180.0f);
+        s.materialYawDeg = std::clamp(s.materialYawDeg, -180.0f, 180.0f);
+        s.materialRollDeg = std::clamp(s.materialRollDeg, -180.0f, 180.0f);
+        s.materialCameraDistance = std::clamp(s.materialCameraDistance, 15.0f, 150.0f);
+        s.materialCameraHorizontal = std::clamp(s.materialCameraHorizontal, -100.0f, 100.0f);
+        s.materialCameraVertical = std::clamp(s.materialCameraVertical, -100.0f, 100.0f);
+        s.materialCameraPitchDeg = std::clamp(s.materialCameraPitchDeg, -180.0f, 180.0f);
+        s.materialCameraYawDeg = std::clamp(s.materialCameraYawDeg, -180.0f, 180.0f);
+        s.materialCameraRollDeg = std::clamp(s.materialCameraRollDeg, -180.0f, 180.0f);
+
+        if (hasDedicatedConfig && g_Game && g_Game->m_VR)
+        {
+            std::lock_guard<std::mutex> lock(
+                g_Game->m_VR->m_HiddenMaterialNamesMutex);
+            g_Game->m_VR->m_HiddenMaterialNames = std::move(fileRules);
+        }
+        CfgSyncLegacyHiddenMaterialsValue(s);
+        s.materialPlacementValid = false;
+        s.materialPlacementApplied = false;
+        s.materialAppliedSizeMeters = -1.0f;
+        s.materialDirty = true;
+    }
+
+    static bool CfgSaveMaterialPanelConfig(CfgOverlayState& s)
+    {
+        if (!g_Game || !g_Game->m_VR)
+            return false;
+
+        std::vector<VR::HiddenMaterialNameRule> rules;
+        {
+            std::lock_guard<std::mutex> lock(
+                g_Game->m_VR->m_HiddenMaterialNamesMutex);
+            rules = g_Game->m_VR->m_HiddenMaterialNames;
+        }
+        std::sort(
+            rules.begin(),
+            rules.end(),
+            [](const VR::HiddenMaterialNameRule& a,
+               const VR::HiddenMaterialNameRule& b) {
+                if (a.characterName != b.characterName)
+                    return a.characterName < b.characterName;
+                return a.materialName < b.materialName;
+            });
+
+        const std::filesystem::path path(CfgMaterialConfigPath());
+        try
+        {
+            if (!path.parent_path().empty())
+                std::filesystem::create_directories(path.parent_path());
+        }
+        catch (...)
+        {
+        }
+
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out.good())
+        {
+            s.materialStatus = s.useChinese
+                ? "\xE4\xBF\x9D\xE5\xAD\x98\xE6\x9D\x90\xE8\xB4\xA8\xE9\x85\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xE3\x80\x82"
+                : "Failed to save the material config.";
+            s.materialDirty = true;
+            return false;
+        }
+
+        out << "# L4D2VR character material visibility\n";
+        out << "# Character entries contain the material names currently hidden.\n";
+        out << "OverlayDistanceMeters=" << CfgFormatFloat(s.materialDistanceMeters, 0.01f) << "\n";
+        out << "OverlaySizeMeters=" << CfgFormatFloat(s.materialSizeMeters, 0.01f) << "\n";
+        out << "OverlayXOffsetMeters=" << CfgFormatFloat(s.materialXOffsetMeters, 0.01f) << "\n";
+        out << "OverlayYOffsetMeters=" << CfgFormatFloat(s.materialYOffsetMeters, 0.01f) << "\n";
+        out << "OverlayPitchDeg=" << CfgFormatFloat(s.materialPitchDeg, 1.0f) << "\n";
+        out << "OverlayYawDeg=" << CfgFormatFloat(s.materialYawDeg, 1.0f) << "\n";
+        out << "OverlayRollDeg=" << CfgFormatFloat(s.materialRollDeg, 1.0f) << "\n";
+        out << "CameraDistanceCm=" << CfgFormatFloat(s.materialCameraDistance, 1.0f) << "\n";
+        out << "CameraHorizontalCm=" << CfgFormatFloat(s.materialCameraHorizontal, 1.0f) << "\n";
+        out << "CameraVerticalCm=" << CfgFormatFloat(s.materialCameraVertical, 1.0f) << "\n";
+        out << "CameraPitchDeg=" << CfgFormatFloat(s.materialCameraPitchDeg, 1.0f) << "\n";
+        out << "CameraYawDeg=" << CfgFormatFloat(s.materialCameraYawDeg, 1.0f) << "\n";
+        out << "CameraRollDeg=" << CfgFormatFloat(s.materialCameraRollDeg, 1.0f) << "\n";
+
+        static constexpr const char* kCharacters[] = {
+            "bill", "coach", "ellis", "francis",
+            "louis", "nick", "rochelle", "zoey"
+        };
+        for (const char* character : kCharacters)
+        {
+            out << character << "=";
+            bool first = true;
+            for (const VR::HiddenMaterialNameRule& rule : rules)
+            {
+                if (rule.characterName != character)
+                    continue;
+                if (!first)
+                    out << ",";
+                first = false;
+                out << rule.materialName;
+            }
+            out << "\n";
+        }
+        out.close();
+        if (!out)
+            return false;
+
+        CfgSyncLegacyHiddenMaterialsValue(s);
+        s.materialStatus = s.useChinese
+            ? "\xE5\xB7\xB2\xE4\xBF\x9D\xE5\xAD\x98\xE5\x88\xB0 VR\\clothing_materials.txt"
+            : "Saved to VR\\clothing_materials.txt";
+        s.materialDirty = true;
+        return true;
+    }
+
+    static int CfgMaterialCharacterOrder(const std::string& characterName)
+    {
+        static constexpr const char* kCharacters[] = {
+            "bill", "coach", "ellis", "francis",
+            "louis", "nick", "rochelle", "zoey"
+        };
+        const auto it = std::find(
+            std::begin(kCharacters),
+            std::end(kCharacters),
+            characterName);
+        return it == std::end(kCharacters)
+            ? 8
+            : static_cast<int>(it - std::begin(kCharacters));
+    }
+
+    static bool CfgMaterialLooksLikeBody(const std::string& rawMaterialName)
+    {
+        const std::string name = CfgNormalizeMaterialRuleName(rawMaterialName);
+        static constexpr const char* kBodyTokens[] = {
+            "body", "face", "eyebrow", "eye", "skin", "head", "hair",
+            "mouth", "teeth", "tongue", "hand", "foot"
+        };
+        return std::any_of(
+            std::begin(kBodyTokens),
+            std::end(kBodyTokens),
+            [&](const char* token) {
+                return name.find(token) != std::string::npos;
+            });
+    }
+
+    static void CfgSortMaterialSnapshotForDisplay(
+        PlayerModelMaterialsSnapshot& snapshot)
+    {
+        std::stable_partition(
+            snapshot.materialNames.begin(),
+            snapshot.materialNames.end(),
+            [](const std::string& materialName) {
+                return !CfgMaterialLooksLikeBody(materialName);
+            });
+    }
+
+    static int CfgMaterialPageCount(const CfgOverlayState& s)
+    {
+        const int total = static_cast<int>(s.materialSnapshot.materialNames.size());
+        return std::max(1, (total + kCfgMaterialRowsVisible - 1) /
+            kCfgMaterialRowsVisible);
+    }
+
+    static void CfgClampMaterialPage(CfgOverlayState& s)
+    {
+        const int lastPageStart =
+            (CfgMaterialPageCount(s) - 1) * kCfgMaterialRowsVisible;
+        s.materialScroll = std::clamp(
+            (s.materialScroll / kCfgMaterialRowsVisible) * kCfgMaterialRowsVisible,
+            0,
+            lastPageStart);
+    }
+
+    static void CfgChangeMaterialPage(CfgOverlayState& s, int direction)
+    {
+        CfgClampMaterialPage(s);
+        const int currentPage = s.materialScroll / kCfgMaterialRowsVisible;
+        const int nextPage = std::clamp(
+            currentPage + direction,
+            0,
+            CfgMaterialPageCount(s) - 1);
+        s.materialScroll = nextPage * kCfgMaterialRowsVisible;
+        s.materialHovered = -1;
+        s.materialDirty = true;
+    }
+
+    static PlayerModelMaterialsSnapshot* CfgFindMaterialCharacterSnapshot(
+        CfgOverlayState& s,
+        const std::string& characterName)
+    {
+        const auto it = std::find_if(
+            s.materialCharacterSnapshots.begin(),
+            s.materialCharacterSnapshots.end(),
+            [&](const PlayerModelMaterialsSnapshot& snapshot) {
+                return snapshot.characterName == characterName;
+            });
+        return it == s.materialCharacterSnapshots.end() ? nullptr : &*it;
+    }
+
+    static void CfgSelectMaterialCharacter(
+        CfgOverlayState& s,
+        const std::string& characterName,
+        bool pinSelection)
+    {
+        PlayerModelMaterialsSnapshot* snapshot =
+            CfgFindMaterialCharacterSnapshot(s, characterName);
+        if (!snapshot)
+            return;
+
+        const bool identityChanged =
+            s.materialSnapshot.characterName != snapshot->characterName ||
+            s.materialSnapshot.modelName != snapshot->modelName;
+        s.materialSnapshot = *snapshot;
+        s.materialSelectedCharacter = characterName;
+        s.materialCharacterSelectionPinned = pinSelection;
+        if (identityChanged)
+            s.materialScroll = 0;
+        CfgClampMaterialPage(s);
+        s.materialHovered = -1;
+        s.materialStatus = std::string(
+            s.useChinese ? "\xE5\xB7\xB2\xE9\x80\x89\xE6\x8B\xA9\xE8\xA7\x92\xE8\x89\xB2\xEF\xBC\x9A" : "Selected character: ") +
+            characterName;
+        s.materialDirty = true;
+    }
+
+    static void CfgScanLoadedMaterialCharacters(
+        CfgOverlayState& s,
+        bool preserveSelection,
+        bool updateStatus)
+    {
+        std::vector<PlayerModelMaterialsSnapshot> snapshots;
+        if (g_Game && g_Game->m_VR)
+            g_Game->m_VR->GetLoadedPlayerModelMaterialsSnapshots(snapshots);
+
+        snapshots.erase(
+            std::remove_if(
+                snapshots.begin(),
+                snapshots.end(),
+                [](const PlayerModelMaterialsSnapshot& snapshot) {
+                    return !snapshot.valid ||
+                        !CfgMaterialValidCharacter(snapshot.characterName) ||
+                        snapshot.materialNames.empty();
+                }),
+            snapshots.end());
+        for (PlayerModelMaterialsSnapshot& snapshot : snapshots)
+            CfgSortMaterialSnapshotForDisplay(snapshot);
+        std::sort(
+            snapshots.begin(),
+            snapshots.end(),
+            [](const PlayerModelMaterialsSnapshot& a,
+               const PlayerModelMaterialsSnapshot& b) {
+                return CfgMaterialCharacterOrder(a.characterName) <
+                    CfgMaterialCharacterOrder(b.characterName);
+            });
+        s.materialCharacterSnapshots = std::move(snapshots);
+
+        std::string targetCharacter;
+        if (preserveSelection &&
+            CfgFindMaterialCharacterSnapshot(s, s.materialSelectedCharacter))
+        {
+            targetCharacter = s.materialSelectedCharacter;
+        }
+        else
+        {
+            PlayerModelMaterialsSnapshot localSnapshot{};
+            if (g_Game && g_Game->m_VR &&
+                g_Game->m_VR->GetPlayerModelMaterialsSnapshot(localSnapshot) &&
+                CfgFindMaterialCharacterSnapshot(s, localSnapshot.characterName))
+            {
+                targetCharacter = localSnapshot.characterName;
+            }
+            else if (!s.materialCharacterSnapshots.empty())
+            {
+                targetCharacter =
+                    s.materialCharacterSnapshots.front().characterName;
+            }
+        }
+
+        if (!targetCharacter.empty())
+            CfgSelectMaterialCharacter(s, targetCharacter, preserveSelection);
+        else
+        {
+            s.materialSnapshot = {};
+            s.materialSelectedCharacter.clear();
+            s.materialScroll = 0;
+            s.materialHovered = -1;
+        }
+
+        if (updateStatus)
+        {
+            s.materialStatus = std::string(
+                s.useChinese ? "\xE5\xB7\xB2\xE6\x89\xAB\xE6\x8F\x8F\xE6\x9C\xAC\xE5\xB1\x80\xE5\xB7\xB2\xE5\x8A\xA0\xE8\xBD\xBD\xE8\xA7\x92\xE8\x89\xB2\xEF\xBC\x9A" : "Loaded characters scanned: ") +
+                std::to_string(s.materialCharacterSnapshots.size()) + "/8";
+        }
+        s.materialDirty = true;
+    }
+
+    static void CfgRefreshMaterialSnapshot(CfgOverlayState& s)
+    {
+        PlayerModelMaterialsSnapshot snapshot{};
+        if (g_Game && g_Game->m_VR)
+            (void)g_Game->m_VR->GetPlayerModelMaterialsSnapshot(snapshot);
+        if (snapshot.publishSeq == s.materialSeenPublishSeq)
+            return;
+
+        s.materialSeenPublishSeq = snapshot.publishSeq;
+        if (!snapshot.valid)
+        {
+            if (!s.materialCharacterSelectionPinned)
+            {
+                s.materialSnapshot = {};
+                s.materialSelectedCharacter.clear();
+                s.materialScroll = 0;
+            }
+            s.materialHovered = -1;
+            s.materialDirty = true;
+            return;
+        }
+
+        CfgSortMaterialSnapshotForDisplay(snapshot);
+        PlayerModelMaterialsSnapshot* cached =
+            CfgFindMaterialCharacterSnapshot(s, snapshot.characterName);
+        if (cached)
+            *cached = snapshot;
+        else
+            s.materialCharacterSnapshots.push_back(snapshot);
+        std::sort(
+            s.materialCharacterSnapshots.begin(),
+            s.materialCharacterSnapshots.end(),
+            [](const PlayerModelMaterialsSnapshot& a,
+               const PlayerModelMaterialsSnapshot& b) {
+                return CfgMaterialCharacterOrder(a.characterName) <
+                    CfgMaterialCharacterOrder(b.characterName);
+            });
+
+        if (!s.materialCharacterSelectionPinned ||
+            s.materialSelectedCharacter == snapshot.characterName)
+        {
+            CfgSelectMaterialCharacter(
+                s,
+                snapshot.characterName,
+                s.materialCharacterSelectionPinned);
+        }
+        else
+        {
+            CfgClampMaterialPage(s);
+            s.materialHovered = -1;
+            s.materialDirty = true;
+        }
+    }
+
+    static bool CfgMaterialIsHidden(
+        const std::string& characterName,
+        const std::string& rawMaterialName)
+    {
+        if (!g_Game || !g_Game->m_VR)
+            return false;
+        const std::string materialName =
+            CfgNormalizeMaterialRuleName(rawMaterialName);
+        std::lock_guard<std::mutex> lock(
+            g_Game->m_VR->m_HiddenMaterialNamesMutex);
+        return std::find_if(
+            g_Game->m_VR->m_HiddenMaterialNames.begin(),
+            g_Game->m_VR->m_HiddenMaterialNames.end(),
+            [&](const VR::HiddenMaterialNameRule& rule) {
+                return rule.characterName == characterName &&
+                    rule.materialName == materialName;
+            }) != g_Game->m_VR->m_HiddenMaterialNames.end();
+    }
+
+    static void CfgToggleMaterialHidden(CfgOverlayState& s, int materialIndex)
+    {
+        if (!g_Game || !g_Game->m_VR ||
+            !s.materialSnapshot.valid ||
+            materialIndex < 0 ||
+            materialIndex >= static_cast<int>(s.materialSnapshot.materialNames.size()))
+        {
+            return;
+        }
+
+        const std::string characterName = s.materialSnapshot.characterName;
+        const std::string materialName = CfgNormalizeMaterialRuleName(
+            s.materialSnapshot.materialNames[static_cast<size_t>(materialIndex)]);
+        if (!CfgMaterialValidCharacter(characterName) || materialName.empty())
+            return;
+
+        bool nowHidden = false;
+        {
+            std::lock_guard<std::mutex> lock(
+                g_Game->m_VR->m_HiddenMaterialNamesMutex);
+            std::vector<VR::HiddenMaterialNameRule>& rules =
+                g_Game->m_VR->m_HiddenMaterialNames;
+            const auto existing = std::find_if(
+                rules.begin(),
+                rules.end(),
+                [&](const VR::HiddenMaterialNameRule& rule) {
+                    return rule.characterName == characterName &&
+                        rule.materialName == materialName;
+                });
+            if (existing == rules.end())
+            {
+                rules.push_back({ characterName, materialName });
+                nowHidden = true;
+            }
+            else
+            {
+                rules.erase(existing);
+            }
+        }
+
+        s.materialStatus = std::string(nowHidden
+            ? (s.useChinese ? "\xE5\xB7\xB2\xE9\x9A\x90\xE8\x97\x8F\xEF\xBC\x9A" : "Hidden: ")
+            : (s.useChinese ? "\xE5\xB7\xB2\xE6\x98\xBE\xE7\xA4\xBA\xEF\xBC\x9A" : "Visible: ")) +
+            s.materialSnapshot.materialNames[static_cast<size_t>(materialIndex)];
+        (void)CfgSaveMaterialPanelConfig(s);
+        s.materialDirty = true;
+    }
+
+    static void CfgInvalidateMaterialPlacement(CfgOverlayState& s)
+    {
+        s.materialPlacementValid = false;
+        s.materialPlacementApplied = false;
+    }
+
+    static void CfgApplyMaterialPlacement(
+        CfgOverlayState& s,
+        vr::IVROverlay* ov = nullptr)
+    {
+        if (!CfgIsValidOverlayHandle(s.materialHandle))
+            return;
+        if (!ov)
+            ov = vr::VROverlay();
+        if (!ov)
+            return;
+
+        if (std::fabs(s.materialAppliedSizeMeters - s.materialSizeMeters) > 0.0001f)
+        {
+            ov->SetOverlayWidthInMeters(s.materialHandle, s.materialSizeMeters);
+            s.materialAppliedSizeMeters = s.materialSizeMeters;
+        }
+
+        if (!s.materialPlacementValid)
+        {
+            vr::ETrackingUniverseOrigin origin = vr::TrackingUniverseStanding;
+            vr::HmdMatrix34_t transform{};
+            if (CfgBuildHmdFacingTransform(
+                    s.materialDistanceMeters,
+                    s.materialXOffsetMeters,
+                    s.materialYOffsetMeters,
+                    false,
+                    origin,
+                    transform))
+            {
+                s.materialPlacementOrigin = origin;
+                s.materialPlacementTransform = transform;
+            }
+            else
+            {
+                s.materialPlacementOrigin = origin;
+                s.materialPlacementTransform =
+                    CfgPanelRelativeToHmd(s.materialDistanceMeters);
+                s.materialPlacementTransform.m[0][3] += s.materialXOffsetMeters;
+                s.materialPlacementTransform.m[1][3] =
+                    1.25f + s.materialYOffsetMeters;
+            }
+            s.materialPlacementTransform = CfgMul34(
+                s.materialPlacementTransform,
+                CfgEulerRotation34(
+                    s.materialPitchDeg,
+                    s.materialYawDeg,
+                    s.materialRollDeg));
+            s.materialPlacementValid = true;
+            s.materialPlacementApplied = false;
+        }
+
+        if (!s.materialPlacementApplied &&
+            ov->SetOverlayTransformAbsolute(
+                s.materialHandle,
+                s.materialPlacementOrigin,
+                &s.materialPlacementTransform) == vr::VROverlayError_None)
+        {
+            s.materialPlacementApplied = true;
+        }
+    }
+
+    static bool CfgEnsureMaterialOverlay(CfgOverlayState& s)
+    {
+        vr::IVROverlay* ov = vr::VROverlay();
+        if (!ov)
+            return false;
+        if (!CfgIsValidOverlayHandle(s.materialHandle))
+        {
+            const vr::EVROverlayError err = ov->CreateOverlay(
+                "l4d2vr.character_materials.overlay",
+                "L4D2VR Character Materials",
+                &s.materialHandle);
+            if (err != vr::VROverlayError_None ||
+                !CfgIsValidOverlayHandle(s.materialHandle))
+            {
+                s.materialStatus = std::string("Create material overlay failed: ") +
+                    std::to_string(static_cast<int>(err));
+                return false;
+            }
+            ov->SetOverlayAlpha(s.materialHandle, 1.0f);
+            ov->SetOverlaySortOrder(
+                s.materialHandle,
+                kCfgMaterialOverlaySortOrder);
+            ov->SetOverlayInputMethod(
+                s.materialHandle,
+                vr::VROverlayInputMethod_Mouse);
+            ov->SetOverlayFlag(
+                s.materialHandle,
+                vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+                true);
+            ov->SetOverlayFlag(
+                s.materialHandle,
+                vr::VROverlayFlags_SendVRDiscreteScrollEvents,
+                true);
+            vr::HmdVector2_t mouseScale{
+                static_cast<float>(kCfgMaterialOverlayW),
+                static_cast<float>(kCfgMaterialOverlayH)
+            };
+            ov->SetOverlayMouseScale(s.materialHandle, &mouseScale);
+            s.materialNeedsUpload = true;
+        }
+        CfgApplyMaterialPlacement(s, ov);
+        return true;
+    }
+
+    static void CfgHideMaterialOverlay(
+        CfgOverlayState& s,
+        vr::IVROverlay* ov = nullptr)
+    {
+        if (!ov)
+            ov = vr::VROverlay();
+        if (ov && CfgIsValidOverlayHandle(s.materialHandle))
+            ov->HideOverlay(s.materialHandle);
+        s.materialOverlayShown = false;
+        s.materialHovered = -1;
+    }
+
+    static void CfgRenderMaterialPanel(CfgOverlayState& s)
+    {
+        CfgGdiSurface g;
+        if (!CfgCreateGdiSurface(g))
+            return;
+
+        CfgGdiFill(g, 0, 0, kCfgMaterialOverlayW, kCfgMaterialOverlayH, { 14, 16, 22 });
+        CfgGdiFill(g, 0, 0, kCfgMaterialOverlayW, 72, { 30, 35, 48 });
+        CfgGdiText(
+            g,
+            24,
+            10,
+            600,
+            52,
+            s.useChinese ? "\xE8\xA7\x92\xE8\x89\xB2\xE6\x9D\x90\xE8\xB4\xA8\xE7\xAE\xA1\xE7\x90\x86" : "Character Materials",
+            g.titleFont,
+            { 242, 246, 255 });
+        CfgGdiButton(
+            g,
+            kCfgMaterialCloseX,
+            kCfgMaterialCloseY,
+            kCfgMaterialCloseW,
+            kCfgMaterialCloseH,
+            s.useChinese ? "\xE8\xBF\x94\xE5\x9B\x9E" : "Back");
+
+        CfgGdiButton(
+            g,
+            kCfgMaterialScanX,
+            kCfgMaterialScanY,
+            kCfgMaterialScanW,
+            kCfgMaterialScanH,
+            s.useChinese ? "\xE6\x89\xAB\xE6\x8F\x8F\xE8\xA7\x92\xE8\x89\xB2" : "Scan");
+        static constexpr const char* kCharacters[] = {
+            "bill", "coach", "ellis", "francis",
+            "louis", "nick", "rochelle", "zoey"
+        };
+        for (int i = 0; i < 8; ++i)
+        {
+            const std::string characterName = kCharacters[i];
+            const bool loaded =
+                CfgFindMaterialCharacterSnapshot(s, characterName) != nullptr;
+            const bool selected =
+                loaded && s.materialSelectedCharacter == characterName;
+            const int x = kCfgMaterialCharacterX +
+                i * (kCfgMaterialCharacterW + kCfgMaterialCharacterGap);
+            CfgGdiFill(
+                g,
+                x,
+                kCfgMaterialCharacterY,
+                kCfgMaterialCharacterW,
+                kCfgMaterialCharacterH,
+                selected
+                    ? CfgRgb{ 42, 83, 128 }
+                    : (loaded ? CfgRgb{ 29, 37, 50 } : CfgRgb{ 21, 24, 31 }));
+            CfgGdiFrame(
+                g,
+                x,
+                kCfgMaterialCharacterY,
+                kCfgMaterialCharacterW,
+                kCfgMaterialCharacterH,
+                selected
+                    ? CfgRgb{ 105, 176, 255 }
+                    : (loaded ? CfgRgb{ 74, 94, 124 } : CfgRgb{ 45, 49, 59 }),
+                selected ? 2 : 1);
+            CfgGdiText(
+                g,
+                x,
+                kCfgMaterialCharacterY + 1,
+                kCfgMaterialCharacterW,
+                kCfgMaterialCharacterH - 2,
+                characterName,
+                selected ? g.boldFont : g.smallFont,
+                loaded ? CfgRgb{ 226, 235, 248 } : CfgRgb{ 92, 99, 112 },
+                DT_CENTER);
+        }
+
+        const std::string modelInfo = s.materialSnapshot.valid
+            ? std::string(s.useChinese ? "\xE5\xBD\x93\xE5\x89\x8D\xEF\xBC\x9A" : "Current: ") +
+                s.materialSnapshot.characterName + "  |  " +
+                s.materialSnapshot.modelName
+            : (s.useChinese
+                ? "\xE5\xB0\x9A\xE6\x9C\xAA\xE6\x89\xAB\xE6\x8F\x8F\xE5\x88\xB0\xE5\xB7\xB2\xE5\x8A\xA0\xE8\xBD\xBD\xE7\x9A\x84\xE5\xB9\xB8\xE5\xAD\x98\xE8\x80\x85\xE6\xA8\xA1\xE5\x9E\x8B\xE3\x80\x82"
+                : "No loaded survivor model has been scanned yet.");
+        CfgGdiText(g, 24, 114, 852, 28, modelInfo, g.smallFont, { 164, 184, 210 });
+
+        const int total = s.materialSnapshot.valid
+            ? static_cast<int>(s.materialSnapshot.materialNames.size())
+            : 0;
+        if (s.materialSnapshot.valid)
+        {
+            for (int row = 0; row < kCfgMaterialRowsVisible; ++row)
+            {
+                const int item = s.materialScroll + row;
+                if (item >= total)
+                    break;
+                const int y = kCfgMaterialRowsY + row * kCfgMaterialRowH;
+                const bool hovered = item == s.materialHovered;
+                const std::string& materialName =
+                    s.materialSnapshot.materialNames[static_cast<size_t>(item)];
+                const bool hidden = CfgMaterialIsHidden(
+                    s.materialSnapshot.characterName,
+                    materialName);
+                CfgGdiFill(
+                    g,
+                    kCfgMaterialRowsX,
+                    y,
+                    852,
+                    kCfgMaterialRowH - 3,
+                    hovered ? CfgRgb{ 31, 52, 84 } : CfgRgb{ 18, 21, 28 });
+                if (hovered)
+                    CfgGdiFrame(g, kCfgMaterialRowsX, y, 852, kCfgMaterialRowH - 3, { 76, 130, 220 }, 2);
+                CfgDrawCheckbox(g, 38, y + 6, hidden, hovered);
+                CfgGdiText(
+                    g,
+                    78,
+                    y + 1,
+                    600,
+                    33,
+                    materialName,
+                    hovered ? g.boldFont : g.normalFont,
+                    { 232, 236, 244 });
+                CfgGdiText(
+                    g,
+                    690,
+                    y + 1,
+                    164,
+                    33,
+                    hidden
+                        ? (s.useChinese ? "\xE5\xB7\xB2\xE9\x9A\x90\xE8\x97\x8F" : "Hidden")
+                        : (s.useChinese ? "\xE6\x98\xBE\xE7\xA4\xBA\xE4\xB8\xAD" : "Visible"),
+                    g.boldFont,
+                    hidden ? CfgRgb{ 255, 166, 128 } : CfgRgb{ 150, 230, 174 },
+                    DT_RIGHT);
+            }
+        }
+        else
+        {
+            CfgGdiTextWrap(
+                g,
+                110,
+                205,
+                680,
+                72,
+                s.useChinese
+                    ? "\xE8\xBF\x9B\xE5\x85\xA5\xE5\x9C\xB0\xE5\x9B\xBE\xE5\x90\x8E\xE7\x82\xB9\xE5\x87\xBB\xE6\x89\xAB\xE6\x8F\x8F\xE8\xA7\x92\xE8\x89\xB2\xEF\xBC\x9B\xE6\x9C\xAC\xE5\xB1\x80\xE5\xAE\x9E\xE9\x99\x85\xE5\x8A\xA0\xE8\xBD\xBD\xE8\xBF\x87\xE7\x9A\x84\xE8\xA7\x92\xE8\x89\xB2\xE4\xBC\x9A\xE6\x98\xBE\xE7\xA4\xBA\xE5\x9C\xA8\xE4\xB8\x8A\xE6\x96\xB9\xE3\x80\x82"
+                    : "Enter a map and click Scan. Characters actually loaded in this session appear above.",
+                g.normalFont,
+                { 205, 216, 234 });
+        }
+
+        CfgGdiButton(g, 24, kCfgMaterialPageY, kCfgMaterialPageButtonW, 32,
+            s.useChinese ? "\xE4\xB8\x8A\xE4\xB8\x80\xE9\xA1\xB5" : "Previous");
+        CfgGdiButton(g, 764, kCfgMaterialPageY, kCfgMaterialPageButtonW, 32,
+            s.useChinese ? "\xE4\xB8\x8B\xE4\xB8\x80\xE9\xA1\xB5" : "Next");
+        const int currentPage = s.materialScroll / kCfgMaterialRowsVisible + 1;
+        const std::string pageText = std::string(s.useChinese ? "\xE7\xAC\xAC " : "Page ") +
+            std::to_string(currentPage) + " / " +
+            std::to_string(CfgMaterialPageCount(s)) +
+            (s.useChinese ? " \xE9\xA1\xB5  /  " : "  /  ") +
+            (total > 0
+                ? std::to_string(s.materialScroll + 1) + "-" +
+                    std::to_string(std::min(total, s.materialScroll + kCfgMaterialRowsVisible)) +
+                    "/" + std::to_string(total)
+                : "0/0");
+        CfgGdiText(g, 150, kCfgMaterialPageY, 600, 32, pageText,
+            g.smallFont, { 164, 183, 210 }, DT_CENTER);
+
+        CfgGdiFill(g, 18, 420, 864, 150, { 25, 29, 39 });
+        CfgGdiFrame(g, 18, 420, 864, 150, { 82, 96, 126 }, 1);
+        CfgGdiText(
+            g,
+            34,
+            422,
+            720,
+            22,
+            s.useChinese
+                ? "\xE9\xA2\x84\xE8\xA7\x88\xE7\x9B\xB8\xE6\x9C\xBA\xEF\xBC\x88\xE8\xA7\x92\xE8\x89\xB2\xE6\xAD\xA3\xE9\x9D\xA2\xEF\xBC\x89"
+                : "Preview Camera (in front of character)",
+            g.boldFont,
+            { 186, 220, 255 });
+        auto drawAdjust = [&](int x, int y, const char* zh, const char* en,
+                              float value, float formatStep = 0.01f) {
+            CfgGdiText(g, x, y, 118, 34, s.useChinese ? zh : en, g.smallFont, { 182, 202, 226 });
+            CfgGdiText(g, x + 112, y, 82, 34, CfgFormatFloat(value, formatStep), g.normalFont, { 232, 238, 248 }, DT_RIGHT);
+            CfgGdiButton(g, x + 204, y, 48, 32, "-");
+            CfgGdiButton(g, x + 258, y, 48, 32, "+");
+        };
+        drawAdjust(34, 446, "\xE8\xB7\x9D\xE7\xA6\xBB(cm)", "Distance (cm)", s.materialCameraDistance);
+        drawAdjust(454, 446, "\xE6\xB0\xB4\xE5\xB9\xB3(cm)", "Horizontal (cm)", s.materialCameraHorizontal);
+        drawAdjust(34, 482, "\xE5\x9E\x82\xE7\x9B\xB4(cm)", "Vertical (cm)", s.materialCameraVertical);
+        drawAdjust(454, 482, "\xE4\xBF\xAF\xE4\xBB\xB0(\xE5\xBA\xA6)", "Pitch (deg)", s.materialCameraPitchDeg, 1.0f);
+        drawAdjust(34, 518, "\xE5\x81\x8F\xE8\x88\xAA(\xE5\xBA\xA6)", "Yaw (deg)", s.materialCameraYawDeg, 1.0f);
+        drawAdjust(454, 518, "\xE7\xBF\xBB\xE6\xBB\x9A(\xE5\xBA\xA6)", "Roll (deg)", s.materialCameraRollDeg, 1.0f);
+        CfgGdiButton(g, 772, 446, 96, 104, s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE7\x9B\xB8\xE6\x9C\xBA" : "Reset Cam");
+
+        CfgGdiFill(g, 18, 578, 864, 178, { 20, 25, 34 });
+        CfgGdiFrame(g, 18, 578, 864, 178, { 60, 78, 108 }, 1);
+        CfgGdiText(
+            g,
+            34,
+            580,
+            720,
+            22,
+            s.useChinese ? "Overlay \xE9\x9D\xA2\xE6\x9D\xBF" : "Overlay Panel",
+            g.boldFont,
+            { 182, 212, 246 });
+        drawAdjust(34, 604, "\xE8\xB7\x9D\xE7\xA6\xBB", "Distance", s.materialDistanceMeters);
+        drawAdjust(454, 604, "\xE5\xA4\xA7\xE5\xB0\x8F", "Size", s.materialSizeMeters);
+        drawAdjust(34, 640, "\xE6\xB0\xB4\xE5\xB9\xB3", "Horizontal", s.materialXOffsetMeters);
+        drawAdjust(454, 640, "\xE5\x9E\x82\xE7\x9B\xB4", "Vertical", s.materialYOffsetMeters);
+        drawAdjust(34, 676, "\xE4\xBF\xAF\xE4\xBB\xB0(\xE5\xBA\xA6)", "Pitch (deg)", s.materialPitchDeg, 1.0f);
+        drawAdjust(454, 676, "\xE5\x81\x8F\xE8\x88\xAA(\xE5\xBA\xA6)", "Yaw (deg)", s.materialYawDeg, 1.0f);
+        drawAdjust(34, 712, "\xE7\xBF\xBB\xE6\xBB\x9A(\xE5\xBA\xA6)", "Roll (deg)", s.materialRollDeg, 1.0f);
+        CfgGdiButton(g, 772, 604, 96, 138, s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE9\x9D\xA2\xE6\x9D\xBF" : "Reset UI");
+        CfgGdiText(g, 24, 770, 852, 44, s.materialStatus, g.smallFont, { 214, 224, 240 });
+
+        CfgConvertGdiRectToRgba(
+            s.materialRgba,
+            g,
+            0,
+            0,
+            kCfgMaterialOverlayW,
+            kCfgMaterialOverlayH);
+        s.materialDirty = false;
+        s.materialNeedsUpload = true;
+    }
+
+    static bool CfgUploadMaterialPanel(
+        CfgOverlayState& s,
+        vr::IVROverlay* ov = nullptr)
+    {
+        if (!ov)
+            ov = vr::VROverlay();
+        if (!ov || !CfgIsValidOverlayHandle(s.materialHandle) ||
+            s.materialRgba.empty())
+        {
+            return false;
+        }
+        CfgApplyMaterialPlacement(s, ov);
+        const vr::EVROverlayError err = ov->SetOverlayRaw(
+            s.materialHandle,
+            s.materialRgba.data(),
+            kCfgMaterialOverlayW,
+            kCfgMaterialOverlayH,
+            4);
+        if (err != vr::VROverlayError_None)
+            return false;
+        ov->ShowOverlay(s.materialHandle);
+        s.materialOverlayShown = true;
+        s.materialNeedsUpload = false;
+        return true;
+    }
+
+    static void CfgShowMaterialPanelIfNeeded(
+        CfgOverlayState& s,
+        vr::IVROverlay* ov = nullptr)
+    {
+        if (!ov)
+            ov = vr::VROverlay();
+        if (!ov || !CfgIsValidOverlayHandle(s.materialHandle))
+            return;
+        CfgApplyMaterialPlacement(s, ov);
+        if (!s.materialOverlayShown)
+        {
+            ov->ShowOverlay(s.materialHandle);
+            s.materialOverlayShown = true;
+        }
+    }
+
+    static void CfgAdjustMaterialLayout(
+        CfgOverlayState& s,
+        float& value,
+        float delta,
+        float minValue,
+        float maxValue)
+    {
+        value = std::clamp(value + delta, minValue, maxValue);
+        CfgInvalidateMaterialPlacement(s);
+        CfgApplyMaterialPlacement(s);
+        (void)CfgSaveMaterialPanelConfig(s);
+        s.materialDirty = true;
+    }
+
+    static void CfgPublishMaterialPreviewCamera(
+        const CfgOverlayState& s,
+        bool active)
+    {
+        if (!g_Game || !g_Game->m_VR)
+            return;
+        VR* vr = g_Game->m_VR;
+        vr->m_MaterialPreviewCameraDistance.store(
+            s.materialCameraDistance,
+            std::memory_order_release);
+        vr->m_MaterialPreviewCameraHorizontal.store(
+            s.materialCameraHorizontal,
+            std::memory_order_release);
+        vr->m_MaterialPreviewCameraVertical.store(
+            s.materialCameraVertical,
+            std::memory_order_release);
+        vr->m_MaterialPreviewCameraPitch.store(
+            s.materialCameraPitchDeg,
+            std::memory_order_release);
+        vr->m_MaterialPreviewCameraYaw.store(
+            s.materialCameraYawDeg,
+            std::memory_order_release);
+        vr->m_MaterialPreviewCameraRoll.store(
+            s.materialCameraRollDeg,
+            std::memory_order_release);
+        vr->m_MaterialPreviewActive.store(active, std::memory_order_release);
+    }
+
+    static void CfgAdjustMaterialCamera(
+        CfgOverlayState& s,
+        float& value,
+        float delta,
+        float minValue,
+        float maxValue)
+    {
+        value = std::clamp(value + delta, minValue, maxValue);
+        CfgPublishMaterialPreviewCamera(s, true);
+        (void)CfgSaveMaterialPanelConfig(s);
+        s.materialDirty = true;
+    }
+
+    static void CfgHandleMaterialClick(CfgOverlayState& s, int mx, int my)
+    {
+        if (mx >= kCfgMaterialCloseX &&
+            mx < kCfgMaterialCloseX + kCfgMaterialCloseW &&
+            my >= kCfgMaterialCloseY &&
+            my < kCfgMaterialCloseY + kCfgMaterialCloseH)
+        {
+            CfgCloseMaterialPanel(s, true);
+            return;
+        }
+
+        if (mx >= kCfgMaterialScanX &&
+            mx < kCfgMaterialScanX + kCfgMaterialScanW &&
+            my >= kCfgMaterialScanY &&
+            my < kCfgMaterialScanY + kCfgMaterialScanH)
+        {
+            CfgScanLoadedMaterialCharacters(s, true, true);
+            return;
+        }
+
+        if (my >= kCfgMaterialCharacterY &&
+            my < kCfgMaterialCharacterY + kCfgMaterialCharacterH)
+        {
+            static constexpr const char* kCharacters[] = {
+                "bill", "coach", "ellis", "francis",
+                "louis", "nick", "rochelle", "zoey"
+            };
+            for (int i = 0; i < 8; ++i)
+            {
+                const int x = kCfgMaterialCharacterX +
+                    i * (kCfgMaterialCharacterW + kCfgMaterialCharacterGap);
+                if (mx >= x && mx < x + kCfgMaterialCharacterW)
+                {
+                    CfgSelectMaterialCharacter(s, kCharacters[i], true);
+                    return;
+                }
+            }
+        }
+
+        if (my >= kCfgMaterialPageY && my < kCfgMaterialPageY + 32)
+        {
+            if (mx >= 24 && mx < 24 + kCfgMaterialPageButtonW)
+            {
+                CfgChangeMaterialPage(s, -1);
+                return;
+            }
+            if (mx >= 764 && mx < 764 + kCfgMaterialPageButtonW)
+            {
+                CfgChangeMaterialPage(s, +1);
+                return;
+            }
+        }
+
+        if (mx >= kCfgMaterialRowsX && mx < kCfgMaterialOverlayW - 24 &&
+            my >= kCfgMaterialRowsY &&
+            my < kCfgMaterialRowsY + kCfgMaterialRowsVisible * kCfgMaterialRowH)
+        {
+            const int item = s.materialScroll +
+                (my - kCfgMaterialRowsY) / kCfgMaterialRowH;
+            CfgToggleMaterialHidden(s, item);
+            return;
+        }
+
+        auto hit = [&](int x, int y) {
+            return mx >= x && mx < x + 48 && my >= y && my < y + 32;
+        };
+        if (hit(238, 446))
+            CfgAdjustMaterialCamera(s, s.materialCameraDistance, -2.0f, 15.0f, 150.0f);
+        else if (hit(292, 446))
+            CfgAdjustMaterialCamera(s, s.materialCameraDistance, +2.0f, 15.0f, 150.0f);
+        else if (hit(658, 446))
+            CfgAdjustMaterialCamera(s, s.materialCameraHorizontal, -2.0f, -100.0f, 100.0f);
+        else if (hit(712, 446))
+            CfgAdjustMaterialCamera(s, s.materialCameraHorizontal, +2.0f, -100.0f, 100.0f);
+        else if (hit(238, 482))
+            CfgAdjustMaterialCamera(s, s.materialCameraVertical, -2.0f, -100.0f, 100.0f);
+        else if (hit(292, 482))
+            CfgAdjustMaterialCamera(s, s.materialCameraVertical, +2.0f, -100.0f, 100.0f);
+        else if (hit(658, 482))
+            CfgAdjustMaterialCamera(s, s.materialCameraPitchDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(712, 482))
+            CfgAdjustMaterialCamera(s, s.materialCameraPitchDeg, +5.0f, -180.0f, 180.0f);
+        else if (hit(238, 518))
+            CfgAdjustMaterialCamera(s, s.materialCameraYawDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(292, 518))
+            CfgAdjustMaterialCamera(s, s.materialCameraYawDeg, +5.0f, -180.0f, 180.0f);
+        else if (hit(658, 518))
+            CfgAdjustMaterialCamera(s, s.materialCameraRollDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(712, 518))
+            CfgAdjustMaterialCamera(s, s.materialCameraRollDeg, +5.0f, -180.0f, 180.0f);
+        else if (mx >= 772 && mx < 868 && my >= 446 && my < 550)
+        {
+            s.materialCameraDistance = 38.0f;
+            s.materialCameraHorizontal = 0.0f;
+            s.materialCameraVertical = 0.0f;
+            s.materialCameraPitchDeg = 0.0f;
+            s.materialCameraYawDeg = 0.0f;
+            s.materialCameraRollDeg = 0.0f;
+            CfgPublishMaterialPreviewCamera(s, true);
+            (void)CfgSaveMaterialPanelConfig(s);
+            s.materialDirty = true;
+        }
+        else if (hit(238, 604))
+            CfgAdjustMaterialLayout(s, s.materialDistanceMeters, -0.05f, 0.45f, 3.0f);
+        else if (hit(292, 604))
+            CfgAdjustMaterialLayout(s, s.materialDistanceMeters, +0.05f, 0.45f, 3.0f);
+        else if (hit(658, 604))
+            CfgAdjustMaterialLayout(s, s.materialSizeMeters, -0.05f, 0.45f, 2.0f);
+        else if (hit(712, 604))
+            CfgAdjustMaterialLayout(s, s.materialSizeMeters, +0.05f, 0.45f, 2.0f);
+        else if (hit(238, 640))
+            CfgAdjustMaterialLayout(s, s.materialXOffsetMeters, -0.05f, -1.0f, 1.0f);
+        else if (hit(292, 640))
+            CfgAdjustMaterialLayout(s, s.materialXOffsetMeters, +0.05f, -1.0f, 1.0f);
+        else if (hit(658, 640))
+            CfgAdjustMaterialLayout(s, s.materialYOffsetMeters, -0.05f, -1.0f, 1.0f);
+        else if (hit(712, 640))
+            CfgAdjustMaterialLayout(s, s.materialYOffsetMeters, +0.05f, -1.0f, 1.0f);
+        else if (hit(238, 676))
+            CfgAdjustMaterialLayout(s, s.materialPitchDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(292, 676))
+            CfgAdjustMaterialLayout(s, s.materialPitchDeg, +5.0f, -180.0f, 180.0f);
+        else if (hit(658, 676))
+            CfgAdjustMaterialLayout(s, s.materialYawDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(712, 676))
+            CfgAdjustMaterialLayout(s, s.materialYawDeg, +5.0f, -180.0f, 180.0f);
+        else if (hit(238, 712))
+            CfgAdjustMaterialLayout(s, s.materialRollDeg, -5.0f, -180.0f, 180.0f);
+        else if (hit(292, 712))
+            CfgAdjustMaterialLayout(s, s.materialRollDeg, +5.0f, -180.0f, 180.0f);
+        else if (mx >= 772 && mx < 868 && my >= 604 && my < 742)
+        {
+            s.materialDistanceMeters = 1.05f;
+            s.materialSizeMeters = 1.00f;
+            s.materialXOffsetMeters = 0.0f;
+            s.materialYOffsetMeters = -0.05f;
+            s.materialPitchDeg = 0.0f;
+            s.materialYawDeg = 0.0f;
+            s.materialRollDeg = 0.0f;
+            s.materialAppliedSizeMeters = -1.0f;
+            CfgInvalidateMaterialPlacement(s);
+            CfgApplyMaterialPlacement(s);
+            (void)CfgSaveMaterialPanelConfig(s);
+            s.materialDirty = true;
+        }
+    }
+
+    static void CfgPollMaterialOverlayEvents(CfgOverlayState& s)
+    {
+        if (!CfgIsValidOverlayHandle(s.materialHandle))
+            return;
+        vr::IVROverlay* ov = vr::VROverlay();
+        if (!ov)
+            return;
+
+        vr::VREvent_t ev{};
+        while (ov->PollNextOverlayEvent(s.materialHandle, &ev, sizeof(ev)))
+        {
+            int mx = 0;
+            int my = 0;
+            if (ev.eventType == vr::VREvent_MouseMove ||
+                ev.eventType == vr::VREvent_MouseButtonDown)
+            {
+                mx = std::clamp(
+                    static_cast<int>(std::lround(ev.data.mouse.x)),
+                    0,
+                    kCfgMaterialOverlayW - 1);
+                my = std::clamp(
+                    kCfgMaterialOverlayH -
+                        static_cast<int>(std::lround(ev.data.mouse.y)),
+                    0,
+                    kCfgMaterialOverlayH - 1);
+            }
+
+            if (ev.eventType == vr::VREvent_MouseMove)
+            {
+                int hovered = -1;
+                if (mx >= kCfgMaterialRowsX && mx < kCfgMaterialOverlayW - 24 &&
+                    my >= kCfgMaterialRowsY &&
+                    my < kCfgMaterialRowsY + kCfgMaterialRowsVisible * kCfgMaterialRowH)
+                {
+                    hovered = s.materialScroll +
+                        (my - kCfgMaterialRowsY) / kCfgMaterialRowH;
+                    if (hovered >= static_cast<int>(s.materialSnapshot.materialNames.size()))
+                        hovered = -1;
+                }
+                if (hovered != s.materialHovered)
+                {
+                    s.materialHovered = hovered;
+                    s.materialDirty = true;
+                }
+            }
+            else if (ev.eventType == vr::VREvent_MouseButtonDown)
+            {
+                CfgHandleMaterialClick(s, mx, my);
+            }
+            else if (ev.eventType == vr::VREvent_ScrollDiscrete &&
+                std::fabs(ev.data.scroll.ydelta) > 0.01f)
+            {
+                CfgChangeMaterialPage(
+                    s,
+                    ev.data.scroll.ydelta > 0.0f ? -1 : 1);
+            }
+        }
+    }
+
+    static void CfgSendMaterialThirdPersonToggle()
+    {
+        if (g_Game)
+            g_Game->ClientCmd_Unrestricted("thirdpersonshoulder\n");
+    }
+
+    static void CfgOpenMaterialPanel(
+        CfgOverlayState& s,
+        vr::IVROverlay* ov)
+    {
+        if (!ov)
+            ov = vr::VROverlay();
+        if (g_Game && g_Game->m_VR)
+            g_Game->m_VR->m_ClothingMaterials.store(true, std::memory_order_release);
+        CfgLoadMaterialPanelConfig(s);
+        s.materialCharacterSnapshots.clear();
+        s.materialSelectedCharacter.clear();
+        s.materialCharacterSelectionPinned = false;
+        s.materialSeenPublishSeq = 0;
+        CfgRefreshMaterialSnapshot(s);
+        CfgScanLoadedMaterialCharacters(s, false, false);
+        CfgPublishMaterialPreviewCamera(s, true);
+        s.visible = false;
+        s.materialVisible = true;
+        s.materialThirdPersonCommandActive = false;
+        s.materialScroll = 0;
+        s.materialHovered = -1;
+        s.materialStatus = s.useChinese
+            ? "\xE7\x82\xB9\xE5\x87\xBB\xE6\x9D\x90\xE8\xB4\xA8\xE8\xA1\x8C\xE5\x88\x87\xE6\x8D\xA2\xE9\x9A\x90\xE8\x97\x8F\xE6\x88\x96\xE6\x98\xBE\xE7\xA4\xBA\xE3\x80\x82"
+            : "Click a material row to toggle hidden or visible.";
+        s.materialDirty = true;
+        s.materialNeedsUpload = true;
+        CfgHidePanelOverlays(s, ov);
+        CfgHideMenuButton(s);
+        (void)CfgCloseSourceGameUiForCalibration();
+        if (CfgEnsureMaterialOverlay(s))
+        {
+            CfgApplyMaterialPlacement(s, ov);
+            CfgSendMaterialThirdPersonToggle();
+            s.materialThirdPersonCommandActive = true;
+        }
+    }
+
+    static void CfgCloseMaterialPanel(
+        CfgOverlayState& s,
+        bool reopenConfig,
+        vr::IVROverlay* ov)
+    {
+        if (!ov)
+            ov = vr::VROverlay();
+        CfgPublishMaterialPreviewCamera(s, false);
+        s.materialVisible = false;
+        CfgHideMaterialOverlay(s, ov);
+        if (s.materialThirdPersonCommandActive)
+        {
+            CfgSendMaterialThirdPersonToggle();
+            s.materialThirdPersonCommandActive = false;
+        }
+        s.visible = reopenConfig;
+        if (reopenConfig)
+        {
+            s.status = s.useChinese
+                ? "\xE5\xB7\xB2\xE8\xBF\x94\xE5\x9B\x9E\x20L4D2VR\x20\xE9\x85\x8D\xE7\xBD\xAE\xE3\x80\x82"
+                : "Returned to L4D2VR Config.";
+            s.dirty = true;
+            CfgApplyOverlayPlacement(s, ov);
+        }
     }
 
     static void CfgSetNumericValueFromSlider(CfgOverlayState& s, const CfgOptionSpec& spec, int mx)
@@ -6870,6 +8310,11 @@ namespace
         CfgEnsureSelectedVisible(s);
 
         const CfgOptionSpec& spec = kCfgOptionSpecs[s.visibleSpecIndexes[item]];
+        if (std::strcmp(spec.key, "HiddenMaterialNames") == 0)
+        {
+            CfgOpenMaterialPanel(s);
+            return;
+        }
         if (spec.type == CfgOptionType::Bool)
         {
             CfgAdjustSelected(s, +1);
@@ -7106,7 +8551,14 @@ namespace
             if (f8 && !s.prevF8)
             {
                 std::lock_guard<std::mutex> lock(s.mutex);
-                s.visible = !s.visible;
+                if (s.materialVisible)
+                {
+                    CfgCloseMaterialPanel(s, true);
+                }
+                else
+                {
+                    s.visible = !s.visible;
+                }
                 s.hoverSelectionSuppressedUntilMs = 0;
                 s.hoveredItem = -1;
                 if (s.visible)
@@ -7141,6 +8593,34 @@ namespace
 
             CfgUpdateMenuButton(s);
 
+            if (s.materialVisible)
+            {
+                CfgHideMenuButton(s);
+                CfgHidePanelOverlays(s, ov);
+                CfgSetBaseOverlaysBlocked(s, true, ov);
+                CfgApplyCalibrationRuntimeState(s);
+                (void)CfgCloseSourceGameUiForCalibration();
+                if (!CfgEnsureMaterialOverlay(s))
+                    continue;
+                CfgRefreshMaterialSnapshot(s);
+                CfgApplyMaterialPlacement(s, ov);
+                CfgPollMaterialOverlayEvents(s);
+                if (!s.materialVisible)
+                {
+                    CfgHideMaterialOverlay(s, ov);
+                    continue;
+                }
+                if (s.materialDirty)
+                    CfgRenderMaterialPanel(s);
+                if (s.materialNeedsUpload)
+                    (void)CfgUploadMaterialPanel(s, ov);
+                else
+                    CfgShowMaterialPanelIfNeeded(s, ov);
+                continue;
+            }
+
+            CfgHideMaterialOverlay(s, ov);
+
             if (!s.visible)
             {
                 CfgApplyCalibrationRuntimeState(s);
@@ -7155,6 +8635,8 @@ namespace
             CfgApplyCalibrationRuntimeState(s);
             CfgApplyOverlayPlacement(s, ov);
             CfgPollOverlayEvents(s);
+            if (s.materialVisible)
+                continue;
             CfgUpdateWorldPoseCalibrationUi(s);
             CfgMarkDirtyIfCalibrationSnapshotChanged(s);
 

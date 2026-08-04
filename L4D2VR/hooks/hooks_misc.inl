@@ -15839,19 +15839,23 @@ namespace
         return result;
     }
 
-    inline void HooksMaybeLogLocalPlayerModelMaterials(
+    inline void HooksMaybePublishAndLogPlayerModelMaterials(
         VR* vr,
         Game* game,
         void* drawState,
         const ModelRenderInfo_t& info,
         bool shadowDepthDraw)
     {
+        struct PublishedModelKey
+        {
+            uint32_t session = 0;
+            int entityIndex = 0;
+            const void* renderable = nullptr;
+            std::string modelName;
+        };
         static std::mutex s_LogStateMutex;
-        static bool s_HasLogged = false;
-        static uint32_t s_LoggedSession = 0;
-        static int s_LoggedEntityIndex = 0;
-        static const void* s_LoggedRenderable = nullptr;
-        static std::string s_LoggedModelName;
+        static uint32_t s_PublishedSession = 0;
+        static std::vector<PublishedModelKey> s_PublishedModels;
 
         if (!game || !game->m_EngineClient)
             return;
@@ -15862,21 +15866,52 @@ namespace
         if (!inGame || localPlayerIndex <= 0)
         {
             std::lock_guard<std::mutex> lock(s_LogStateMutex);
-            s_HasLogged = false;
-            s_LoggedSession = 0;
-            s_LoggedEntityIndex = 0;
-            s_LoggedRenderable = nullptr;
-            s_LoggedModelName.clear();
+            s_PublishedSession = 0;
+            s_PublishedModels.clear();
             return;
         }
 
         if (shadowDepthDraw ||
             !game->m_ModelInfo ||
             !info.pModel ||
-            info.entity_index <= 0 ||
-            info.entity_index != localPlayerIndex)
+            info.entity_index <= 0)
         {
             return;
+        }
+
+        std::string modelName = "<unknown>";
+        const char* resolvedModelName = nullptr;
+        if (HooksFirstPersonBodyGetModelNameSafe(
+                game->m_ModelInfo,
+                info.pModel,
+                resolvedModelName))
+        {
+            modelName = resolvedModelName;
+        }
+
+        const uint32_t logSession =
+            vr
+                ? vr->m_PlayerModelMaterialsLogSession.load(
+                    std::memory_order_acquire)
+                : 0u;
+        auto matchesCurrentDraw = [&](const PublishedModelKey& key) {
+            return key.session == logSession &&
+                key.entityIndex == info.entity_index &&
+                key.renderable == info.pRenderable &&
+                key.modelName == modelName;
+        };
+        {
+            std::lock_guard<std::mutex> lock(s_LogStateMutex);
+            if (s_PublishedSession != logSession)
+            {
+                s_PublishedSession = logSession;
+                s_PublishedModels.clear();
+            }
+            if (std::find_if(
+                    s_PublishedModels.begin(),
+                    s_PublishedModels.end(),
+                    matchesCurrentDraw) != s_PublishedModels.end())
+                return;
         }
 
         std::string characterName;
@@ -15898,44 +15933,46 @@ namespace
 
         if (materialNames.empty())
             return;
-
-        const char* modelName = "<unknown>";
-        const char* resolvedModelName = nullptr;
-        if (HooksFirstPersonBodyGetModelNameSafe(
-                game->m_ModelInfo,
-                info.pModel,
-                resolvedModelName))
-        {
-            modelName = resolvedModelName;
-        }
-
-        const uint32_t logSession =
-            vr
-                ? vr->m_PlayerModelMaterialsLogSession.load(
-                    std::memory_order_acquire)
-                : 0u;
         {
             std::lock_guard<std::mutex> lock(s_LogStateMutex);
-            if (s_HasLogged &&
-                s_LoggedSession == logSession &&
-                s_LoggedEntityIndex == info.entity_index &&
-                s_LoggedRenderable == info.pRenderable &&
-                s_LoggedModelName == modelName)
+            if (s_PublishedSession != logSession)
             {
-                return;
+                s_PublishedSession = logSession;
+                s_PublishedModels.clear();
             }
-
-            s_HasLogged = true;
-            s_LoggedSession = logSession;
-            s_LoggedEntityIndex = info.entity_index;
-            s_LoggedRenderable = info.pRenderable;
-            s_LoggedModelName = modelName;
+            if (std::find_if(
+                    s_PublishedModels.begin(),
+                    s_PublishedModels.end(),
+                    matchesCurrentDraw) != s_PublishedModels.end())
+                return;
+            s_PublishedModels.push_back({
+                logSession,
+                info.entity_index,
+                info.pRenderable,
+                modelName
+            });
         }
+
+        if (vr)
+        {
+            vr->PublishPlayerModelMaterialsSnapshot(
+                logSession,
+                info.entity_index,
+                characterName,
+                modelName,
+                materialNames,
+                info.entity_index == localPlayerIndex);
+        }
+
+        // Cache every actually drawn survivor for the scan button, while keeping
+        // the detailed console/file log focused on the local player.
+        if (info.entity_index != localPlayerIndex)
+            return;
 
         Game::logMsg(
             "[VR][PlayerModelMaterials] character=%s model=%s count=%u",
             characterName.c_str(),
-            modelName,
+            modelName.c_str(),
             static_cast<unsigned int>(materialNames.size()));
         for (size_t materialIndex = 0;
              materialIndex < materialNames.size();
@@ -15963,8 +16000,7 @@ namespace
             !game->m_ModelInfo ||
             !drawState ||
             !model ||
-            !vr->m_ClothingMaterials ||
-            vr->m_HiddenMaterialNames.empty())
+            !vr->m_ClothingMaterials.load(std::memory_order_acquire))
         {
             return false;
         }
@@ -15984,21 +16020,25 @@ namespace
         }
 
         std::vector<std::string> configuredMaterialNames;
-        for (const VR::HiddenMaterialNameRule& rule :
-            vr->m_HiddenMaterialNames)
         {
-            if (rule.characterName != characterName ||
-                rule.materialName.empty())
+            std::lock_guard<std::mutex> lock(
+                vr->m_HiddenMaterialNamesMutex);
+            for (const VR::HiddenMaterialNameRule& rule :
+                vr->m_HiddenMaterialNames)
             {
-                continue;
-            }
+                if (rule.characterName != characterName ||
+                    rule.materialName.empty())
+                {
+                    continue;
+                }
 
-            if (std::find(
-                    configuredMaterialNames.begin(),
-                    configuredMaterialNames.end(),
-                    rule.materialName) == configuredMaterialNames.end())
-            {
-                configuredMaterialNames.push_back(rule.materialName);
+                if (std::find(
+                        configuredMaterialNames.begin(),
+                        configuredMaterialNames.end(),
+                        rule.materialName) == configuredMaterialNames.end())
+                {
+                    configuredMaterialNames.push_back(rule.materialName);
+                }
             }
         }
         if (configuredMaterialNames.empty())
@@ -18045,7 +18085,7 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
 	const bool shadowDepthDraw =
 		(info.flags & kStudioShadowDepthTexture) != 0;
 
-	HooksMaybeLogLocalPlayerModelMaterials(
+	HooksMaybePublishAndLogPlayerModelMaterials(
 		m_VR,
 		m_Game,
 		state,
