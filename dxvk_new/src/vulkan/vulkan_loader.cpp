@@ -1,6 +1,8 @@
+#ifdef _WIN32
 #include <mutex>
-#include <tuple>
 #include <unordered_map>
+#endif
+#include <tuple>
 
 #include "vulkan_loader.h"
 
@@ -11,7 +13,7 @@
 
 namespace dxvk::vk {
 
-#ifdef _WIN32
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
   namespace {
 
     struct BandicamDeviceFunctions {
@@ -146,8 +148,7 @@ namespace dxvk::vk {
   
   DeviceFn::DeviceFn(const Rc<InstanceLoader>& library, bool owned, VkDevice device)
   : DeviceLoader(library, owned, device) {
-#ifdef _WIN32
-#ifdef VK_KHR_swapchain
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
     if (isBandicamVulkanHookLoaded()
      && this->vkDeviceWaitIdle
      && this->vkDestroySwapchainKHR) {
@@ -163,14 +164,13 @@ namespace dxvk::vk {
       Logger::warn("Vulkan: Bandicam hook detected; synchronizing the device before swapchain destruction.");
     }
 #endif
-#endif
   }
 
   DeviceFn::~DeviceFn() {
     if (m_owned)
       this->vkDestroyDevice(m_device, nullptr);
 
-#ifdef _WIN32
+#if defined(_WIN32) && defined(VK_KHR_swapchain)
     std::lock_guard lock(g_bandicamMutex);
     g_bandicamDevices.erase(m_device);
 #endif
