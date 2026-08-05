@@ -1579,6 +1579,21 @@ void VR::ParseConfigFile()
     m_NativeViewmodelArmCroppingEnabled = getBool(
         "NativeViewmodelArmCroppingEnabled",
         m_NativeViewmodelArmCroppingEnabled);
+    m_NativeViewmodelArmAnchorOffsetMeters = getVector3(
+        "NativeViewmodelArmAnchorOffsetMeters",
+        m_NativeViewmodelArmAnchorOffsetMeters);
+    m_NativeViewmodelArmAnchorOffsetMeters.x = std::clamp(
+        m_NativeViewmodelArmAnchorOffsetMeters.x, -0.5f, 0.5f);
+    m_NativeViewmodelArmAnchorOffsetMeters.y = std::clamp(
+        m_NativeViewmodelArmAnchorOffsetMeters.y, -0.5f, 0.5f);
+    m_NativeViewmodelArmAnchorOffsetMeters.z = std::clamp(
+        m_NativeViewmodelArmAnchorOffsetMeters.z, -0.5f, 0.5f);
+    m_NativeViewmodelArmShoulderSpacingOffsetMeters = std::clamp(
+        getFloat(
+            "NativeViewmodelArmShoulderSpacingOffsetMeters",
+            m_NativeViewmodelArmShoulderSpacingOffsetMeters),
+        -0.5f,
+        0.5f);
     m_NativeViewmodelHandsOnlyWristKeepFraction = std::clamp(
         getFloat(
             "NativeViewmodelHandsOnlyWristKeepUnits",

@@ -3159,6 +3159,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					*state = HooksFirstPersonBodyEyeSceneState{};
 					state->view = view;
 					state->centerEyePosition = centerEyePosition;
+					state->eyeIndex = eyeIndex;
+					state->sceneSerial = g_FirstPersonBodySceneSerial.fetch_add(
+						1, std::memory_order_acq_rel);
 					state->bodyActive = true;
 					state->playerGeneration =
 						g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire);

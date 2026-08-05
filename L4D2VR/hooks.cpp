@@ -79,15 +79,20 @@ namespace
         bool crouched = false;
         bool bodyActive = false;
         std::uint64_t playerGeneration = 0;
+        std::uint64_t sceneSerial = 0;
+        int eyeIndex = 0;
         int localPlayerIndex = -1;
         void* localPlayerRenderable = nullptr;
         void* activeWeaponRenderable = nullptr;
     };
 
     // Keep the two eye payloads distinct so a delayed left-eye consumer cannot
-    // observe the right eye overwriting the same TLS object.
+    // observe the right eye overwriting the same TLS object. sceneSerial makes
+    // shoulder anchors from a previous use of the same TLS slot impossible to
+    // mistake for the current eye scene.
     thread_local HooksFirstPersonBodyEyeSceneState g_FirstPersonBodyProducerStates[2]{};
     std::atomic<HooksFirstPersonBodyEyeSceneState*> g_FirstPersonBodyPublishedState{ nullptr };
+    std::atomic<std::uint64_t> g_FirstPersonBodySceneSerial{ 1 };
 
     bool HooksFirstPersonBodyExecutableAddress(void* address)
     {
