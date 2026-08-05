@@ -1576,6 +1576,9 @@ void VR::ParseConfigFile()
         m_FirstPersonBodyHideWorldWeapon);
     m_HideArms = getBool("HideArms", m_HideArms);
     m_NativeViewmodelHandsOnly = getBool("NativeViewmodelHandsOnly", m_NativeViewmodelHandsOnly);
+    m_NativeViewmodelArmCroppingEnabled = getBool(
+        "NativeViewmodelArmCroppingEnabled",
+        m_NativeViewmodelArmCroppingEnabled);
     m_NativeViewmodelHandsOnlyWristKeepFraction = std::clamp(
         getFloat(
             "NativeViewmodelHandsOnlyWristKeepUnits",

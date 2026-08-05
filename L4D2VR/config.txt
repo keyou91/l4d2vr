@@ -171,6 +171,7 @@ VrHandsGloveMiddleMaxCurl=1.0
 VrHandsGloveRingMaxCurl=1.0
 VrHandsGlovePinkyMaxCurl=1.0
 NativeViewmodelHandsOnly=true
+NativeViewmodelArmCroppingEnabled=false
 NativeViewmodelHandsOnlyWristKeepFraction=1.0
 NativeViewmodelHandsOnlyTrimUnits=0.0
 NativeViewmodelHandsOnlyArmBendScale=0.0

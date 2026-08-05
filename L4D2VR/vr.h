@@ -1626,6 +1626,8 @@ public:
 	bool m_FirstPersonBodyHideWorldWeapon = true;
 	bool m_HideArms = false;
 	bool m_NativeViewmodelHandsOnly = false;
+	// true keeps the existing wrist clip; false draws the complete native viewmodel arms with analytic IK.
+	bool m_NativeViewmodelArmCroppingEnabled = true;
 	float m_NativeViewmodelHandsOnlyWristKeepFraction = 0.0f;
 	float m_NativeViewmodelHandsOnlyTrimUnits = 0.0f;
 	float m_NativeViewmodelHandsOnlyArmBendScale = 1.0f;
