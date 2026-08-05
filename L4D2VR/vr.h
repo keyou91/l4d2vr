@@ -101,16 +101,6 @@ struct VRWorldPoseTrackingSnapshot
 	QAngle rightHandAngles{};
 };
 
-struct WorldModelVRPoseCalibrationSnapshot
-{
-	bool valid = false;
-	int stage = 0;
-	float progress = 0.0f;
-	Vector hmdLocal{};
-	Vector leftHandLocal{};
-	Vector rightHandLocal{};
-};
-
 struct SharedTextureHolder
 {
 	vr::VRVulkanTextureData_t m_VulkanData{};
@@ -1561,29 +1551,13 @@ public:
 	bool m_WorldModelVRPoseDebugLog = false;
 	// Local third-person switches replace the submitted survivor draw and its
 	// queued bone buffers. Delay IK takeover until that render state has
-	// settled, independently of whether a persisted calibration already exists.
+	// settled before publishing the first analytic arm result.
 	std::atomic<std::uint64_t>
 		m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs{ 0u };
 	// Final palm-only local rotation offsets. These are deliberately applied
 	// after the positional two-bone solve so wrist tuning cannot move an elbow.
 	Vector m_WorldModelVRPoseLeftHandRotationOffsetDeg{};
 	Vector m_WorldModelVRPoseRightHandRotationOffsetDeg{};
-	std::atomic<bool> m_WorldModelVRPoseCalibrationValid{ false };
-	std::atomic<bool> m_WorldModelVRPoseCalibrationRequested{ false };
-	std::atomic<int> m_WorldModelVRPoseCalibrationStage{ 0 };
-	std::atomic<float> m_WorldModelVRPoseCalibrationProgress{ 0.0f };
-	mutable std::mutex m_WorldModelVRPoseCalibrationMutex;
-	Vector m_WorldModelVRPoseCalibrationHmdLocal{};
-	Vector m_WorldModelVRPoseCalibrationLeftHandLocal{};
-	Vector m_WorldModelVRPoseCalibrationRightHandLocal{};
-	std::uint64_t m_WorldModelVRPoseCalibrationHoldStartMs = 0u;
-	Vector m_WorldModelVRPoseCalibrationCandidateHmdLocal{};
-	Vector m_WorldModelVRPoseCalibrationCandidateLeftHandLocal{};
-	Vector m_WorldModelVRPoseCalibrationCandidateRightHandLocal{};
-	Vector m_WorldModelVRPoseCalibrationSumHmdLocal{};
-	Vector m_WorldModelVRPoseCalibrationSumLeftHandLocal{};
-	Vector m_WorldModelVRPoseCalibrationSumRightHandLocal{};
-	std::uint32_t m_WorldModelVRPoseCalibrationSampleCount = 0u;
 	float m_WorldModelVRPoseSendHz = 25.0f;
 	float m_WorldModelVRPoseInterpolationMs = 50.0f;
 	float m_WorldModelVRPoseStaleAfterMs = 250.0f;
@@ -3814,10 +3788,6 @@ public:
 	void PoseWaiterThreadMain();
 	bool ReadPoseWaiterSnapshot(vr::TrackedDevicePose_t* outPoses, uint32_t* outSeq = nullptr) const;
 	bool ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot) const;
-	void BeginWorldModelVRPoseCalibration();
-	void UpdateWorldModelVRPoseCalibration(const VRWorldPoseTrackingSnapshot& snapshot);
-	bool GetWorldModelVRPoseCalibrationSnapshot(
-		WorldModelVRPoseCalibrationSnapshot& outSnapshot) const;
 	// Maps the project's gameplay hand through the LeftHanded setting.
 	bool IsGameplayHandLeftPhysical(bool leftHand) const;
 	// leftHand selects the physical OpenVR controller role.

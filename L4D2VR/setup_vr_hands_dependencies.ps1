@@ -27,11 +27,11 @@ $requiredOzzLibraries = @(
 $requiredOzzHeaders = @(
     "ozz\animation\runtime\skeleton.h",
     "ozz\animation\runtime\local_to_model_job.h",
-    "ozz\animation\runtime\ik_two_bone_job.h",
     "ozz\animation\offline\raw_skeleton.h",
     "ozz\animation\offline\skeleton_builder.h",
     "ozz\base\maths\soa_transform.h",
     "ozz\base\maths\simd_math.h",
+    "ozz\base\maths\simd_quaternion.h",
     "ozz\base\span.h"
 )
 

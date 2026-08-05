@@ -15249,10 +15249,9 @@ namespace
         return outLeftValid || outRightValid;
     }
 
-    // Analytic two-bone IK for the native first-person viewmodel arm model only.
-    // When the local body is visible, the arm roots use its final per-eye world
-    // shoulder joints so the independent viewmodel mesh terminates on the torso.
-    // Survivor third-person/network IK remains in hooks_world_pose.inl.
+    // Shared analytic two-bone IK for native first-person viewmodel arms and
+    // survivor world-model arms. The caller supplies the final shoulder and
+    // owns branch isolation, temporal continuity and result publication.
     struct HooksNativeViewmodelArmIkChain
     {
         int side = 0;
@@ -15767,6 +15766,7 @@ namespace
         const Vector& bodyRight,
         const Vector& bodyUp,
         const Vector* previousBendDirection,
+        bool weldHandToTarget,
         vr_vm_stabilize::Mat3x4* bones,
         Vector& outBendDirection)
     {
@@ -15841,6 +15841,8 @@ namespace
         {
             return false;
         }
+        const Vector solvedHandTarget =
+            weldHandToTarget ? targetPosition : solution.hand;
 
         vr_vm_stabilize::Mat3x4 upperDelta{};
         if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
@@ -15874,7 +15876,7 @@ namespace
             solvedHandBeforeForearm - solvedElbow);
         Vector desiredPlaneNormal = CrossProduct(
             solution.elbow - shoulder,
-            targetPosition - solution.elbow);
+            solvedHandTarget - solution.elbow);
         const bool currentPlaneValid =
             HooksNativeViewmodelArmIkNormalize(
                 currentPlaneNormal,
@@ -15912,7 +15914,7 @@ namespace
         if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
                 solvedElbow,
                 solvedHandBeforeForearm - solvedElbow,
-                targetPosition - solvedElbow,
+                solvedHandTarget - solvedElbow,
                 poleDirection,
                 forearmDelta) ||
             !HooksNativeViewmodelArmIkApplyDeltaToBranch(
@@ -15936,12 +15938,12 @@ namespace
         {
             return false;
         }
-        // Never clamp the final hand away from its actual controller/weapon
-        // target. When the configured shoulder makes the arm slightly too short,
-        // the lower segment may stretch, but the weapon and palm remain welded.
-        desiredHandRigid.m[0][3] = targetPosition.x;
-        desiredHandRigid.m[1][3] = targetPosition.y;
-        desiredHandRigid.m[2][3] = targetPosition.z;
+        // Independent viewmodel meshes can weld to an unreachable controller
+        // and tolerate a stretched lower segment. Connected world models keep
+        // both authored segment lengths at the analytic reachable endpoint.
+        desiredHandRigid.m[0][3] = solvedHandTarget.x;
+        desiredHandRigid.m[1][3] = solvedHandTarget.y;
+        desiredHandRigid.m[2][3] = solvedHandTarget.z;
 
         vr_vm_stabilize::Mat3x4 inverseCurrentHand{};
         vr_vm_stabilize::Mat3x4 handDelta{};
@@ -16536,6 +16538,7 @@ namespace
                         bodyRight,
                         bodyUp,
                         previous,
+                        true,
                         candidate,
                         bend))
                 {

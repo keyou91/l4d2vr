@@ -2,7 +2,7 @@
 
 ## F.E.A.R. VR analytic arm IK
 
-The first-person analytic two-bone arm IK geometry and elbow-continuity logic in `hooks/hooks_misc.inl` are adapted from the F.E.A.R. VR project:
+The shared first-person and world-model analytic two-bone arm IK geometry and elbow-continuity logic in `hooks/hooks_misc.inl` are adapted from the F.E.A.R. VR project:
 
 - Project: https://github.com/DR-89/fear-vr
 - Upstream file: `src/common/arm_ik.h`

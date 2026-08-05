@@ -1362,41 +1362,6 @@ void VR::ParseConfigFile()
     m_WorldModelVRPoseDebugLog = getBool(
         "WorldModelVRPoseDebugLog",
         m_WorldModelVRPoseDebugLog);
-    const bool worldPoseCalibrationValid = getBool(
-        "WorldModelVRPoseCalibrationValid",
-        m_WorldModelVRPoseCalibrationValid.load(std::memory_order_acquire));
-    const Vector worldPoseCalibrationHmdLocal = getVector3(
-        "WorldModelVRPoseCalibrationHmdLocal",
-        Vector{});
-    const Vector worldPoseCalibrationLeftHandLocal = getVector3(
-        "WorldModelVRPoseCalibrationLeftHandLocal",
-        Vector{});
-    const Vector worldPoseCalibrationRightHandLocal = getVector3(
-        "WorldModelVRPoseCalibrationRightHandLocal",
-        Vector{});
-    {
-        std::lock_guard<std::mutex> lock(
-            m_WorldModelVRPoseCalibrationMutex);
-        m_WorldModelVRPoseCalibrationHmdLocal =
-            worldPoseCalibrationHmdLocal;
-        m_WorldModelVRPoseCalibrationLeftHandLocal =
-            worldPoseCalibrationLeftHandLocal;
-        m_WorldModelVRPoseCalibrationRightHandLocal =
-            worldPoseCalibrationRightHandLocal;
-        m_WorldModelVRPoseCalibrationValid.store(
-            worldPoseCalibrationValid,
-            std::memory_order_release);
-        if (!m_WorldModelVRPoseCalibrationRequested.load(
-                std::memory_order_acquire))
-        {
-            m_WorldModelVRPoseCalibrationStage.store(
-                worldPoseCalibrationValid ? 3 : 0,
-                std::memory_order_release);
-            m_WorldModelVRPoseCalibrationProgress.store(
-                worldPoseCalibrationValid ? 1.0f : 0.0f,
-                std::memory_order_release);
-        }
-    }
     m_ClothingMaterials.store(
         getBool(
             "ClothingMaterials",

@@ -66,11 +66,6 @@ namespace
     constexpr int kCfgComponentValueX = 792;
     constexpr int kCfgStringEditX = 1100;
     constexpr int kCfgStringEditW = 120;
-    constexpr int kCfgWorldPoseCalibStatusX = 600;
-    constexpr int kCfgWorldPoseCalibButtonX = 1000;
-    constexpr int kCfgWorldPoseCalibY = 112;
-    constexpr int kCfgWorldPoseCalibButtonW = 254;
-    constexpr int kCfgWorldPoseCalibH = 36;
 
     constexpr int kCfgMenuButtonW = 260;
     constexpr int kCfgMenuButtonH = 90;
@@ -371,10 +366,6 @@ namespace
         { "VrHandsLeftPoseOffsetMeters", CfgOptionType::Vec3, "", "", -1.0f, 1.0f, "0,0,0" },
         { "VrHandsLeftHandedViewmodelPoseOffsetMeters", CfgOptionType::Vec3, "", "", -1.0f, 1.0f, "0,0,0" },
         { "VrHandsDebugLog", CfgOptionType::Bool, "", "", 0.0f, 0.0f, "false" },
-        { "WorldModelVRPoseCalibrationValid", CfgOptionType::Bool, "", "", 0.0f, 0.0f, "false" },
-        { "WorldModelVRPoseCalibrationHmdLocal", CfgOptionType::Vec3, "", "", -512.0f, 512.0f, "0,0,0" },
-        { "WorldModelVRPoseCalibrationLeftHandLocal", CfgOptionType::Vec3, "", "", -512.0f, 512.0f, "0,0,0" },
-        { "WorldModelVRPoseCalibrationRightHandLocal", CfgOptionType::Vec3, "", "", -512.0f, 512.0f, "0,0,0" },
         { "ManualReloadMagazineInsertionAxisLocal", CfgOptionType::Vec3, "", "", -1.0f, 1.0f, "0,-1,0" },
         { "ManualReloadMagazineHandOffsetMeters", CfgOptionType::Vec3, "", "", -1.0f, 1.0f, "0,0,0" },
         { "ManualReloadMagazineHandRotationOffsetDeg", CfgOptionType::Vec3, "", "", -180.0f, 180.0f, "0,0,0" },
@@ -469,14 +460,14 @@ namespace
         { "RightAmmoHudZOffset", "HUD (Hand)", "HUD\357\274\210\346\211\213\346\237\204\357\274\211", "Ammo HUD Z Offset", "\345\274\271\350\215\257HUD Z\345\201\217\347\247\273", "Overlay translation in controller local space (meters).", "\350\246\206\347\233\226\345\261\202\345\234\250\346\211\213\346\237\204\346\234\254\345\234\260\345\235\220\346\240\207\347\263\273\344\270\255\347\232\204\345\271\263\347\247\273\357\274\210\347\261\263\357\274\211\343\200\202", "Uses the same axis convention as other overlay offsets (ScopeOverlay*).", "\344\270\216\345\205\266\344\273\226\350\246\206\347\233\226\345\261\202\345\201\217\347\247\273\357\274\210ScopeOverlay*\357\274\211\344\275\277\347\224\250\347\233\270\345\220\214\345\235\220\346\240\207\347\272\246\345\256\232\343\200\202" },
         { "RightAmmoHudAngleOffset", "HUD (Hand)", "HUD\357\274\210\346\211\213\346\237\204\357\274\211", "Ammo HUD Angle Offset (pitch,yaw,roll)", "\345\274\271\350\215\257HUD\350\247\222\345\272\246\345\201\217\347\247\273 (\344\277\257\344\273\260,\345\201\217\350\210\252,\347\277\273\346\273\232)", "Additional rotation for the ammo HUD overlay (degrees).", "\345\274\271\350\215\257HUD\350\246\206\347\233\226\345\261\202\347\232\204\351\242\235\345\244\226\346\227\213\350\275\254\357\274\210\345\272\246\357\274\211\343\200\202", "Adjust so it sits like a weapon-side panel.", "\350\260\203\345\210\260\345\203\217\350\264\264\345\234\250\346\255\246\345\231\250\346\227\201\350\276\271\347\232\204\345\260\217\345\261\217\345\271\225\345\215\263\345\217\257\343\200\202" },
         
-        { "NativeViewmodelArmCroppingEnabled", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Crop Native Viewmodel Arms", "\xE8\xA3\x81\xE5\x88\x87\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82", "When enabled, keeps the existing wrist crop and shows only the native viewmodel hands. When disabled, the complete native viewmodel arms use analytic two-bone IK. With the first-person body visible, each arm starts at that body's final per-eye shoulder joint; otherwise it uses the anatomical HMD-relative shoulder frame.", "\xE5\xBC\x80\xE5\x90\xAF\xE6\x97\xB6\xE4\xBF\x9D\xE6\x8C\x81\xE7\x8E\xB0\xE6\x9C\x89\xE7\x9A\x84\xE6\x89\x8B\xE8\x85\x95\xE8\xA3\x81\xE5\x88\x87\xEF\xBC\x8C\xE5\x8F\xAA\xE6\x98\xBE\xE7\xA4\xBA\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE7\x9A\x84\xE6\x89\x8B\xE9\x83\xA8\xE3\x80\x82\xE5\x85\xB3\xE9\x97\xAD\xE6\x97\xB6\xE4\xBD\xBF\xE7\x94\xA8\xE8\xA7\xA3\xE6\x9E\x90\xE5\xBC\x8F\xE4\xB8\xA4\xE9\xAA\xA8\x20\x49\x4B\x20\xE9\xA9\xB1\xE5\x8A\xA8\xE5\xAE\x8C\xE6\x95\xB4\xE6\x89\x8B\xE8\x87\x82\xEF\xBC\x9B\xE6\x98\xBE\xE7\xA4\xBA\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE6\x97\xB6\xEF\xBC\x8C\xE6\x89\x8B\xE8\x87\x82\xE4\xBC\x9A\xE4\xBB\x8E\xE8\xAF\xA5\xE8\xBA\xAB\xE4\xBD\x93\xE6\xA8\xA1\xE5\x9E\x8B\xE5\xBD\x93\xE5\x89\x8D\xE7\x9C\xBC\xE7\x9D\x9B\xE7\x94\xBB\xE9\x9D\xA2\xE4\xB8\xAD\xE7\x9A\x84\xE7\x9C\x9F\xE5\xAE\x9E\xE8\x82\xA9\xE5\x85\xB3\xE8\x8A\x82\xE5\xBC\x80\xE5\xA7\x8B\xEF\xBC\x8C\xE5\x90\xA6\xE5\x88\x99\xE4\xBD\xBF\xE7\x94\xA8\xE7\x9B\xB8\xE5\xAF\xB9\x20\x48\x4D\x44\x20\xE7\x9A\x84\xE4\xBA\xBA\xE4\xBD\x93\xE8\x82\xA9\xE9\x83\xA8\xE5\x9D\x90\xE6\xA0\x87\xE3\x80\x82", "The first-person body is also aligned to the current VR view yaw immediately, so its torso and the viewmodel shoulder anchors stay in the same frame. Third-person and network IK are unchanged.", "\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE4\xB9\x9F\xE4\xBC\x9A\xE7\xAB\x8B\xE5\x8D\xB3\xE5\xAF\xB9\xE9\xBD\x90\xE5\xBD\x93\xE5\x89\x8D\x20\x56\x52\x20\xE8\xA7\x86\xE8\xA7\x92\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\xE4\xBD\xBF\xE8\xBA\xAF\xE5\xB9\xB2\xE4\xB8\x8E\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE8\x82\xA9\xE9\x83\xA8\xE4\xBD\xBF\xE7\x94\xA8\xE5\x90\x8C\xE4\xB8\x80\xE5\x9D\x90\xE6\xA0\x87\xEF\xBC\x9B\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE5\x92\x8C\xE7\xBD\x91\xE7\xBB\x9C\x20\x49\x4B\x20\xE4\xB8\x8D\xE5\x8F\x98\xE3\x80\x82" },
+        { "NativeViewmodelArmCroppingEnabled", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Crop Native Viewmodel Arms", "\xE8\xA3\x81\xE5\x88\x87\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82", "When enabled, keeps the existing wrist crop and shows only the native viewmodel hands. When disabled, the complete native viewmodel arms use analytic two-bone IK. With the first-person body visible, each arm starts at that body's final per-eye shoulder joint; otherwise it uses the anatomical HMD-relative shoulder frame.", "\xE5\xBC\x80\xE5\x90\xAF\xE6\x97\xB6\xE4\xBF\x9D\xE6\x8C\x81\xE7\x8E\xB0\xE6\x9C\x89\xE7\x9A\x84\xE6\x89\x8B\xE8\x85\x95\xE8\xA3\x81\xE5\x88\x87\xEF\xBC\x8C\xE5\x8F\xAA\xE6\x98\xBE\xE7\xA4\xBA\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE7\x9A\x84\xE6\x89\x8B\xE9\x83\xA8\xE3\x80\x82\xE5\x85\xB3\xE9\x97\xAD\xE6\x97\xB6\xE4\xBD\xBF\xE7\x94\xA8\xE8\xA7\xA3\xE6\x9E\x90\xE5\xBC\x8F\xE4\xB8\xA4\xE9\xAA\xA8\x20\x49\x4B\x20\xE9\xA9\xB1\xE5\x8A\xA8\xE5\xAE\x8C\xE6\x95\xB4\xE6\x89\x8B\xE8\x87\x82\xEF\xBC\x9B\xE6\x98\xBE\xE7\xA4\xBA\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE6\x97\xB6\xEF\xBC\x8C\xE6\x89\x8B\xE8\x87\x82\xE4\xBC\x9A\xE4\xBB\x8E\xE8\xAF\xA5\xE8\xBA\xAB\xE4\xBD\x93\xE6\xA8\xA1\xE5\x9E\x8B\xE5\xBD\x93\xE5\x89\x8D\xE7\x9C\xBC\xE7\x9D\x9B\xE7\x94\xBB\xE9\x9D\xA2\xE4\xB8\xAD\xE7\x9A\x84\xE7\x9C\x9F\xE5\xAE\x9E\xE8\x82\xA9\xE5\x85\xB3\xE8\x8A\x82\xE5\xBC\x80\xE5\xA7\x8B\xEF\xBC\x8C\xE5\x90\xA6\xE5\x88\x99\xE4\xBD\xBF\xE7\x94\xA8\xE7\x9B\xB8\xE5\xAF\xB9\x20\x48\x4D\x44\x20\xE7\x9A\x84\xE4\xBA\xBA\xE4\xBD\x93\xE8\x82\xA9\xE9\x83\xA8\xE5\x9D\x90\xE6\xA0\x87\xE3\x80\x82", "The first-person body is also aligned to the current VR view yaw immediately, so its torso and the viewmodel shoulder anchors stay in the same frame. The world model uses the same analytic solver independently.", "\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE4\xB9\x9F\xE4\xBC\x9A\xE7\xAB\x8B\xE5\x8D\xB3\xE5\xAF\xB9\xE9\xBD\x90\xE5\xBD\x93\xE5\x89\x8D\x20\x56\x52\x20\xE8\xA7\x86\xE8\xA7\x92\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\xE4\xBD\xBF\xE8\xBA\xAF\xE5\xB9\xB2\xE4\xB8\x8E\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE8\x82\xA9\xE9\x83\xA8\xE4\xBD\xBF\xE7\x94\xA8\xE5\x90\x8C\xE4\xB8\x80\xE5\x9D\x90\xE6\xA0\x87\xEF\xBC\x9B\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B\xE4\xBC\x9A\xE7\x8B\xAC\xE7\xAB\x8B\xE4\xBD\xBF\xE7\x94\xA8\xE5\x90\x8C\xE4\xB8\x80\xE8\xA7\xA3\xE6\x9E\x90\xE5\xBC\x8F\xE6\xB1\x82\xE8\xA7\xA3\xE5\x99\xA8\xE3\x80\x82" },
         { "NativeViewmodelArmAnchorOffsetMeters", "Hands / VR Hands", "\346\211\213\351\203\250 / VR \345\217\214\346\211\213", "Viewmodel Arm Anchor Offset (m)", "\350\247\206\345\233\276\346\250\241\345\236\213\346\211\213\350\207\202\351\224\232\347\202\271\345\201\217\347\247\273", "Moves both full-arm IK shoulder roots after body anchoring. The values are in the HMD yaw frame: X=forward, Y=right, Z=up.", "\345\234\250\350\272\253\344\275\223\350\202\251\351\203\250\351\224\232\345\256\232\345\256\214\346\210\220\345\220\216\357\274\214\345\220\214\346\227\266\347\247\273\345\212\250\345\267\246\345\217\263\344\270\244\346\235\241\345\256\214\346\225\264 IK \346\211\213\350\207\202\347\232\204\350\202\251\351\203\250\346\240\271\350\212\202\347\202\271\343\200\202\345\235\220\346\240\207\345\237\272\344\272\216 HMD \345\201\217\350\210\252\357\274\232X=\345\220\221\345\211\215\357\274\214Y=\345\220\221\345\217\263\357\274\214Z=\345\220\221\344\270\212\343\200\202", "Use small steps such as 0.01 m. This does not change controller or hand targets.", "\345\273\272\350\256\256\346\257\217\346\254\241\344\273\245 0.01 \347\261\263\345\276\256\350\260\203\343\200\202\350\257\245\345\217\202\346\225\260\344\270\215\344\274\232\346\224\271\345\217\230\346\216\247\345\210\266\345\231\250\346\210\226\346\211\213\346\216\214\347\233\256\346\240\207\343\200\202" },
         { "NativeViewmodelArmShoulderSpacingOffsetMeters", "Hands / VR Hands", "\346\211\213\351\203\250 / VR \345\217\214\346\211\213", "Viewmodel Arm Spacing Offset (m)", "\350\247\206\345\233\276\346\250\241\345\236\213\346\211\213\350\207\202\351\227\264\350\267\235\345\201\217\347\247\273", "Adds to the total distance between the two shoulder roots. Positive values widen the arms; negative values narrow them. Half of the value is applied to each side.", "\350\260\203\346\225\264\345\267\246\345\217\263\350\202\251\351\203\250\346\240\271\350\212\202\347\202\271\344\271\213\351\227\264\347\232\204\346\200\273\350\267\235\347\246\273\343\200\202\346\255\243\345\200\274\345\242\236\345\244\247\346\211\213\350\207\202\351\227\264\350\267\235\357\274\214\350\264\237\345\200\274\347\274\251\345\260\217\346\211\213\350\207\202\351\227\264\350\267\235\357\274\214\350\256\276\345\256\232\345\200\274\344\274\232\345\271\263\345\235\207\345\210\206\351\205\215\345\210\260\344\270\244\344\276\247\343\200\202", "This is an offset from the character model shoulder spacing, not an absolute width.", "\350\257\245\345\200\274\346\230\257\345\234\250\350\247\222\350\211\262\346\250\241\345\236\213\345\216\237\345\247\213\350\202\251\345\256\275\345\237\272\347\241\200\344\270\212\347\232\204\345\201\217\347\247\273\351\207\217\357\274\214\344\270\215\346\230\257\347\273\235\345\257\271\350\202\251\345\256\275\343\200\202" },
         { "HideArms", "Hands / Debug", "\346\211\213\351\203\250 / \350\260\203\350\257\225", "Hide Arms", "\351\232\220\350\227\217\346\211\213\350\207\202", "Hides in-game arm models while keeping weapons.", "\351\232\220\350\227\217\346\270\270\346\210\217\344\270\255\347\232\204\346\211\213\350\207\202\346\250\241\345\236\213\357\274\214\344\273\205\344\277\235\347\225\231\346\255\246\345\231\250\343\200\202", "", "" },
         
         { "FirstPersonBodyEnabled", "Body / First Person", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0", "Show Local Body [Experimental]", "\346\230\276\347\244\272\350\207\252\350\272\253\350\272\253\344\275\223\357\274\210\345\256\236\351\252\214\357\274\211", "Experimental. Enabling this feature may reduce the memory available to the game and can cause crashes. It anchors the local player world-model head bone to the VR eye center and applies bone masking before the native eye draw.", "\345\256\236\351\252\214\346\200\247\345\212\237\350\203\275\343\200\202\345\220\257\347\224\250\345\220\216\345\217\257\350\203\275\345\207\217\345\260\221\346\270\270\346\210\217\345\217\257\347\224\250\345\206\205\345\255\230\357\274\214\345\271\266\345\217\257\350\203\275\345\274\225\345\217\221\345\264\251\346\272\203\343\200\202\345\256\203\344\274\232\345\234\250\345\216\237\347\224\237\345\217\214\347\234\274\347\273\230\345\210\266\345\211\215\357\274\214\345\260\206\346\234\254\345\234\260\347\216\251\345\256\266\344\270\226\347\225\214\346\250\241\345\236\213\347\232\204\345\244\264\351\252\250\351\224\232\345\256\232\345\210\260\040\126\122\040\345\217\214\347\234\274\344\270\255\345\277\203\357\274\214\345\271\266\345\272\224\347\224\250\351\252\250\351\252\274\351\232\220\350\227\217\343\200\202", "Leave this disabled if stability or available memory is a concern. It uses the local IClientRenderable visibility path and native DrawModel stage; camera functions are not hooked.", "\345\246\202\346\236\234\346\233\264\351\207\215\350\247\206\347\250\263\345\256\232\346\200\247\346\210\226\345\217\257\347\224\250\345\206\205\345\255\230\357\274\214\350\257\267\344\277\235\346\214\201\345\205\263\351\227\255\343\200\202\350\257\245\345\212\237\350\203\275\344\275\277\347\224\250\346\234\254\345\234\260\040\111\103\154\151\145\156\164\122\145\156\144\145\162\141\142\154\145\040\345\217\257\350\247\201\346\200\247\350\267\257\345\276\204\345\222\214\345\216\237\347\224\237\040\104\162\141\167\115\157\144\145\154\040\351\230\266\346\256\265\357\274\214\344\270\215\344\274\232\040\110\157\157\153\040\347\233\270\346\234\272\345\207\275\346\225\260\343\200\202" },
-        { "WorldModelVRPoseEnabled", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "World-Model VR Pose IK", "\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B VR \xE5\xA7\xBF\xE6\x80\x81 IK", "Drives the world-model head and arms from the HMD and controllers using two-bone IK.", "\xE4\xBD\xBF\xE7\x94\xA8 HMD \xE5\x92\x8C\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE9\xA9\xB1\xE5\x8A\xA8\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B\xE7\x9A\x84\xE5\xA4\xB4\xE9\x83\xA8\xE5\x92\x8C\xE6\x89\x8B\xE8\x87\x82\xE4\xB8\xA4\xE9\xAA\xA8 IK\xE3\x80\x82", "The first enable requires a 5-second T-pose calibration. Use Recalibrate after changing avatar scale or tracking origin.", "\xE9\xA6\x96\xE6\xAC\xA1\xE5\x90\xAF\xE7\x94\xA8\xE9\x9C\x80\xE8\xA6\x81\xE4\xBF\x9D\xE6\x8C\x81 5 \xE7\xA7\x92 T \xE5\xAD\x97\xE5\xA7\xBF\xE5\x8A\xBF\xE6\xA0\xA1\xE5\x87\x86\xE3\x80\x82\xE6\x9B\xB4\xE6\x8D\xA2\xE6\xA8\xA1\xE5\x9E\x8B\xE6\xAF\x94\xE4\xBE\x8B\xE6\x88\x96\xE8\xBF\xBD\xE8\xB8\xAA\xE5\x8E\x9F\xE7\x82\xB9\xE5\x90\x8E\xE8\xAF\xB7\xE9\x87\x8D\xE6\x96\xB0\xE6\xA0\xA1\xE5\x87\x86\xE3\x80\x82" },
-        { "WorldModelVRPoseLocalThirdPerson", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "Apply IK to Local Third Person", "\xE6\x9C\xAC\xE5\x9C\xB0\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xBA\x94\xE7\x94\xA8 IK", "Applies the calibrated VR pose to your own third-person world model.", "\xE5\xB0\x86\xE5\xB7\xB2\xE6\xA0\xA1\xE5\x87\x86\xE7\x9A\x84 VR \xE5\xA7\xBF\xE6\x80\x81\xE5\xBA\x94\xE7\x94\xA8\xE5\x88\xB0\xE8\x87\xAA\xE5\xB7\xB1\xE7\x9A\x84\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B\xE3\x80\x82", "Disable only when diagnosing local third-person rendering.", "\xE4\xBB\x85\xE5\x9C\xA8\xE6\x8E\x92\xE6\x9F\xA5\xE6\x9C\xAC\xE5\x9C\xB0\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE6\xB8\xB2\xE6\x9F\x93\xE9\x97\xAE\xE9\xA2\x98\xE6\x97\xB6\xE5\x85\xB3\xE9\x97\xAD\xE3\x80\x82" },
+        { "WorldModelVRPoseEnabled", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "World-Model VR Pose IK", "\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B VR \xE5\xA7\xBF\xE6\x80\x81 IK", "Drives the world-model head and arms from the HMD and controllers using two-bone IK.", "\xE4\xBD\xBF\xE7\x94\xA8 HMD \xE5\x92\x8C\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE9\xA9\xB1\xE5\x8A\xA8\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B\xE7\x9A\x84\xE5\xA4\xB4\xE9\x83\xA8\xE5\x92\x8C\xE6\x89\x8B\xE8\x87\x82\xE4\xB8\xA4\xE9\xAA\xA8 IK\xE3\x80\x82", "Uses the live Source shoulder and arm lengths; no T-pose calibration is required.", "\xE4\xBD\xBF\xE7\x94\xA8\x20\x53\x6F\x75\x72\x63\x65\x20\xE5\xBD\x93\xE5\x89\x8D\xE8\x82\xA9\xE7\x82\xB9\xE5\x92\x8C\xE6\x89\x8B\xE8\x87\x82\xE9\x95\xBF\xE5\xBA\xA6\xEF\xBC\x9B\xE6\x97\xA0\xE9\x9C\x80\x20\x54\x20\xE5\xAD\x97\xE5\xA7\xBF\xE5\x8A\xBF\xE6\xA0\xA1\xE5\x87\x86\xE3\x80\x82" },
+        { "WorldModelVRPoseLocalThirdPerson", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "Apply IK to Local Third Person", "\xE6\x9C\xAC\xE5\x9C\xB0\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xBA\x94\xE7\x94\xA8 IK", "Applies the live tracked VR pose to your own third-person world model.", "\xE5\xB0\x86\xE5\xAE\x9E\xE6\x97\xB6\xE8\xB7\x9F\xE8\xB8\xAA\xE7\x9A\x84 VR \xE5\xA7\xBF\xE6\x80\x81\xE5\xBA\x94\xE7\x94\xA8\xE5\x88\xB0\xE8\x87\xAA\xE5\xB7\xB1\xE7\x9A\x84\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B\xE3\x80\x82", "Disable only when diagnosing local third-person rendering.", "\xE4\xBB\x85\xE5\x9C\xA8\xE6\x8E\x92\xE6\x9F\xA5\xE6\x9C\xAC\xE5\x9C\xB0\xE7\xAC\xAC\xE4\xB8\x89\xE4\xBA\xBA\xE7\xA7\xB0\xE6\xB8\xB2\xE6\x9F\x93\xE9\x97\xAE\xE9\xA2\x98\xE6\x97\xB6\xE5\x85\xB3\xE9\x97\xAD\xE3\x80\x82" },
         { "WorldModelVRPoseLeftHandRotationOffsetDeg", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "Left Palm Rotation (pitch,yaw,roll)", "\xE5\xB7\xA6\xE6\x89\x8B\xE6\x8E\x8C\xE6\x97\x8B\xE8\xBD\xAC\xE8\xA7\x92\xE5\xBA\xA6\x20\x28\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\x29", "Offsets only the final left palm orientation. It does not move the wrist target or affect elbow IK.", "\xE5\x8F\xAA\xE8\xB0\x83\xE6\x95\xB4\xE6\x9C\x80\xE7\xBB\x88\xE5\xB7\xA6\xE6\x89\x8B\xE6\x8E\x8C\xE6\x9C\x9D\xE5\x90\x91\xEF\xBC\x8C\xE4\xB8\x8D\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x89\x8B\xE8\x85\x95\xE7\x9B\xAE\xE6\xA0\x87\xEF\xBC\x8C\xE4\xB9\x9F\xE4\xB8\x8D\xE5\xBD\xB1\xE5\x93\x8D\xE8\x82\x98\xE9\x83\xA8\x20\x49\x4B\xE3\x80\x82", "X=pitch, Y=yaw, Z=roll. Start with 5-degree steps.", "\x58\x3D\xE4\xBF\xAF\xE4\xBB\xB0\xEF\xBC\x8C\x59\x3D\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\x5A\x3D\xE7\xBF\xBB\xE6\xBB\x9A\xE3\x80\x82\xE5\xBB\xBA\xE8\xAE\xAE\xE5\x85\x88\xE6\xAF\x8F\xE6\xAC\xA1\xE8\xB0\x83\xE6\x95\xB4\x20\x35\x20\xE5\xBA\xA6\xE3\x80\x82" },
         { "WorldModelVRPoseRightHandRotationOffsetDeg", "Body / World Model", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE4\xB8\x96\xE7\x95\x8C\xE6\xA8\xA1\xE5\x9E\x8B", "Right Palm Rotation (pitch,yaw,roll)", "\xE5\x8F\xB3\xE6\x89\x8B\xE6\x8E\x8C\xE6\x97\x8B\xE8\xBD\xAC\xE8\xA7\x92\xE5\xBA\xA6\x20\x28\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\x29", "Offsets only the final right palm orientation. It does not move the wrist target or affect elbow IK.", "\xE5\x8F\xAA\xE8\xB0\x83\xE6\x95\xB4\xE6\x9C\x80\xE7\xBB\x88\xE5\x8F\xB3\xE6\x89\x8B\xE6\x8E\x8C\xE6\x9C\x9D\xE5\x90\x91\xEF\xBC\x8C\xE4\xB8\x8D\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x89\x8B\xE8\x85\x95\xE7\x9B\xAE\xE6\xA0\x87\xEF\xBC\x8C\xE4\xB9\x9F\xE4\xB8\x8D\xE5\xBD\xB1\xE5\x93\x8D\xE8\x82\x98\xE9\x83\xA8\x20\x49\x4B\xE3\x80\x82", "X=pitch, Y=yaw, Z=roll. Start with 5-degree steps.", "\x58\x3D\xE4\xBF\xAF\xE4\xBB\xB0\xEF\xBC\x8C\x59\x3D\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\x5A\x3D\xE7\xBF\xBB\xE6\xBB\x9A\xE3\x80\x82\xE5\xBB\xBA\xE8\xAE\xAE\xE5\x85\x88\xE6\xAF\x8F\xE6\xAC\xA1\xE8\xB0\x83\xE6\x95\xB4\x20\x35\x20\xE5\xBA\xA6\xE3\x80\x82" },
         { "ClothingMaterials", "Body / First Person", "\xE8\xBA\xAB\xE4\xBD\x93 / \xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0", "Hide Character Clothing Materials", "\xE9\x9A\x90\xE8\x97\x8F\xE8\xA7\x92\xE8\x89\xB2\xE6\x9C\x8D\xE8\xA3\x85\xE6\x9D\x90\xE8\xB4\xA8", "Enables character-specific material hiding. A material is hidden only when both the character and material in HiddenMaterialNames match the current survivor draw.", "\xE5\x90\xAF\xE7\x94\xA8\xE6\x8C\x89\xE8\xA7\x92\xE8\x89\xB2\xE7\xB2\xBE\xE7\xA1\xAE\xE5\x8C\xB9\xE9\x85\x8D\xE7\x9A\x84\xE6\x9D\x90\xE8\xB4\xA8\xE9\x9A\x90\xE8\x97\x8F\xE3\x80\x82\xE5\x8F\xAA\xE6\x9C\x89\x20\x48\x69\x64\x64\x65\x6E\x4D\x61\x74\x65\x72\x69\x61\x6C\x4E\x61\x6D\x65\x73\x20\xE4\xB8\xAD\xE7\x9A\x84\xE8\xA7\x92\xE8\x89\xB2\xE5\x92\x8C\xE6\x9D\x90\xE8\xB4\xA8\xE5\x90\x8C\xE6\x97\xB6\xE5\x8C\xB9\xE9\x85\x8D\xE5\xBD\x93\xE5\x89\x8D\xE5\xB9\xB8\xE5\xAD\x98\xE8\x80\x85\xE7\xBB\x98\xE5\x88\xB6\xE6\x97\xB6\xE6\x89\x8D\xE4\xBC\x9A\xE9\x9A\x90\xE8\x97\x8F\xE3\x80\x82", "Tip: edit HiddenMaterialNames to choose the exact character and clothing material combinations.", "\xE6\x8F\x90\xE7\xA4\xBA\xEF\xBC\x9A\xE5\x9C\xA8\x20\x48\x69\x64\x64\x65\x6E\x4D\x61\x74\x65\x72\x69\x61\x6C\x4E\x61\x6D\x65\x73\x20\xE4\xB8\xAD\xE5\xA1\xAB\xE5\x86\x99\xE9\x9C\x80\xE8\xA6\x81\xE9\x9A\x90\xE8\x97\x8F\xE7\x9A\x84\xE8\xA7\x92\xE8\x89\xB2\xE4\xB8\x8E\xE6\x9C\x8D\xE8\xA3\x85\xE6\x9D\x90\xE8\xB4\xA8\xE7\xBB\x84\xE5\x90\x88\xE3\x80\x82" },
@@ -766,9 +757,6 @@ namespace
         int calibrationBoltActualDirection = 5;
         Vector calibrationBoltPullAxisLocal = { 0.0f, 0.0f, 1.0f };
         bool calibrationBoltPullAxisLocalValid = false;
-        bool worldPoseCalibrationActive = false;
-        int worldPoseCalibrationSeenStage = -1;
-        int worldPoseCalibrationSeenPercent = -1;
         std::string calibrationBoltPullFirstRunBlockedProfileKey;
         bool calibrationBoltPullFirstRunSaveSkipped = false;
         std::string status; // Set by CfgLoad/CfgToggleOpen so it follows the current UI language.
@@ -2919,6 +2907,30 @@ namespace
         }
 
         upsertInternalValue("NativeViewmodelHandsOnly", s.values["NativeViewmodelHandsOnly"]);
+
+        // These values belonged to the removed T-pose world-arm solver. Drop
+        // them during the next save instead of preserving them as unknown
+        // legacy lines forever.
+        static const std::array<const char*, 4> kRetiredWorldPoseKeys{
+            "WorldModelVRPoseCalibrationValid",
+            "WorldModelVRPoseCalibrationHmdLocal",
+            "WorldModelVRPoseCalibrationLeftHandLocal",
+            "WorldModelVRPoseCalibrationRightHandLocal",
+        };
+        s.lines.erase(
+            std::remove_if(
+                s.lines.begin(),
+                s.lines.end(),
+                [](const CfgOverlayLine& line)
+                {
+                    for (const char* key : kRetiredWorldPoseKeys)
+                    {
+                        if (line.key == key)
+                            return true;
+                    }
+                    return false;
+                }),
+            s.lines.end());
 
         std::ofstream out(s.configPath, std::ios::binary | std::ios::trunc);
         if (!out.good())
@@ -5334,175 +5346,6 @@ namespace
         CfgGdiText(g, 1010, kCfgOverlayH - 43, 240, 34, std::to_string(step + 1) + "/" + std::to_string(kCfgCalibrationStepCount), g.normalFont, { 164, 180, 205 }, DT_RIGHT);
     }
 
-    static bool CfgWorldPoseCalibrationSaved(const CfgOverlayState& s)
-    {
-        return CfgIsEnabled(s, "WorldModelVRPoseCalibrationValid", false);
-    }
-
-    static void CfgBeginWorldPoseCalibration(CfgOverlayState& s)
-    {
-        if (!g_Game || !g_Game->m_VR)
-        {
-            s.status = s.useChinese
-                ? "VR \xE5\xB0\x9A\xE6\x9C\xAA\xE5\xB0\xB1\xE7\xBB\xAA\xEF\xBC\x8C\xE6\x97\xA0\xE6\xB3\x95\xE5\xBC\x80\xE5\xA7\x8B IK \xE6\xA0\xA1\xE5\x87\x86\xE3\x80\x82"
-                : "VR is not ready; IK calibration cannot start.";
-            s.dirty = true;
-            return;
-        }
-
-        g_Game->m_VR->BeginWorldModelVRPoseCalibration();
-        s.values["WorldModelVRPoseCalibrationValid"] = "false";
-        s.worldPoseCalibrationActive = true;
-        s.worldPoseCalibrationSeenStage = 1;
-        s.worldPoseCalibrationSeenPercent = 0;
-        s.status = s.useChinese
-            ? "\xE8\xAF\xB7\xE6\x91\x86\xE5\x87\xBA T \xE5\xAD\x97\xE5\xA7\xBF\xE5\x8A\xBF\xEF\xBC\x8C\xE5\x8F\x8C\xE8\x87\x82\xE6\xB0\xB4\xE5\xB9\xB3\xE4\xBC\xB8\xE7\x9B\xB4\xE3\x80\x82"
-            : "Make a T-pose with both arms straight and level.";
-        s.dirty = true;
-    }
-
-    static void CfgPersistWorldPoseCalibration(
-        CfgOverlayState& s,
-        const WorldModelVRPoseCalibrationSnapshot& snapshot)
-    {
-        s.values["WorldModelVRPoseCalibrationValid"] = "true";
-        s.values["WorldModelVRPoseCalibrationHmdLocal"] =
-            CfgFormatVector3Value(snapshot.hmdLocal, 0.01f);
-        s.values["WorldModelVRPoseCalibrationLeftHandLocal"] =
-            CfgFormatVector3Value(snapshot.leftHandLocal, 0.01f);
-        s.values["WorldModelVRPoseCalibrationRightHandLocal"] =
-            CfgFormatVector3Value(snapshot.rightHandLocal, 0.01f);
-        s.worldPoseCalibrationActive = false;
-        s.worldPoseCalibrationSeenStage = 3;
-        s.worldPoseCalibrationSeenPercent = 100;
-        CfgSave(s);
-        s.status = s.useChinese
-            ? "IK \xE6\xA0\xA1\xE5\x87\x86\xE5\xAE\x8C\xE6\x88\x90\xEF\xBC\x8C\xE5\xB7\xB2\xE4\xBF\x9D\xE5\xAD\x98\xE3\x80\x82"
-            : "IK calibration complete and saved.";
-        s.dirty = true;
-    }
-
-    static void CfgUpdateWorldPoseCalibrationUi(CfgOverlayState& s)
-    {
-        if (s.panelMode != CfgPanelMode::Config ||
-            !CfgIsEnabled(s, "WorldModelVRPoseEnabled", true) ||
-            !g_Game || !g_Game->m_VR)
-        {
-            return;
-        }
-
-        WorldModelVRPoseCalibrationSnapshot snapshot{};
-        (void)g_Game->m_VR->GetWorldModelVRPoseCalibrationSnapshot(snapshot);
-
-        if (!CfgWorldPoseCalibrationSaved(s) && !s.worldPoseCalibrationActive)
-        {
-            if (snapshot.valid)
-            {
-                CfgPersistWorldPoseCalibration(s, snapshot);
-                return;
-            }
-            if (snapshot.stage == 1 || snapshot.stage == 2)
-            {
-                s.worldPoseCalibrationActive = true;
-            }
-            else
-            {
-                CfgBeginWorldPoseCalibration(s);
-                return;
-            }
-        }
-
-        if (!s.worldPoseCalibrationActive)
-            return;
-
-        if (snapshot.valid || snapshot.stage == 3)
-        {
-            CfgPersistWorldPoseCalibration(s, snapshot);
-            return;
-        }
-
-        const int percent = std::clamp(
-            static_cast<int>(snapshot.progress * 100.0f + 0.5f),
-            0,
-            100);
-        if (snapshot.stage != s.worldPoseCalibrationSeenStage ||
-            percent != s.worldPoseCalibrationSeenPercent)
-        {
-            s.worldPoseCalibrationSeenStage = snapshot.stage;
-            s.worldPoseCalibrationSeenPercent = percent;
-            s.dirty = true;
-        }
-    }
-
-    static void CfgRenderWorldPoseCalibration(CfgOverlayState& s, CfgGdiSurface& g)
-    {
-        if (!CfgIsEnabled(s, "WorldModelVRPoseEnabled", true))
-            return;
-
-        const bool saved = CfgWorldPoseCalibrationSaved(s);
-        const char* statusText = nullptr;
-        if (s.worldPoseCalibrationActive)
-        {
-            statusText = s.worldPoseCalibrationSeenStage == 2
-                ? (s.useChinese ? "\xE5\xB7\xB2\xE6\xA3\x80\xE6\xB5\x8B T-Pose" : "T-pose detected")
-                : (s.useChinese ? "\xE7\xAD\x89\xE5\xBE\x85 T-Pose" : "Waiting for T-pose");
-        }
-        else
-        {
-            statusText = saved
-                ? (s.useChinese ? "IK \xE5\xB7\xB2\xE6\xA0\xA1\xE5\x87\x86" : "IK calibrated")
-                : (s.useChinese ? "IK \xE6\x9C\xAA\xE6\xA0\xA1\xE5\x87\x86" : "IK not calibrated");
-        }
-
-        CfgGdiFill(g, kCfgWorldPoseCalibStatusX, kCfgWorldPoseCalibY,
-            kCfgWorldPoseCalibButtonX - kCfgWorldPoseCalibStatusX - 12,
-            kCfgWorldPoseCalibH, { 24, 36, 56 });
-        CfgGdiFrame(g, kCfgWorldPoseCalibStatusX, kCfgWorldPoseCalibY,
-            kCfgWorldPoseCalibButtonX - kCfgWorldPoseCalibStatusX - 12,
-            kCfgWorldPoseCalibH, { 68, 86, 116 }, 1);
-        CfgGdiText(g, kCfgWorldPoseCalibStatusX + 12, kCfgWorldPoseCalibY,
-            360, kCfgWorldPoseCalibH, statusText, g.normalFont,
-            saved ? CfgRgb{ 150, 226, 170 } : CfgRgb{ 255, 208, 128 });
-        CfgGdiButton(g, kCfgWorldPoseCalibButtonX, kCfgWorldPoseCalibY,
-            kCfgWorldPoseCalibButtonW, kCfgWorldPoseCalibH,
-            s.worldPoseCalibrationActive
-                ? (s.useChinese ? "\xE6\xA0\xA1\xE5\x87\x86\xE8\xBF\x9B\xE8\xA1\x8C\xE4\xB8\xAD" : "Calibrating")
-                : (saved
-                    ? (s.useChinese ? "\xE9\x87\x8D\xE6\x96\xB0\xE6\xA0\xA1\xE5\x87\x86" : "Recalibrate")
-                    : (s.useChinese ? "\xE5\xBC\x80\xE5\xA7\x8B IK \xE6\xA0\xA1\xE5\x87\x86" : "Start IK calibration")),
-            !s.worldPoseCalibrationActive);
-
-        if (!s.worldPoseCalibrationActive)
-            return;
-
-        CfgGdiFill(g, 170, 210, 940, 430, { 20, 26, 38 });
-        CfgGdiFrame(g, 170, 210, 940, 430, { 115, 158, 225 }, 3);
-        CfgGdiText(g, 215, 245, 850, 54,
-            s.useChinese ? "\xE6\x89\x8B\xE8\x87\x82 IK T-Pose \xE6\xA0\xA1\xE5\x87\x86" : "Arm IK T-Pose Calibration",
-            g.titleFont, { 242, 246, 255 }, DT_CENTER);
-        CfgGdiTextWrap(g, 245, 322, 790, 70,
-            s.useChinese
-                ? "\xE8\xAF\xB7\xE7\xAB\x99\xE7\x9B\xB4\xEF\xBC\x8C\xE5\xB0\x86\xE5\x8F\x8C\xE8\x87\x82\xE5\x90\x91\xE4\xB8\xA4\xE4\xBE\xA7\xE6\xB0\xB4\xE5\xB9\xB3\xE4\xBC\xB8\xE7\x9B\xB4\xE6\x88\x90 T \xE5\xAD\x97\xE3\x80\x82\xE6\xA3\x80\xE6\xB5\x8B\xE5\x88\xB0\xE5\xA7\xBF\xE5\x8A\xBF\xE5\x90\x8E\xE8\xBF\x9E\xE7\xBB\xAD\xE4\xBF\x9D\xE6\x8C\x81 5 \xE7\xA7\x92\xE3\x80\x82"
-                : "Stand straight and extend both arms horizontally into a T. Hold still for 5 seconds after detection.",
-            g.normalFont, { 205, 216, 234 });
-
-        const int percent = std::clamp(s.worldPoseCalibrationSeenPercent, 0, 100);
-        CfgGdiFill(g, 270, 448, 740, 34, { 38, 48, 66 });
-        CfgGdiFill(g, 270, 448, 740 * percent / 100, 34, { 72, 142, 230 });
-        CfgGdiFrame(g, 270, 448, 740, 34, { 130, 170, 230 }, 2);
-        std::string progressText;
-        if (s.worldPoseCalibrationSeenStage == 2)
-            progressText = std::to_string(percent) + "%  /  5s";
-        else
-            progressText = s.useChinese ? "\xE7\xAD\x89\xE5\xBE\x85\xE6\xA3\x80\xE6\xB5\x8B T-Pose" : "Waiting for T-pose detection";
-        CfgGdiText(g, 270, 496, 740, 40, progressText, g.boldFont,
-            { 232, 238, 248 }, DT_CENTER);
-        CfgGdiText(g, 245, 566, 790, 30,
-            s.useChinese
-                ? "\xE5\xA6\x82\xE6\x9E\x9C\xE6\x89\x8B\xE8\x87\x82\xE7\xA7\xBB\xE5\x8A\xA8\xE8\xBF\x87\xE5\xA4\xA7\xEF\xBC\x8C" "5 \xE7\xA7\x92\xE8\xAE\xA1\xE6\x97\xB6\xE4\xBC\x9A\xE8\x87\xAA\xE5\x8A\xA8\xE9\x87\x8D\xE6\x96\xB0\xE5\xBC\x80\xE5\xA7\x8B\xE3\x80\x82"
-                : "If the arms move too far, the 5-second timer restarts automatically.",
-            g.smallFont, { 160, 178, 204 }, DT_CENTER);
-    }
 
     static void CfgRender(CfgOverlayState& s)
     {
@@ -5737,7 +5580,6 @@ namespace
             }
         }
 
-        CfgRenderWorldPoseCalibration(s, g);
         CfgGdiText(g, 26, kCfgOverlayH - 43, 860, 34, s.status, g.smallFont, { 226, 232, 242 });
         const std::string counter = total > 0 ? (std::to_string(s.selected + 1) + "/" + std::to_string(total)) : "0/0";
         CfgGdiText(g, 1010, kCfgOverlayH - 43, 240, 34, counter, g.normalFont, { 164, 180, 205 }, DT_RIGHT);
@@ -8229,25 +8071,6 @@ namespace
             }
         }
 
-        if (s.panelMode == CfgPanelMode::Config &&
-            mx >= kCfgWorldPoseCalibButtonX &&
-            mx <= kCfgWorldPoseCalibButtonX + kCfgWorldPoseCalibButtonW &&
-            my >= kCfgWorldPoseCalibY &&
-            my <= kCfgWorldPoseCalibY + kCfgWorldPoseCalibH)
-        {
-            if (CfgIsEnabled(s, "WorldModelVRPoseEnabled", true) &&
-                !s.worldPoseCalibrationActive)
-            {
-                CfgBeginWorldPoseCalibration(s);
-            }
-            return;
-        }
-
-        // The calibration prompt is modal. Keep the configuration rows from
-        // changing underneath the player while they are holding the T-pose.
-        if (s.worldPoseCalibrationActive)
-            return;
-
         if (s.panelMode == CfgPanelMode::MagazineCalibration)
         {
             if (CfgHandleCalibrationMagazineBoxControlClick(s, mx, my))
@@ -8652,7 +8475,6 @@ namespace
             CfgPollOverlayEvents(s);
             if (s.materialVisible)
                 continue;
-            CfgUpdateWorldPoseCalibrationUi(s);
             CfgMarkDirtyIfCalibrationSnapshotChanged(s);
 
             if (s.dirty)
