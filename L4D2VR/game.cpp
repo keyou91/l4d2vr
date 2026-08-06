@@ -543,15 +543,16 @@ namespace
         if (!wasKnown)
             Game::logMsg("[VR][ServerAck] dedicated server plugin acknowledged VR usercmd support");
 
-        // Protocol 2+ of the combined server plugin also implements the
-        // independent world-pose relay.
+        // Combined-server protocol 3+ advertises pose wire protocol 2.
+        // Version 2 of that plugin relays the older 40-byte pose packet and
+        // must not arm this protocol-v2 uploader.
         unsigned long protocolVersion = 0;
         if (g_Game &&
             ParseUnsignedCommandArgument(command, 1, 255u, protocolVersion) &&
-            protocolVersion >= 2u)
+            protocolVersion >= 3u)
         {
             g_Game->HandleVRPoseServerAck(
-                static_cast<int>(protocolVersion));
+                static_cast<int>(l4d2vr_pose::kVersion));
         }
     }
 
@@ -866,7 +867,7 @@ namespace
     constexpr int kSourceEdictFreeFlag = (1 << 1);
     constexpr char kVRPoseRelayHelloCommand[] = "l4d2vr_pose_hello";
     constexpr char kVRPoseRelayUploadCommand[] = "l4d2vr_pose_upload";
-    constexpr char kVRPoseRelayAckCommand[] = "l4d2vr_pose_ack 1\n";
+    constexpr char kVRPoseRelayAckCommand[] = "l4d2vr_pose_ack 2\n";
 
     struct VRPoseRelayCommandView
     {
@@ -1062,6 +1063,23 @@ namespace
             static_cast<float>(value) * (180.0f / 32767.0f));
     }
 
+    std::uint8_t VRPosePackFingerCurl(float value)
+    {
+        if (!std::isfinite(value))
+            return 0u;
+        const float normalized = std::clamp(
+            value / l4d2vr_pose::kFingerCurlMaximum,
+            0.0f,
+            1.0f);
+        return static_cast<std::uint8_t>(std::lround(normalized * 255.0f));
+    }
+
+    float VRPoseUnpackFingerCurl(std::uint8_t value)
+    {
+        return static_cast<float>(value) *
+            (l4d2vr_pose::kFingerCurlMaximum / 255.0f);
+    }
+
     Vector VRPoseWorldPositionToBodyLocal(
         const Vector& worldPosition,
         const Vector& playerOrigin,
@@ -1211,6 +1229,24 @@ namespace
         return result;
     }
 
+    std::array<float, 5> VRPoseInterpolateFingerCurls(
+        const std::array<float, 5>& previous,
+        const std::array<float, 5>& latest,
+        float fraction)
+    {
+        std::array<float, 5> result{};
+        fraction = std::clamp(fraction, 0.0f, 1.0f);
+        for (size_t finger = 0; finger < result.size(); ++finger)
+        {
+            result[finger] = std::clamp(
+                previous[finger] +
+                    (latest[finger] - previous[finger]) * fraction,
+                0.0f,
+                l4d2vr_pose::kFingerCurlMaximum);
+        }
+        return result;
+    }
+
     VRTrackedPoseLocal VRPoseRebaseTrackedPointYaw(
         const VRTrackedPoseLocal& pose,
         float fromBodyYaw,
@@ -1305,7 +1341,8 @@ void Game::ObserveBuiltinVRPoseRelayClient(
         client.ackAttempts == 1)
     {
         Game::logMsg(
-            "[VR][WorldPose] built-in listen relay offered protocol 1 to player %d",
+            "[VR][WorldPose] built-in listen relay offered protocol %u to player %d",
+            static_cast<unsigned int>(l4d2vr_pose::kVersion),
             playerIndex);
     }
 }
@@ -1352,8 +1389,12 @@ bool Game::HandleBuiltinVRPoseRelayCommand(
 
     if (isHello)
     {
+        std::uint16_t protocolVersion = 0u;
         if (command.argumentCount == 2 &&
-            std::strcmp(command.argument1, "1") == 0)
+            VRPoseRelayParseSequence(
+                command.argument1,
+                protocolVersion) &&
+            protocolVersion == l4d2vr_pose::kVersion)
         {
             const bool firstHello = !client.protocolSupported;
             client.protocolSupported = true;
@@ -1410,7 +1451,7 @@ bool Game::HandleBuiltinVRPoseRelayCommand(
     client.lastUploadTickMs = VRPoseTickMs();
     client.ackAttempts = 0;
 
-    char relayCommand[128] = {};
+    char relayCommand[192] = {};
     const int commandLength = std::snprintf(
         relayCommand,
         sizeof(relayCommand),
@@ -1460,7 +1501,7 @@ bool Game::HandleBuiltinVRPoseRelayCommand(
 
 void Game::HandleVRPoseServerAck(int protocolVersion)
 {
-    if (protocolVersion < static_cast<int>(l4d2vr_pose::kVersion))
+    if (protocolVersion != static_cast<int>(l4d2vr_pose::kVersion))
         return;
 
     const bool wasCapable =
@@ -1469,7 +1510,17 @@ void Game::HandleVRPoseServerAck(int protocolVersion)
     // ACK is therefore also the map-transition handshake: always answer it
     // idempotently even when this client already completed a previous map.
     m_VRPoseHelloSent.store(true, std::memory_order_release);
-    ServerCmd("l4d2vr_pose_hello 1", true);
+    char helloCommand[32]{};
+    const int helloLength = std::snprintf(
+        helloCommand,
+        sizeof(helloCommand),
+        "l4d2vr_pose_hello %u",
+        static_cast<unsigned int>(l4d2vr_pose::kVersion));
+    if (helloLength > 0 &&
+        helloLength < static_cast<int>(sizeof(helloCommand)))
+    {
+        ServerCmd(helloCommand, true);
+    }
 
     if (!wasCapable)
     {
@@ -1528,8 +1579,15 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
     VRWorldPoseTrackingSnapshot tracking{};
     if (!vr->ReadWorldPoseTrackingSnapshot(tracking))
         return;
-	if (!VRPoseFiniteVector(tracking.referenceOrigin))
-		return;
+    if (!VRPoseFiniteVector(tracking.referenceOrigin) ||
+        (tracking.twoHandedGripActive && tracking.emptyHandsActive) ||
+        (tracking.leftFingerUsesNativeAnimation &&
+         tracking.leftFingerCurlsValid) ||
+        (tracking.rightFingerUsesNativeAnimation &&
+         tracking.rightFingerCurlsValid))
+    {
+        return;
+    }
 
     // The tracked positions, controller angles and local yaw frame must be one
     // coherent UpdateTracking sample. A later yaw read makes stationary hands
@@ -1548,9 +1606,40 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
 
     VRPoseFrame frame{};
     frame.valid = true;
+    frame.bodyYawValid = true;
     frame.validMask = validMask;
+    frame.featureMask = l4d2vr_pose::kFeatureBodyYaw;
     frame.sequence = ++m_VRPoseLocalSequence;
     frame.receivedTickMs = nowMs;
+    frame.bodyYaw = bodyYaw;
+
+    if (tracking.leftFingerUsesNativeAnimation)
+    {
+        frame.handStateFlags |=
+            l4d2vr_pose::kHandStateLeftNativeFingerAnimation;
+    }
+    if (tracking.rightFingerUsesNativeAnimation)
+    {
+        frame.handStateFlags |=
+            l4d2vr_pose::kHandStateRightNativeFingerAnimation;
+    }
+    if (tracking.twoHandedGripActive)
+        frame.handStateFlags |= l4d2vr_pose::kHandStateTwoHandedGrip;
+    if (tracking.emptyHandsActive)
+        frame.handStateFlags |= l4d2vr_pose::kHandStateEmptyHands;
+
+    if (tracking.leftFingerCurlsValid &&
+        (validMask & l4d2vr_pose::kValidLeftHand) != 0u)
+    {
+        frame.featureMask |= l4d2vr_pose::kFeatureLeftFingerCurls;
+        frame.leftFingerCurls = tracking.leftFingerCurls;
+    }
+    if (tracking.rightFingerCurlsValid &&
+        (validMask & l4d2vr_pose::kValidRightHand) != 0u)
+    {
+        frame.featureMask |= l4d2vr_pose::kFeatureRightFingerCurls;
+        frame.rightFingerCurls = tracking.rightFingerCurls;
+    }
 
     frame.hmd.position = VRPoseWorldPositionToBodyLocal(
         tracking.hmdPosition,
@@ -1587,9 +1676,19 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
     l4d2vr_pose::WirePacket wire{};
     wire.versionAndValidMask = static_cast<std::uint8_t>(
         (l4d2vr_pose::kVersion << 4) | frame.validMask);
+    wire.featureMask = frame.featureMask;
+    wire.handStateFlags = frame.handStateFlags;
+    wire.bodyYaw = VRPosePackAngle(frame.bodyYaw);
     VRPosePackTrackedPose(frame.hmd, wire.hmd);
     VRPosePackTrackedPose(frame.leftHand, wire.leftHand);
     VRPosePackTrackedPose(frame.rightHand, wire.rightHand);
+    for (int finger = 0; finger < 5; ++finger)
+    {
+        wire.leftFingerCurls[finger] = VRPosePackFingerCurl(
+            frame.leftFingerCurls[static_cast<size_t>(finger)]);
+        wire.rightFingerCurls[finger] = VRPosePackFingerCurl(
+            frame.rightFingerCurls[static_cast<size_t>(finger)]);
+    }
     l4d2vr_pose::FinalizePacket(wire);
 
     std::string encodedPayload;
@@ -1608,7 +1707,7 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
     if (!m_VRPoseServerCapable.load(std::memory_order_acquire))
         return;
 
-    char command[128]{};
+    char command[192]{};
     const int written = std::snprintf(
         command,
         sizeof(command),
@@ -1644,11 +1743,20 @@ bool Game::ReceiveVRPosePayload(
     VRPoseFrame frame{};
     frame.valid = true;
     frame.validMask = l4d2vr_pose::PacketValidMask(wire);
+    frame.featureMask = l4d2vr_pose::PacketFeatureMask(wire);
+    frame.handStateFlags = l4d2vr_pose::PacketHandStateFlags(wire);
     frame.sequence = sequence;
     frame.receivedTickMs = VRPoseTickMs();
     frame.hmd = VRPoseUnpackTrackedPose(wire.hmd);
     frame.leftHand = VRPoseUnpackTrackedPose(wire.leftHand);
     frame.rightHand = VRPoseUnpackTrackedPose(wire.rightHand);
+    for (int finger = 0; finger < 5; ++finger)
+    {
+        frame.leftFingerCurls[static_cast<size_t>(finger)] =
+            VRPoseUnpackFingerCurl(wire.leftFingerCurls[finger]);
+        frame.rightFingerCurls[static_cast<size_t>(finger)] =
+            VRPoseUnpackFingerCurl(wire.rightFingerCurls[finger]);
+    }
 
     if (((frame.validMask & l4d2vr_pose::kValidHmd) != 0u &&
             !VRPoseTrackedPointSane(frame.hmd)) ||
@@ -1667,7 +1775,12 @@ bool Game::ReceiveVRPosePayload(
         playerIndex,
         observedPlayer,
         observedUserID);
-    if (std::isfinite(encodedBodyYaw))
+    if ((frame.featureMask & l4d2vr_pose::kFeatureBodyYaw) != 0u)
+    {
+        frame.bodyYaw = VRPoseUnpackAngle(wire.bodyYaw);
+        frame.bodyYawValid = true;
+    }
+    else if (std::isfinite(encodedBodyYaw))
     {
         frame.bodyYaw = VRPoseNormalizeAngle(encodedBodyYaw);
         frame.bodyYawValid = true;
@@ -1749,12 +1862,14 @@ bool Game::ReceiveVRPosePayload(
         {
             s_lastLogMs[static_cast<std::size_t>(playerIndex)] = frame.receivedTickMs;
             Game::logMsg(
-                "[VR][WorldPose] receive player=%d seq=%u source=%s bodyYaw=%.1f valid=%d hmd=(%.1f %.1f %.1f) hmdRot=(%.1f %.1f %.1f) left=(%.1f %.1f %.1f) right=(%.1f %.1f %.1f)",
+                "[VR][WorldPose] receive player=%d seq=%u source=%s bodyYaw=%.1f valid=%d features=0x%02X handState=0x%02X hmd=(%.1f %.1f %.1f) hmdRot=(%.1f %.1f %.1f) left=(%.1f %.1f %.1f) right=(%.1f %.1f %.1f)",
                 playerIndex,
                 static_cast<unsigned int>(sequence),
                 fromServer ? "server" : "local",
                 frame.bodyYaw,
                 frame.bodyYawValid ? 1 : 0,
+                static_cast<unsigned int>(frame.featureMask),
+                static_cast<unsigned int>(frame.handStateFlags),
                 frame.hmd.position.x,
                 frame.hmd.position.y,
                 frame.hmd.position.z,
@@ -1870,6 +1985,44 @@ bool Game::GetInterpolatedVRPose(
         previousRightHand,
         latest.rightHand,
         fraction);
+
+    const bool leftFingerModeStable =
+        previous.valid &&
+        ((previous.handStateFlags ^ latest.handStateFlags) &
+         l4d2vr_pose::kHandStateLeftNativeFingerAnimation) == 0u;
+    if ((latest.featureMask &
+         l4d2vr_pose::kFeatureLeftFingerCurls) != 0u)
+    {
+        const bool canInterpolate =
+            leftFingerModeStable &&
+            (previous.featureMask &
+             l4d2vr_pose::kFeatureLeftFingerCurls) != 0u;
+        outPose.leftFingerCurls = canInterpolate
+            ? VRPoseInterpolateFingerCurls(
+                previous.leftFingerCurls,
+                latest.leftFingerCurls,
+                fraction)
+            : latest.leftFingerCurls;
+    }
+
+    const bool rightFingerModeStable =
+        previous.valid &&
+        ((previous.handStateFlags ^ latest.handStateFlags) &
+         l4d2vr_pose::kHandStateRightNativeFingerAnimation) == 0u;
+    if ((latest.featureMask &
+         l4d2vr_pose::kFeatureRightFingerCurls) != 0u)
+    {
+        const bool canInterpolate =
+            rightFingerModeStable &&
+            (previous.featureMask &
+             l4d2vr_pose::kFeatureRightFingerCurls) != 0u;
+        outPose.rightFingerCurls = canInterpolate
+            ? VRPoseInterpolateFingerCurls(
+                previous.rightFingerCurls,
+                latest.rightFingerCurls,
+                fraction)
+            : latest.rightFingerCurls;
+    }
     return true;
 }
 

@@ -11,12 +11,38 @@
 namespace l4d2vr_pose
 {
     constexpr std::uint8_t kMagic = 0xB7u;
-    constexpr std::uint8_t kVersion = 1u;
+    constexpr std::uint8_t kVersion = 2u;
+
     constexpr std::uint8_t kValidHmd = 1u << 0;
     constexpr std::uint8_t kValidLeftHand = 1u << 1;
     constexpr std::uint8_t kValidRightHand = 1u << 2;
-    constexpr std::uint8_t kValidMask = kValidHmd | kValidLeftHand | kValidRightHand;
+    constexpr std::uint8_t kValidMask =
+        kValidHmd | kValidLeftHand | kValidRightHand;
+
+    constexpr std::uint8_t kFeatureBodyYaw = 1u << 0;
+    constexpr std::uint8_t kFeatureLeftFingerCurls = 1u << 1;
+    constexpr std::uint8_t kFeatureRightFingerCurls = 1u << 2;
+    constexpr std::uint8_t kFeatureMask =
+        kFeatureBodyYaw |
+        kFeatureLeftFingerCurls |
+        kFeatureRightFingerCurls;
+
+    // A native-animation bit means that side must retain the receiver's
+    // current world-model finger animation. When it is clear, the receiver
+    // freezes that hand on its stable rest base and may layer transmitted
+    // OpenVR curls over it.
+    constexpr std::uint8_t kHandStateLeftNativeFingerAnimation = 1u << 0;
+    constexpr std::uint8_t kHandStateRightNativeFingerAnimation = 1u << 1;
+    constexpr std::uint8_t kHandStateTwoHandedGrip = 1u << 2;
+    constexpr std::uint8_t kHandStateEmptyHands = 1u << 3;
+    constexpr std::uint8_t kHandStateMask =
+        kHandStateLeftNativeFingerAnimation |
+        kHandStateRightNativeFingerAnimation |
+        kHandStateTwoHandedGrip |
+        kHandStateEmptyHands;
+
     constexpr float kPositionUnitsPerStep = 0.125f;
+    constexpr float kFingerCurlMaximum = 2.0f;
 
 #pragma pack(push, 1)
     struct PackedTrackedPose
@@ -32,19 +58,26 @@ namespace l4d2vr_pose
         // validity mask.
         std::uint8_t versionAndValidMask =
             static_cast<std::uint8_t>((kVersion << 4) | kValidMask);
+        std::uint8_t featureMask = 0u;
+        std::uint8_t handStateFlags =
+            kHandStateRightNativeFingerAnimation;
+        std::int16_t bodyYaw = 0;
         PackedTrackedPose hmd{};
         PackedTrackedPose leftHand{};
         PackedTrackedPose rightHand{};
+        std::uint8_t leftFingerCurls[5]{};
+        std::uint8_t rightFingerCurls[5]{};
         std::uint16_t crc16 = 0u;
     };
 #pragma pack(pop)
 
     static_assert(sizeof(PackedTrackedPose) == 12, "Unexpected VR pose transform size.");
-    static_assert(sizeof(WirePacket) == 40, "VR pose wire packet must remain 40 bytes.");
+    static_assert(sizeof(WirePacket) == 54, "VR pose protocol 2 wire packet must be 54 bytes.");
 
     constexpr std::size_t kWirePacketBytes = sizeof(WirePacket);
     constexpr std::size_t kEncodedPayloadChars =
         (kWirePacketBytes * 8u + 5u) / 6u;
+    static_assert(kEncodedPayloadChars == 72u, "Unexpected protocol 2 payload length.");
 
     inline std::uint8_t PacketVersion(const WirePacket& packet)
     {
@@ -54,6 +87,16 @@ namespace l4d2vr_pose
     inline std::uint8_t PacketValidMask(const WirePacket& packet)
     {
         return static_cast<std::uint8_t>(packet.versionAndValidMask & 0x0Fu);
+    }
+
+    inline std::uint8_t PacketFeatureMask(const WirePacket& packet)
+    {
+        return static_cast<std::uint8_t>(packet.featureMask & kFeatureMask);
+    }
+
+    inline std::uint8_t PacketHandStateFlags(const WirePacket& packet)
+    {
+        return static_cast<std::uint8_t>(packet.handStateFlags & kHandStateMask);
     }
 
     inline std::uint16_t Crc16Ccitt(const void* bytes, std::size_t byteCount)
@@ -78,6 +121,14 @@ namespace l4d2vr_pose
         packet.magic = kMagic;
         packet.versionAndValidMask = static_cast<std::uint8_t>(
             (kVersion << 4) | (PacketValidMask(packet) & kValidMask));
+        packet.featureMask = PacketFeatureMask(packet);
+        packet.handStateFlags = PacketHandStateFlags(packet);
+        if ((packet.featureMask & kFeatureBodyYaw) == 0u)
+            packet.bodyYaw = 0;
+        if ((packet.featureMask & kFeatureLeftFingerCurls) == 0u)
+            std::memset(packet.leftFingerCurls, 0, sizeof(packet.leftFingerCurls));
+        if ((packet.featureMask & kFeatureRightFingerCurls) == 0u)
+            std::memset(packet.rightFingerCurls, 0, sizeof(packet.rightFingerCurls));
         packet.crc16 = 0u;
         packet.crc16 = Crc16Ccitt(
             &packet,
@@ -86,9 +137,33 @@ namespace l4d2vr_pose
 
     inline bool ValidatePacket(const WirePacket& packet)
     {
+        const std::uint8_t validMask = PacketValidMask(packet);
         if (packet.magic != kMagic ||
             PacketVersion(packet) != kVersion ||
-            (PacketValidMask(packet) & ~kValidMask) != 0u)
+            (validMask & ~kValidMask) != 0u ||
+            (packet.featureMask & ~kFeatureMask) != 0u ||
+            (packet.handStateFlags & ~kHandStateMask) != 0u)
+        {
+            return false;
+        }
+
+        const std::uint8_t features = PacketFeatureMask(packet);
+        const std::uint8_t handState = PacketHandStateFlags(packet);
+        const bool leftNative =
+            (handState & kHandStateLeftNativeFingerAnimation) != 0u;
+        const bool rightNative =
+            (handState & kHandStateRightNativeFingerAnimation) != 0u;
+        const bool twoHanded =
+            (handState & kHandStateTwoHandedGrip) != 0u;
+        const bool emptyHands =
+            (handState & kHandStateEmptyHands) != 0u;
+
+        if (((features & kFeatureLeftFingerCurls) != 0u &&
+             ((validMask & kValidLeftHand) == 0u || leftNative)) ||
+            ((features & kFeatureRightFingerCurls) != 0u &&
+             ((validMask & kValidRightHand) == 0u || rightNative)) ||
+            (twoHanded && (!leftNative || !rightNative || emptyHands)) ||
+            (emptyHands && rightNative))
         {
             return false;
         }

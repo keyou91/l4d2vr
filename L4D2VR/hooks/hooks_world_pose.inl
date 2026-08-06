@@ -4420,11 +4420,12 @@
         return applied == expected;
     }
 
-    __declspec(noinline) bool HooksWorldPoseApplyLocalTrackedFingerPose(
+    __declspec(noinline) bool HooksWorldPoseApplyTrackedFingerPoseFromCurls(
         VR* vr,
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseArmLayout& arm,
         int side,
+        const std::array<float, 5>& curls,
         float weight,
         vr_vm_stabilize::Mat3x4* bones)
     {
@@ -4440,17 +4441,15 @@
         {
             return false;
         }
-
-        std::array<float, 5> curls{};
-        const bool haveCurls = side < 0
-            ? HooksNativeViewmodelHandsOnlyReadOpenVRLeftFingerCurls(
-                vr,
-                curls)
-            : HooksNativeViewmodelHandsOnlyReadOpenVRRightFingerCurls(
-                vr,
-                curls);
-        if (!haveCurls)
-            return false;
+        for (float curl : curls)
+        {
+            if (!std::isfinite(curl) ||
+                curl < 0.0f ||
+                curl > l4d2vr_pose::kFingerCurlMaximum + 0.001f)
+            {
+                return false;
+            }
+        }
 
         const float strength = std::clamp(
             vr->m_NativeViewmodelLeftHandOpenVRCurlStrength,
@@ -4529,6 +4528,38 @@
             }
         }
         return applied > 0;
+    }
+
+    __declspec(noinline) bool HooksWorldPoseApplyLocalTrackedFingerPose(
+        VR* vr,
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        int side,
+        float weight,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!vr)
+            return false;
+
+        std::array<float, 5> curls{};
+        const bool haveCurls = side < 0
+            ? HooksNativeViewmodelHandsOnlyReadOpenVRLeftFingerCurls(
+                vr,
+                curls)
+            : HooksNativeViewmodelHandsOnlyReadOpenVRRightFingerCurls(
+                vr,
+                curls);
+        if (!haveCurls)
+            return false;
+
+        return HooksWorldPoseApplyTrackedFingerPoseFromCurls(
+            vr,
+            layout,
+            arm,
+            side,
+            curls,
+            weight,
+            bones);
     }
 
 #ifdef _MSC_VER
@@ -4644,6 +4675,69 @@
             Game::logMsg(
                 "[VR][WorldPose] tracked fingers first run completed side=%d",
                 side);
+        }
+        return applied;
+    }
+
+    inline bool HooksWorldPoseTryApplyNetworkTrackedFingerPose(
+        VR* vr,
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        int side,
+        const std::array<float, 5>& curls,
+        float weight,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (g_HooksWorldPoseFingerRuntimeDisabled.load(
+                std::memory_order_acquire))
+        {
+            return false;
+        }
+
+        bool applied = false;
+        unsigned long exceptionCode = 0ul;
+#ifdef _MSC_VER
+        __try
+        {
+            applied = HooksWorldPoseApplyTrackedFingerPoseFromCurls(
+                vr,
+                layout,
+                arm,
+                side,
+                curls,
+                weight,
+                bones);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            exceptionCode = static_cast<unsigned long>(GetExceptionCode());
+        }
+#else
+        applied = HooksWorldPoseApplyTrackedFingerPoseFromCurls(
+            vr,
+            layout,
+            arm,
+            side,
+            curls,
+            weight,
+            bones);
+#endif
+        if (exceptionCode != 0ul)
+        {
+            g_HooksWorldPoseFingerRuntimeDisabled.store(
+                true,
+                std::memory_order_release);
+            bool expected = false;
+            if (g_HooksWorldPoseFingerFaultLogged.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel))
+            {
+                Game::logMsg(
+                    "[VR][WorldPose] network finger exception=0x%08lX; finger takeover disabled for this process",
+                    exceptionCode);
+            }
+            return false;
         }
         return applied;
     }
@@ -6337,11 +6431,11 @@
                     bones);
             changed = rightArmSolved || changed;
         }
-        // Finger transforms are a final local-pose layer for the local
-        // third-person IK model. Each solved hand receives a stable
-        // rest/captured base first, so it cannot keep sampling Source reload,
-        // fire, shove, or idle finger animation. The free left hand and
-        // authoritative empty right hand then receive live OpenVR curls.
+        // Finger transforms are the final local-pose layer. The local
+        // third-person model keeps its existing direct OpenVR path. Remote
+        // players consume protocol-v2 state: native weapon/support hands retain
+        // Source animation, while free/empty hands are rebuilt from the stable
+        // rest pose and receive the transmitted anatomical finger curls.
         if (localPlayer && leftArmSolved)
         {
             const bool leftBaseReady =
@@ -6374,6 +6468,50 @@
                     bones) ||
                 changed;
             changed = true;
+        }
+        else if (!localPlayer && leftArmSolved)
+        {
+            const bool useNativeAnimation =
+                (pose.handStateFlags &
+                 l4d2vr_pose::kHandStateLeftNativeFingerAnimation) != 0u;
+            if (!useNativeAnimation)
+            {
+                const bool leftBaseReady =
+                    HooksWorldPoseEnsureAnimationIndependentFingerBase(
+                        *layout,
+                        layout->left,
+                        layout->leftFingers,
+                        sourceBones,
+                        true,
+                        nullptr,
+                        calibration.leftFingerPose);
+                if (!leftBaseReady ||
+                    !HooksWorldPoseApplyAnimationIndependentFingerBase(
+                        *layout,
+                        layout->left,
+                        layout->leftFingers,
+                        calibration.leftFingerPose,
+                        bones))
+                {
+                    HooksWorldPoseClearWeaponHandState(info.entity_index);
+                    return false;
+                }
+                if ((pose.featureMask &
+                     l4d2vr_pose::kFeatureLeftFingerCurls) != 0u)
+                {
+                    changed =
+                        HooksWorldPoseTryApplyNetworkTrackedFingerPose(
+                            vr,
+                            *layout,
+                            layout->left,
+                            -1,
+                            pose.leftFingerCurls,
+                            trackingWeight,
+                            bones) ||
+                        changed;
+                }
+                changed = true;
+            }
         }
         if (localPlayer && rightArmSolved)
         {
@@ -6416,6 +6554,50 @@
                     changed;
             }
             changed = true;
+        }
+        else if (!localPlayer && rightArmSolved)
+        {
+            const bool useNativeAnimation =
+                (pose.handStateFlags &
+                 l4d2vr_pose::kHandStateRightNativeFingerAnimation) != 0u;
+            if (!useNativeAnimation)
+            {
+                const bool rightBaseReady =
+                    HooksWorldPoseEnsureAnimationIndependentFingerBase(
+                        *layout,
+                        layout->right,
+                        layout->rightFingers,
+                        sourceBones,
+                        true,
+                        nullptr,
+                        calibration.rightFingerPose);
+                if (!rightBaseReady ||
+                    !HooksWorldPoseApplyAnimationIndependentFingerBase(
+                        *layout,
+                        layout->right,
+                        layout->rightFingers,
+                        calibration.rightFingerPose,
+                        bones))
+                {
+                    HooksWorldPoseClearWeaponHandState(info.entity_index);
+                    return false;
+                }
+                if ((pose.featureMask &
+                     l4d2vr_pose::kFeatureRightFingerCurls) != 0u)
+                {
+                    changed =
+                        HooksWorldPoseTryApplyNetworkTrackedFingerPose(
+                            vr,
+                            *layout,
+                            layout->right,
+                            1,
+                            pose.rightFingerCurls,
+                            trackingWeight,
+                            bones) ||
+                        changed;
+                }
+                changed = true;
+            }
         }
 
         // Never let a stale controller relation keep driving the separate

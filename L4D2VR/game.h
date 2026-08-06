@@ -104,12 +104,16 @@ struct VRPoseFrame
     bool valid = false;
     bool bodyYawValid = false;
     std::uint8_t validMask = 0u;
+    std::uint8_t featureMask = 0u;
+    std::uint8_t handStateFlags = 0u;
     std::uint16_t sequence = 0u;
     std::uint64_t receivedTickMs = 0u;
     float bodyYaw = 0.0f;
     VRTrackedPoseLocal hmd{};
     VRTrackedPoseLocal leftHand{};
     VRTrackedPoseLocal rightHand{};
+    std::array<float, 5> leftFingerCurls{};
+    std::array<float, 5> rightFingerCurls{};
 };
 
 struct Player

@@ -78,8 +78,10 @@ struct TrackedDevicePoseData
 };
 
 // Coherent, anatomical (physical left/right) world-space tracking sample used
-// by the multiplayer pose publisher. It is copied under a short mutex so the
-// HMD and both controllers always come from the same UpdateTracking pass.
+// by the multiplayer pose publisher. Spatial fields are copied under a short
+// mutex so the HMD and both controllers always come from the same
+// UpdateTracking pass. Finger fields are appended from the current OpenVR
+// skeletal state when the publisher reads the snapshot.
 struct VRWorldPoseTrackingSnapshot
 {
 	bool initialized = false;
@@ -87,6 +89,12 @@ struct VRWorldPoseTrackingSnapshot
 	bool leftHandValid = false;
 	bool rightHandValid = false;
 	bool bodyYawValid = false;
+	bool leftFingerCurlsValid = false;
+	bool rightFingerCurlsValid = false;
+	bool leftFingerUsesNativeAnimation = false;
+	bool rightFingerUsesNativeAnimation = true;
+	bool twoHandedGripActive = false;
+	bool emptyHandsActive = false;
 	float bodyYaw = 0.0f;
 	// Player body origin sampled in the same UpdateTracking pass as the absolute
 	// tracked points below. Reading it later in the pose publisher can observe a
@@ -99,6 +107,8 @@ struct VRWorldPoseTrackingSnapshot
 	QAngle leftHandAngles{};
 	Vector rightHandPosition{};
 	QAngle rightHandAngles{};
+	std::array<float, 5> leftFingerCurls{};
+	std::array<float, 5> rightFingerCurls{};
 };
 
 struct SharedTextureHolder
@@ -1647,7 +1657,7 @@ public:
 	Vector m_NativeViewmodelRightHandOpenVRThumbRootOffsetUnits = { 0.0f, 0.0f, 0.0f };
 	Vector m_NativeViewmodelRightHandOpenVRThumbRootRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	vr::VRActionHandle_t m_NativeViewmodelLeftHandOpenVRAction = vr::k_ulInvalidActionHandle;
-	vr::VRActionHandle_t m_NativeViewmodelRightHandOpenVRAction = vr::k_ulInvalidActionHandle;
+	mutable vr::VRActionHandle_t m_NativeViewmodelRightHandOpenVRAction = vr::k_ulInvalidActionHandle;
 	mutable std::mutex m_NativeViewmodelLeftHandOpenVRFingerCurlMutex;
 	std::array<float, 5> m_NativeViewmodelLeftHandOpenVRFingerCurls = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 	std::chrono::steady_clock::time_point m_NativeViewmodelLeftHandOpenVRFingerCurlsAt{};
@@ -3623,6 +3633,7 @@ public:
 	bool GetNativeViewmodelLeftHandOpenVRFingerCurls(std::array<float, 5>& outCurls) const;
 	void UpdateNativeViewmodelRightHandOpenVRFingerCurls();
 	bool GetNativeViewmodelRightHandOpenVRFingerCurls(std::array<float, 5>& outCurls) const;
+	bool GetWorldPoseAnatomicalRightHandOpenVRFingerCurls(std::array<float, 5>& outCurls) const;
 	bool ReadMagazineInteractionFingerCurls(std::array<float, 5>& outCurls);
 	bool UpdateMagazineInteraction(
 		C_BasePlayer* localPlayer,

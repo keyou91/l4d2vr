@@ -4570,6 +4570,29 @@ bool VR::GetNativeViewmodelRightHandOpenVRFingerCurls(std::array<float, 5>& outC
     return true;
 }
 
+bool VR::GetWorldPoseAnatomicalRightHandOpenVRFingerCurls(
+    std::array<float, 5>& outCurls) const
+{
+    outCurls = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+
+    // In the normal right-handed layout the existing gameplay-right cache is
+    // already the anatomical physical-right hand. Left-handed mode maps the
+    // gameplay-right cache to the physical-left controller, so read the
+    // physical-right skeleton action directly for network world-pose data.
+    if (!m_LeftHanded)
+        return GetNativeViewmodelRightHandOpenVRFingerCurls(outCurls);
+
+    if (!m_NativeViewmodelLeftHandOpenVRSkeleton || !m_Input)
+        return false;
+
+    return ReadOpenVRSkeletalFingerCurls(
+        m_Input,
+        m_NativeViewmodelRightHandOpenVRAction,
+        "/actions/base/in/skeleton_righthand",
+        outCurls,
+        "world pose anatomical right hand");
+}
+
 bool VR::UpdateMagazineInteraction(
     C_BasePlayer* localPlayer,
     bool leftGripDown,

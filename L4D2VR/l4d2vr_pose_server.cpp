@@ -205,7 +205,7 @@ namespace
     constexpr char kPluginInterfaceName[] = "ISERVERPLUGINCALLBACKS003";
     constexpr char kPoseHelloCommand[] = "l4d2vr_pose_hello";
     constexpr char kPoseUploadCommand[] = "l4d2vr_pose_upload";
-    constexpr char kPoseAckCommand[] = "l4d2vr_pose_ack 1\n";
+    constexpr char kPoseAckCommand[] = "l4d2vr_pose_ack 2\n";
 
     static_assert(sizeof(void*) == 4, "Build the pose relay as Win32/x86.");
     static_assert(sizeof(edict_t) == 20, "Unexpected 32-bit Source edict layout.");
@@ -216,8 +216,8 @@ namespace
         sizeof(CCommand) == 1288,
         "Unexpected 32-bit Source CCommand layout.");
     static_assert(
-        l4d2vr_pose::kEncodedPayloadChars == 54,
-        "The server command protocol requires a 54-character payload.");
+        l4d2vr_pose::kEncodedPayloadChars == 72,
+        "The protocol-v2 server command requires a 72-character payload.");
 
     struct ClientPoseState
     {
@@ -357,7 +357,7 @@ namespace
         std::uint16_t sequence,
         const char* payload)
     {
-        char command[128] = {};
+        char command[192] = {};
         const int commandLength = std::snprintf(
             command,
             sizeof(command),
@@ -433,7 +433,7 @@ namespace
 
         const char* GetPluginDescription() override
         {
-            return "L4D2VR dedicated-server HMD and controller pose relay";
+            return "L4D2VR dedicated-server protocol-v2 body, hand, and finger pose relay";
         }
 
         void LevelInit(const char*) override
@@ -527,8 +527,10 @@ namespace
 
             if (isHello)
             {
+                std::uint16_t protocolVersion = 0u;
                 if (args.ArgC() == 2 &&
-                    std::strcmp(args.Arg(1), "1") == 0)
+                    ParseSequence(args.Arg(1), protocolVersion) &&
+                    protocolVersion == l4d2vr_pose::kVersion)
                 {
                     client.protocolSupported = true;
                     client.ackPending = false;

@@ -274,9 +274,138 @@ void VR::ResetPavlovTwoHandedAimSmoothing()
 
 bool VR::ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot) const
 {
-    std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
-    outSnapshot = m_WorldPoseTrackingSnapshot;
-    return outSnapshot.initialized;
+    {
+        std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+        outSnapshot = m_WorldPoseTrackingSnapshot;
+    }
+    if (!outSnapshot.initialized)
+        return false;
+
+    outSnapshot.twoHandedGripActive =
+        IsVrHandsTwoHandedGripPoseActive();
+    outSnapshot.emptyHandsActive =
+        m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
+
+    // State flags are anatomical, not gameplay-hand labels. In left-handed
+    // mode the physical left hand is dominant and the physical right hand is
+    // the optional support hand.
+    if (outSnapshot.emptyHandsActive)
+    {
+        outSnapshot.leftFingerUsesNativeAnimation = false;
+        outSnapshot.rightFingerUsesNativeAnimation = false;
+    }
+    else if (m_LeftHanded)
+    {
+        outSnapshot.leftFingerUsesNativeAnimation = true;
+        outSnapshot.rightFingerUsesNativeAnimation =
+            outSnapshot.twoHandedGripActive;
+    }
+    else
+    {
+        outSnapshot.leftFingerUsesNativeAnimation =
+            outSnapshot.twoHandedGripActive;
+        outSnapshot.rightFingerUsesNativeAnimation = true;
+    }
+
+    outSnapshot.leftFingerCurlsValid = false;
+    outSnapshot.rightFingerCurlsValid = false;
+    outSnapshot.leftFingerCurls = {};
+    outSnapshot.rightFingerCurls = {};
+
+    constexpr float kOpenVRThumbMinCurl = 0.0f;
+    constexpr float kOpenVRThumbMaxCurl = 2.0f;
+    constexpr float kOpenVRFingerMaxCurl = 2.0f;
+    const float curlScale = std::clamp(
+        m_NativeViewmodelLeftHandOpenVRCurlScale,
+        0.0f,
+        2.0f);
+    const bool magazinePoseActive =
+        m_MagazineInteractionLeftHandPoseActive.load(
+            std::memory_order_relaxed) != 0;
+    const bool magazinePoseUsesPhysicalLeft =
+        IsGameplayHandLeftPhysical(true);
+
+    auto finalizeAnatomicalCurls = [&](
+        std::array<float, 5>& curls,
+        bool applyMagazineGrip)
+    {
+        for (int finger = 0; finger < 5; ++finger)
+        {
+            const float baseCurl = std::clamp(
+                curls[static_cast<size_t>(finger)],
+                0.0f,
+                1.0f) * curlScale;
+            const float initialCurl =
+                finger < static_cast<int>(
+                    m_NativeViewmodelLeftHandOpenVRInitialCurl.size())
+                    ? m_NativeViewmodelLeftHandOpenVRInitialCurl[
+                        static_cast<size_t>(finger)]
+                    : 0.0f;
+            const float minimumCurl =
+                finger == 0 ? kOpenVRThumbMinCurl : 0.0f;
+            const float maximumCurl =
+                finger == 0
+                    ? kOpenVRThumbMaxCurl
+                    : kOpenVRFingerMaxCurl;
+            curls[static_cast<size_t>(finger)] = std::clamp(
+                baseCurl + initialCurl,
+                minimumCurl,
+                maximumCurl);
+        }
+
+        if (applyMagazineGrip)
+        {
+            static const float kMagazineGripMinCurl[5] =
+            {
+                kOpenVRThumbMinCurl, 0.60f, 0.66f, 0.68f, 0.68f,
+            };
+            for (int finger = 0; finger < 5; ++finger)
+            {
+                curls[static_cast<size_t>(finger)] = std::clamp(
+                    curls[static_cast<size_t>(finger)],
+                    kMagazineGripMinCurl[finger],
+                    finger == 0
+                        ? kOpenVRThumbMaxCurl
+                        : kOpenVRFingerMaxCurl);
+            }
+        }
+    };
+
+    // Match the cropped-hand state machine on the sender. Free/empty hands
+    // freeze Source finger animation and transmit the same scaled OpenVR curl
+    // values that are layered on that fixed base. Weapon and two-hand support
+    // poses remain native animation and therefore do not need curl payloads.
+    if (!outSnapshot.leftFingerUsesNativeAnimation)
+    {
+        std::array<float, 5> curls{};
+        const bool haveLiveCurls =
+            GetNativeViewmodelLeftHandOpenVRFingerCurls(curls);
+        if (haveLiveCurls || outSnapshot.emptyHandsActive)
+        {
+            finalizeAnatomicalCurls(
+                curls,
+                magazinePoseActive && magazinePoseUsesPhysicalLeft);
+            outSnapshot.leftFingerCurls = curls;
+            outSnapshot.leftFingerCurlsValid = true;
+        }
+    }
+
+    if (!outSnapshot.rightFingerUsesNativeAnimation)
+    {
+        std::array<float, 5> curls{};
+        const bool haveLiveCurls =
+            GetWorldPoseAnatomicalRightHandOpenVRFingerCurls(curls);
+        if (haveLiveCurls || outSnapshot.emptyHandsActive)
+        {
+            finalizeAnatomicalCurls(
+                curls,
+                magazinePoseActive && !magazinePoseUsesPhysicalLeft);
+            outSnapshot.rightFingerCurls = curls;
+            outSnapshot.rightFingerCurlsValid = true;
+        }
+    }
+
+    return true;
 }
 
 
