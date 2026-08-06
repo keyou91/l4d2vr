@@ -15292,6 +15292,19 @@ namespace
             outProjected);
     }
 
+    inline float HooksNativeViewmodelArmIkWrapRadians(float radians)
+    {
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kTwoPi = kPi * 2.0f;
+        if (!std::isfinite(radians))
+            return radians;
+
+        radians = std::fmod(radians + kPi, kTwoPi);
+        if (radians < 0.0f)
+            radians += kTwoPi;
+        return radians - kPi;
+    }
+
     inline bool HooksNativeViewmodelArmIkFindChain(
         const std::vector<std::string>& boneNames,
         const std::vector<int>& boneParents,
@@ -16060,25 +16073,67 @@ namespace
             }
         }
 
-        Vector poleDirection =
+        const Vector poleDirection =
             bodyRight * static_cast<float>(chain.side) -
             bodyUp * 0.45f -
             bodyForward * 0.15f;
+
+        // The previous elbow direction is continuity only; it must never become
+        // the permanent pole. A large native fire/melee animation can move the
+        // hand through the opposite bend hemisphere. Keeping that transient bend
+        // as the next frame's pole makes the arm remain twisted after the stock
+        // animation has returned. Re-center a strongly opposed previous bend to
+        // the anatomical pole whenever that pole is well-defined.
+        Vector sanitizedPreviousBend{};
+        const Vector* previousBendForSolve = previousBendDirection;
         if (stretchUpperArmToTarget && previousBendDirection)
         {
-            Vector stablePreviousBend{};
-            if (HooksNativeViewmodelArmIkNormalize(
+            Vector targetDirection{};
+            Vector previousProjected{};
+            Vector poleProjected{};
+            if (!HooksNativeViewmodelArmIkNormalize(
                     *previousBendDirection,
-                    stablePreviousBend))
+                    sanitizedPreviousBend))
             {
-                // Once the first-person elbow has a valid world-space bend,
-                // keep that bend as the pole. Re-projecting it onto the new
-                // shoulder-to-hand plane still lets the arm follow controller
-                // motion, but rotating the body or HMD can no longer drag the
-                // upper arm toward a newly rotated torso pole every frame.
-                poleDirection = stablePreviousBend;
+                previousBendForSolve = nullptr;
+            }
+            else if (HooksNativeViewmodelArmIkNormalize(
+                         targetPosition - shoulder,
+                         targetDirection) &&
+                     HooksNativeViewmodelArmIkProjectOntoPlane(
+                         sanitizedPreviousBend,
+                         targetDirection,
+                         previousProjected) &&
+                     HooksNativeViewmodelArmIkProjectOntoPlane(
+                         poleDirection,
+                         targetDirection,
+                         poleProjected))
+            {
+                const Vector rawPoleProjection =
+                    poleDirection -
+                    targetDirection * DotProduct(
+                        poleDirection,
+                        targetDirection);
+                const float poleLength = poleDirection.Length();
+                const float projectedPoleLength = rawPoleProjection.Length();
+                const float poleStrength =
+                    std::isfinite(poleLength) && poleLength > 0.0001f &&
+                    std::isfinite(projectedPoleLength)
+                        ? projectedPoleLength / poleLength
+                        : 0.0f;
+                if (poleStrength >= 0.15f &&
+                    DotProduct(previousProjected, poleProjected) < 0.0f)
+                {
+                    sanitizedPreviousBend *= -1.0f;
+                }
+                previousBendForSolve = &sanitizedPreviousBend;
+            }
+            else
+            {
+                previousBendForSolve = &sanitizedPreviousBend;
             }
         }
+
         HooksNativeViewmodelArmIkSolution solution{};
         if (!HooksNativeViewmodelArmIkSolveTwoBone(
                 shoulder,
@@ -16086,7 +16141,7 @@ namespace
                 solveUpperLength,
                 lowerLength,
                 poleDirection,
-                previousBendDirection,
+                previousBendForSolve,
                 animatedUpperDirection,
                 solution))
         {
@@ -16238,32 +16293,42 @@ namespace
             return false;
         }
 
-        float continuousTwistRadians = principalTwistRadians;
+        // Keep temporal twist in one bounded revolution. The previous unwrapped
+        // accumulator could gain an extra 2*pi turn when a stock fire/melee
+        // animation crossed the +/-pi boundary. Once wound up, a returned hand
+        // pose was mapped to the same extra revolution and the upper arm stayed
+        // twisted until first-person IK was disabled.
+        const float principalTwistBounded =
+            HooksNativeViewmodelArmIkWrapRadians(principalTwistRadians);
+        if (!std::isfinite(principalTwistBounded))
+            return false;
+
+        float stabilizedUpperTwistRadians = principalTwistBounded;
         if (stretchUpperArmToTarget && previousTwistRadians &&
             std::isfinite(*previousTwistRadians))
         {
-            constexpr float kPi = 3.14159265358979323846f;
-            constexpr float kTwoPi = kPi * 2.0f;
-            while (continuousTwistRadians - *previousTwistRadians > kPi)
-                continuousTwistRadians -= kTwoPi;
-            while (continuousTwistRadians - *previousTwistRadians < -kPi)
-                continuousTwistRadians += kTwoPi;
-        }
-        float stabilizedUpperTwistRadians = continuousTwistRadians;
-        if (stretchUpperArmToTarget && previousTwistRadians &&
-            std::isfinite(*previousTwistRadians))
-        {
-            // The palm and forearm still use the exact current controller roll.
-            // Only the cosmetic upper-arm share is rate-limited and filtered;
-            // otherwise tiny pose noise or an Euler wrap can make the upper arm
-            // visibly shake while the hand itself is stationary.
+            // The palm and forearm still use the exact current hand rotation.
+            // Only the cosmetic upper-arm share is filtered, and its state is
+            // always wrapped back to [-pi, pi]. A very large animation jump is
+            // re-seeded immediately instead of being dragged through stale twist.
             constexpr float kUpperTwistDeadbandRadians = 0.0035f;
             constexpr float kUpperTwistMaximumStepRadians = 0.35f;
             constexpr float kUpperTwistFollow = 0.5f;
-            float delta = continuousTwistRadians - *previousTwistRadians;
-            if (std::fabs(delta) <= kUpperTwistDeadbandRadians)
+            constexpr float kUpperTwistReseedRadians = 2.09439510239f;
+            const float previousBounded =
+                HooksNativeViewmodelArmIkWrapRadians(*previousTwistRadians);
+            float delta = HooksNativeViewmodelArmIkWrapRadians(
+                principalTwistBounded - previousBounded);
+            if (!std::isfinite(previousBounded) || !std::isfinite(delta))
+                return false;
+
+            if (std::fabs(delta) >= kUpperTwistReseedRadians)
             {
-                stabilizedUpperTwistRadians = *previousTwistRadians;
+                stabilizedUpperTwistRadians = principalTwistBounded;
+            }
+            else if (std::fabs(delta) <= kUpperTwistDeadbandRadians)
+            {
+                stabilizedUpperTwistRadians = previousBounded;
             }
             else
             {
@@ -16272,7 +16337,8 @@ namespace
                     -kUpperTwistMaximumStepRadians,
                     kUpperTwistMaximumStepRadians);
                 stabilizedUpperTwistRadians =
-                    *previousTwistRadians + delta * kUpperTwistFollow;
+                    HooksNativeViewmodelArmIkWrapRadians(
+                        previousBounded + delta * kUpperTwistFollow);
             }
         }
         if (outTwistRadians)
@@ -17015,6 +17081,12 @@ namespace
         bool frameTwistValid[2]{};
         float latestTwistRadians[2]{};
         float frameTwistRadians[2]{};
+        bool latestTargetValid[2]{};
+        bool frameTargetValid[2]{};
+        bool latestTargetUsesNativeAnimation[2]{};
+        bool frameTargetUsesNativeAnimation[2]{};
+        Vector latestTargetTurnLocal[2]{};
+        Vector frameTargetTurnLocal[2]{};
     };
 
     inline int HooksNativeViewmodelArmIkSideSlot(int side)
@@ -17419,6 +17491,39 @@ namespace
         Vector previousWorld[2]{};
         bool previousTwistValid[2]{};
         float previousTwistRadians[2]{};
+        const bool targetValid[2] = { haveLeftTarget, haveRightTarget };
+        const bool targetUsesNativeAnimation[2] = {
+            haveLeftTarget && vr->IsVrHandsTwoHandedGripPoseActive(),
+            haveRightTarget &&
+                !vr->m_ManualInventoryEmptyHandsActive.load(
+                    std::memory_order_acquire),
+        };
+        const Vector targetShoulder[2] = { leftShoulder, rightShoulder };
+        const vr_vm_stabilize::Mat3x4* targetMatrix[2] = {
+            &leftTarget,
+            &rightTarget,
+        };
+        Vector targetTurnLocal[2]{};
+        bool targetTurnLocalValid[2]{};
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            if (!targetValid[slot])
+                continue;
+            const Vector targetRelative =
+                vr_vm_stabilize::GetOrigin(*targetMatrix[slot]) -
+                targetShoulder[slot];
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(targetRelative))
+                continue;
+            targetTurnLocal[slot] =
+                HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
+                    targetRelative,
+                    bodyForward,
+                    bodyRight,
+                    bodyUp);
+            targetTurnLocalValid[slot] =
+                HooksNativeViewmodelHandsOnlyVectorFinite(
+                    targetTurnLocal[slot]);
+        }
         const auto now = std::chrono::steady_clock::now();
         const uint32_t renderFrameSeq =
             vr->m_RenderFrameSeq.load(std::memory_order_acquire) & ~1u;
@@ -17470,6 +17575,12 @@ namespace
                         s_continuity.latestTwistValid[slot];
                     s_continuity.frameTwistRadians[slot] =
                         s_continuity.latestTwistRadians[slot];
+                    s_continuity.frameTargetValid[slot] =
+                        s_continuity.latestTargetValid[slot];
+                    s_continuity.frameTargetUsesNativeAnimation[slot] =
+                        s_continuity.latestTargetUsesNativeAnimation[slot];
+                    s_continuity.frameTargetTurnLocal[slot] =
+                        s_continuity.latestTargetTurnLocal[slot];
                 }
             }
             s_continuity.lastEyeIndex = eyeIndex;
@@ -17502,6 +17613,31 @@ namespace
                 {
                     previousTwistRadians[slot] =
                         s_continuity.frameTwistRadians[slot];
+                }
+
+                // A stock weapon/melee animation may abruptly move the hand far
+                // from the preceding frame. Do not feed elbow/twist continuity
+                // across that discontinuity; the current frame is solved from
+                // the animation-free rest branch and becomes the new seed. The
+                // comparison is shoulder-relative turn space, so locomotion, HMD
+                // translation and snap turning do not create false resets.
+                const float targetResetDistance =
+                    0.15f * sourceUnitsPerMeter;
+                const bool targetModeChanged =
+                    s_continuity.frameTargetValid[slot] &&
+                    targetTurnLocalValid[slot] &&
+                    s_continuity.frameTargetUsesNativeAnimation[slot] !=
+                        targetUsesNativeAnimation[slot];
+                const bool targetJumped =
+                    s_continuity.frameTargetValid[slot] &&
+                    targetTurnLocalValid[slot] &&
+                    (targetTurnLocal[slot] -
+                        s_continuity.frameTargetTurnLocal[slot]).Length() >
+                        targetResetDistance;
+                if (targetModeChanged || targetJumped)
+                {
+                    previousValid[slot] = false;
+                    previousTwistValid[slot] = false;
                 }
             }
         }
@@ -17705,7 +17841,16 @@ namespace
                 for (int slot = 0; slot < 2; ++slot)
                 {
                     if (!solvedSide[slot])
+                    {
+                        // Do not preserve one side's arm state through a draw in
+                        // which that side could not be rebuilt. Otherwise the
+                        // other arm keeps lastSolved fresh and a stale weapon
+                        // animation seed can be reused when this side returns.
+                        s_continuity.latestValid[slot] = false;
+                        s_continuity.latestTwistValid[slot] = false;
+                        s_continuity.latestTargetValid[slot] = false;
                         continue;
+                    }
                     Vector world = solvedBendWorld[slot];
                     if (HooksNativeViewmodelArmIkNormalize(world, world))
                     {
@@ -17728,6 +17873,18 @@ namespace
                         s_continuity.latestTwistRadians[slot] =
                             solvedTwistRadians[slot];
                         s_continuity.latestTwistValid[slot] = true;
+                    }
+                    if (targetTurnLocalValid[slot])
+                    {
+                        s_continuity.latestTargetTurnLocal[slot] =
+                            targetTurnLocal[slot];
+                        s_continuity.latestTargetUsesNativeAnimation[slot] =
+                            targetUsesNativeAnimation[slot];
+                        s_continuity.latestTargetValid[slot] = true;
+                    }
+                    else
+                    {
+                        s_continuity.latestTargetValid[slot] = false;
                     }
                 }
                 s_continuity.lastSolved = now;
