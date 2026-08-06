@@ -158,8 +158,8 @@ namespace vr_vm_stabilize
 
             const double inverseTranslation =
                 -(inverse[row][0] * translation[0] +
-                  inverse[row][1] * translation[1] +
-                  inverse[row][2] * translation[2]);
+                    inverse[row][1] * translation[1] +
+                    inverse[row][2] * translation[2]);
             if (!std::isfinite(inverseTranslation))
                 return false;
             out.m[row][3] = static_cast<float>(inverseTranslation);
@@ -216,7 +216,7 @@ namespace vr_vm_stabilize
     public:
         ScopedStableBoneScratch()
             : m_Stack(&GetStableBoneScratchStack()),
-              m_Mark(m_Stack->cursor)
+            m_Mark(m_Stack->cursor)
         {
             ++m_Stack->activeScopes;
         }
@@ -432,7 +432,7 @@ namespace vr_vm_stabilize
         const size_t textureCountBytes = static_cast<size_t>(textureCount);
         if (textureTable >= studioLengthBytes ||
             textureCountBytes >
-                (studioLengthBytes - textureTable) / kTextureEntrySize)
+            (studioLengthBytes - textureTable) / kTextureEntrySize)
         {
             return false;
         }
@@ -445,8 +445,8 @@ namespace vr_vm_stabilize
                 static_cast<size_t>(i) * kTextureEntrySize;
             int textureNameOffset = 0;
             if (!SafeRead(
-                    studioHdr + textureEntryOffset,
-                    textureNameOffset) ||
+                studioHdr + textureEntryOffset,
+                textureNameOffset) ||
                 textureNameOffset <= 0)
             {
                 continue;
@@ -467,10 +467,10 @@ namespace vr_vm_stabilize
                 studioLengthBytes - absoluteNameOffset);
             std::string textureName;
             if (!TryReadCStringSafe(
-                    reinterpret_cast<const char*>(
-                        studioHdr + absoluteNameOffset),
-                    textureName,
-                    maxNameLength))
+                reinterpret_cast<const char*>(
+                    studioHdr + absoluteNameOffset),
+                textureName,
+                maxNameLength))
             {
                 continue;
             }
@@ -489,20 +489,20 @@ namespace vr_vm_stabilize
                 static_cast<size_t>(textureDirectoryCount);
             if (directoryTable < studioLengthBytes &&
                 directoryCount <=
-                    (studioLengthBytes - directoryTable) / sizeof(int))
+                (studioLengthBytes - directoryTable) / sizeof(int))
             {
                 outDirectories->reserve(directoryCount);
                 for (int i = 0; i < textureDirectoryCount; ++i)
                 {
                     int directoryNameOffset = 0;
                     if (!SafeRead(
-                            studioHdr +
-                                directoryTable +
-                                static_cast<size_t>(i) * sizeof(int),
-                            directoryNameOffset) ||
+                        studioHdr +
+                        directoryTable +
+                        static_cast<size_t>(i) * sizeof(int),
+                        directoryNameOffset) ||
                         directoryNameOffset <= 0 ||
                         static_cast<size_t>(directoryNameOffset) >=
-                            studioLengthBytes)
+                        studioLengthBytes)
                     {
                         continue;
                     }
@@ -514,10 +514,10 @@ namespace vr_vm_stabilize
                         studioLengthBytes - absoluteNameOffset);
                     std::string directoryName;
                     if (!TryReadCStringSafe(
-                            reinterpret_cast<const char*>(
-                                studioHdr + absoluteNameOffset),
-                            directoryName,
-                            maxNameLength))
+                        reinterpret_cast<const char*>(
+                            studioHdr + absoluteNameOffset),
+                        directoryName,
+                        maxNameLength))
                     {
                         continue;
                     }
@@ -700,18 +700,18 @@ namespace vr_vm_stabilize
                 const size_t boneOffset =
                     static_cast<size_t>(outBoneIndex) +
                     static_cast<size_t>(bestStride) *
-                        static_cast<size_t>(bone);
+                    static_cast<size_t>(bone);
                 if (studioLength > 0 &&
                     boneOffset + 8u >
-                        static_cast<size_t>(studioLength))
+                    static_cast<size_t>(studioLength))
                 {
                     continue;
                 }
 
                 int parent = -1;
                 if (SafeRead(
-                        studioHdr + boneOffset + 4u,
-                        parent) &&
+                    studioHdr + boneOffset + 4u,
+                    parent) &&
                     parent >= -1 &&
                     parent < outNumBones &&
                     parent != bone)
@@ -2011,9 +2011,9 @@ namespace
             return 0;
 
         auto has = [&](const char* token) -> bool
-        {
-            return token && *token && lowerModel.find(token) != std::string::npos;
-        };
+            {
+                return token && *token && lowerModel.find(token) != std::string::npos;
+            };
 
         if (has("shotgun_chrome") || has("chrome_shotgun"))
             return static_cast<int>(C_WeaponCSBase::WeaponID::SHOTGUN_CHROME);
@@ -2187,22 +2187,22 @@ namespace
             return -1;
 
         auto isExactBone = [&](int bone, const char* a, const char* b) -> bool
-        {
-            if (bone < 0 || bone >= numBones)
-                return false;
-            const std::string lowerName = vr_vm_stabilize::ToLowerAscii(boneNames[static_cast<size_t>(bone)]);
-            return lowerName == a || lowerName == b;
-        };
+            {
+                if (bone < 0 || bone >= numBones)
+                    return false;
+                const std::string lowerName = vr_vm_stabilize::ToLowerAscii(boneNames[static_cast<size_t>(bone)]);
+                return lowerName == a || lowerName == b;
+            };
 
         auto findExact = [&](const char* a, const char* b) -> int
-        {
-            for (int bone = 0; bone < numBones; ++bone)
             {
-                if (isExactBone(bone, a, b))
-                    return bone;
-            }
-            return -1;
-        };
+                for (int bone = 0; bone < numBones; ++bone)
+                {
+                    if (isExactBone(bone, a, b))
+                        return bone;
+                }
+                return -1;
+            };
 
         // The shotgun shell/clip bones can be animated by the native reload/pump layers.
         // Use the main weapon bone as the stable anchor for cached capture offsets.
@@ -2836,13 +2836,13 @@ namespace
         int stride = 0;
         int numBonesOffset = 0;
         if (vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
-                drawState,
-                boneNames,
-                boneParents,
-                numBones,
-                boneIndex,
-                stride,
-                numBonesOffset) &&
+            drawState,
+            boneNames,
+            boneParents,
+            numBones,
+            boneIndex,
+            stride,
+            numBonesOffset) &&
             numBones > 0 && numBones <= 512)
         {
             const uint32_t boneSignature = HooksBuildViewmodelBoneSignature(
@@ -3138,8 +3138,8 @@ namespace
 
             std::string name;
             if (!vr_vm_stabilize::TryReadCStringSafe(
-                    reinterpret_cast<const char*>(studioHdr + nameAddressOffset),
-                    name))
+                reinterpret_cast<const char*>(studioHdr + nameAddressOffset),
+                name))
             {
                 continue;
             }
@@ -3191,12 +3191,12 @@ namespace
         outLayout.numBones = numBones;
         bool attachmentTableParsed = false;
         if (HooksViewmodelAutoGripTryFindAttachment(
-                drawState,
-                numBones,
-                outLayout.attachmentBone,
-                outLayout.attachmentLocal,
-                outLayout.anchorName,
-                attachmentTableParsed))
+            drawState,
+            numBones,
+            outLayout.attachmentBone,
+            outLayout.attachmentLocal,
+            outLayout.anchorName,
+            attachmentTableParsed))
         {
             outLayout.parsed = true;
             outLayout.supported = true;
@@ -3236,8 +3236,8 @@ namespace
         outLayout.anchorName = outLayout.hasFingerBasis
             ? "ValveBiped right palm"
             : outLayout.supported
-                ? "ValveBiped right hand (position only)"
-                : "none";
+            ? "ValveBiped right hand (position only)"
+            : "none";
         return true;
     }
 
@@ -3550,13 +3550,13 @@ namespace
         int stride = 0;
         int numBonesOffset = 0;
         if (!vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
-                drawState,
-                boneNames,
-                boneParents,
-                numBones,
-                boneIndex,
-                stride,
-                numBonesOffset) ||
+            drawState,
+            boneNames,
+            boneParents,
+            numBones,
+            boneIndex,
+            stride,
+            numBonesOffset) ||
             numBones <= 0 || numBones > 512 ||
             static_cast<int>(boneNames.size()) < numBones ||
             static_cast<int>(boneParents.size()) < numBones)
@@ -3673,10 +3673,10 @@ namespace
                     modelName.c_str(),
                     companion.weaponFingerprint,
                     (containsBothHands && !twoHandGripActive)
-                        ? "right-branch"
-                        : (twoHandGripActive && hasLeftHand)
-                            ? "two-hand-whole-model"
-                            : "whole-model",
+                    ? "right-branch"
+                    : (twoHandGripActive && hasLeftHand)
+                    ? "two-hand-whole-model"
+                    : "whole-model",
                     rightBranchRoot,
                     numBones);
             }
@@ -3847,11 +3847,11 @@ namespace
         {
             vr_vm_stabilize::Mat3x4 persistedLocal{};
             if (HooksViewmodelAutoGripTryRestorePersistent(
-                    vr,
-                    persistentKey,
-                    vr->m_ViewmodelAutoGripPalmCenterFraction,
-                    layout.explicitAttachment,
-                    persistedLocal))
+                vr,
+                persistentKey,
+                vr->m_ViewmodelAutoGripPalmCenterFraction,
+                layout.explicitAttachment,
+                persistedLocal))
             {
                 const auto restoredAt = std::chrono::steady_clock::now() - std::chrono::milliseconds(180);
                 std::lock_guard<std::mutex> lock(s_ViewmodelAutoGripMutex);
@@ -3923,11 +3923,11 @@ namespace
                 vr_vm_stabilize::Mat3x4 entityInverse{};
                 vr_vm_stabilize::Mat3x4 sampleLocal{};
                 if (HooksViewmodelAutoGripBuildAnchorWorld(
-                        layout,
-                        reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pBonesToWorldFinal),
-                        vr->m_ViewmodelAutoGripPalmCenterFraction,
-                        entityWorld,
-                        anchorWorld))
+                    layout,
+                    reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pBonesToWorldFinal),
+                    vr->m_ViewmodelAutoGripPalmCenterFraction,
+                    entityWorld,
+                    anchorWorld))
                 {
                     vr_vm_stabilize::InvertTR(entityWorld, entityInverse);
                     vr_vm_stabilize::Mul(entityInverse, anchorWorld, sampleLocal);
@@ -4053,11 +4053,11 @@ namespace
             Vector palmNormal = CrossProduct(targetForward, targetUp);
             vr_vm_stabilize::Mat3x4 desiredGripWorld{};
             if (!HooksViewmodelAutoGripBuildRigidMatrix(
-                    desiredGripOrigin,
-                    targetForward,
-                    targetUp,
-                    palmNormal,
-                    desiredGripWorld))
+                desiredGripOrigin,
+                targetForward,
+                targetUp,
+                palmNormal,
+                desiredGripWorld))
             {
                 return false;
             }
@@ -4261,8 +4261,8 @@ namespace
         const int weaponId = inferredModelWeaponId > 0
             ? inferredModelWeaponId
             : currentWeaponId > 0
-                ? currentWeaponId
-                : vr->m_MagazineInteractionWeaponId;
+            ? currentWeaponId
+            : vr->m_MagazineInteractionWeaponId;
 
         std::vector<MagazineInteractionCalibrationBone> bones;
         bones.reserve(static_cast<size_t>(numBones));
@@ -4704,42 +4704,42 @@ namespace
             Vector(0.0f, 1.0f, 0.0f));
 
         auto logAxis = [&](const char* source, const Vector& axis)
-        {
-            if (!ShouldLogMagazineBoxDiagnostics(vr))
-                return;
-
-            static std::mutex s_axisLogMutex;
-            static std::unordered_set<std::string> s_loggedAxisSources;
-            char key[256];
-            std::snprintf(
-                key,
-                sizeof(key),
-                "%s|%s|%.2f,%.2f,%.2f|%d|%d",
-                lowerModel.c_str(),
-                source ? source : "unknown",
-                localAxis.x,
-                localAxis.y,
-                localAxis.z,
-                legacyM16Axis ? 1 : 0,
-                usedAxisOverride ? 1 : 0);
             {
-                std::lock_guard<std::mutex> lock(s_axisLogMutex);
-                if (!s_loggedAxisSources.insert(key).second)
+                if (!ShouldLogMagazineBoxDiagnostics(vr))
                     return;
-            }
-            Game::logMsg(
-                "[VR][MagazineBolt] pull axis model=%s source=%s local=(%.2f %.2f %.2f) axis=(%.3f %.3f %.3f)%s%s",
-                modelName.c_str(),
-                source ? source : "unknown",
-                localAxis.x,
-                localAxis.y,
-                localAxis.z,
-                axis.x,
-                axis.y,
-                axis.z,
-                legacyM16Axis ? " legacyM16Axis=1" : "",
-                usedAxisOverride ? " override=1" : "");
-        };
+
+                static std::mutex s_axisLogMutex;
+                static std::unordered_set<std::string> s_loggedAxisSources;
+                char key[256];
+                std::snprintf(
+                    key,
+                    sizeof(key),
+                    "%s|%s|%.2f,%.2f,%.2f|%d|%d",
+                    lowerModel.c_str(),
+                    source ? source : "unknown",
+                    localAxis.x,
+                    localAxis.y,
+                    localAxis.z,
+                    legacyM16Axis ? 1 : 0,
+                    usedAxisOverride ? 1 : 0);
+                {
+                    std::lock_guard<std::mutex> lock(s_axisLogMutex);
+                    if (!s_loggedAxisSources.insert(key).second)
+                        return;
+                }
+                Game::logMsg(
+                    "[VR][MagazineBolt] pull axis model=%s source=%s local=(%.2f %.2f %.2f) axis=(%.3f %.3f %.3f)%s%s",
+                    modelName.c_str(),
+                    source ? source : "unknown",
+                    localAxis.x,
+                    localAxis.y,
+                    localAxis.z,
+                    axis.x,
+                    axis.y,
+                    axis.z,
+                    legacyM16Axis ? " legacyM16Axis=1" : "",
+                    usedAxisOverride ? " override=1" : "");
+            };
 
         auto axisFromMatrix = [&](const vr_vm_stabilize::Mat3x4& matrix) -> Vector
             {
@@ -5153,16 +5153,16 @@ namespace
         };
 
         auto tryMatrixAxes = [&](const vr_vm_stabilize::Mat3x4& matrix) -> bool
-        {
-            for (int axis : axisOrder)
             {
-                if (axis == clampedLengthAxis)
-                    continue;
-                if (HooksProjectBasisReference(HooksMatrixAxis(matrix, axis), lockedAxis, referenceAxis))
-                    return true;
-            }
-            return false;
-        };
+                for (int axis : axisOrder)
+                {
+                    if (axis == clampedLengthAxis)
+                        continue;
+                    if (HooksProjectBasisReference(HooksMatrixAxis(matrix, axis), lockedAxis, referenceAxis))
+                        return true;
+                }
+                return false;
+            };
 
         if (!(hasModelWorld && tryMatrixAxes(modelWorld)) &&
             !tryMatrixAxes(parentWorld) &&
@@ -5234,14 +5234,14 @@ namespace
         outLengthAxis = 1;
 
         auto useProfile = [&](const char* modelPath, const Vector& mins, const Vector& maxs, int axis) -> bool
-        {
-            if (lowerModel.find(modelPath) == std::string::npos)
-                return false;
-            outMins = mins - padding;
-            outMaxs = maxs + padding;
-            outLengthAxis = axis;
-            return true;
-        };
+            {
+                if (lowerModel.find(modelPath) == std::string::npos)
+                    return false;
+                outMins = mins - padding;
+                outMaxs = maxs + padding;
+                outLengthAxis = axis;
+                return true;
+            };
 
         if (useProfile("models/v_models/v_pistol.mdl", Vector(-0.59f, -5.66f, -0.31f), Vector(0.59f, 0.80f, 2.25f), 1)) return true;
         if (useProfile("models/v_models/v_pistola.mdl", Vector(-0.59f, -5.66f, -0.31f), Vector(0.59f, 0.80f, 2.25f), 1)) return true;
@@ -6035,18 +6035,18 @@ namespace
             : -1;
 
         auto addBoneOrigin = [&](int bone) -> void
-        {
-            if (bone < 0 || bone >= numBones)
-                return;
-            vr_vm_stabilize::Mat3x4 boneWorld{};
-            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, boneWorld))
-                return;
-            const Vector local = HooksInverseTransformPoint(selectedWorld, vr_vm_stabilize::GetOrigin(boneWorld));
-            if (!HooksVectorComponentsAreFinite(local) || local.LengthSqr() > (128.0f * 128.0f))
-                return;
-            HooksAccumulateBounds(mins, maxs, local);
-            ++outSampleCount;
-        };
+            {
+                if (bone < 0 || bone >= numBones)
+                    return;
+                vr_vm_stabilize::Mat3x4 boneWorld{};
+                if (!vr_vm_stabilize::SafeRead(sourceBones + bone, boneWorld))
+                    return;
+                const Vector local = HooksInverseTransformPoint(selectedWorld, vr_vm_stabilize::GetOrigin(boneWorld));
+                if (!HooksVectorComponentsAreFinite(local) || local.LengthSqr() > (128.0f * 128.0f))
+                    return;
+                HooksAccumulateBounds(mins, maxs, local);
+                ++outSampleCount;
+            };
 
         addBoneOrigin(parent);
         for (int bone = 0; bone < numBones; ++bone)
@@ -6615,12 +6615,12 @@ namespace
             Vector candidateMaxs(0.0f, 0.0f, 0.0f);
             int sampleCount = 0;
             if (!HooksVrHandsTwoHandedGripFinalizeLocalBounds(
-                    candidatePoints,
-                    padding,
-                    sourceUnitsPerMeter,
-                    candidateMins,
-                    candidateMaxs,
-                    sampleCount))
+                candidatePoints,
+                padding,
+                sourceUnitsPerMeter,
+                candidateMins,
+                candidateMaxs,
+                sampleCount))
             {
                 continue;
             }
@@ -6773,20 +6773,20 @@ namespace
             ? boneParents[static_cast<size_t>(selectedBone)]
             : -1;
         auto addLineToBone = [&](int bone, int lr, int lg, int lb) -> void
-        {
-            if (bone < 0 || bone >= numBones)
-                return;
-            vr_vm_stabilize::Mat3x4 boneWorld{};
-            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, boneWorld))
-                return;
-            const Vector boneOrigin = vr_vm_stabilize::GetOrigin(boneWorld);
-            if (!HooksVectorComponentsAreFinite(boneOrigin) ||
-                (boneOrigin - selectedOrigin).LengthSqr() > (128.0f * 128.0f))
             {
-                return;
-            }
-            overlay->AddLineOverlay(selectedOrigin, boneOrigin, lr, lg, lb, noDepthTest, duration);
-        };
+                if (bone < 0 || bone >= numBones)
+                    return;
+                vr_vm_stabilize::Mat3x4 boneWorld{};
+                if (!vr_vm_stabilize::SafeRead(sourceBones + bone, boneWorld))
+                    return;
+                const Vector boneOrigin = vr_vm_stabilize::GetOrigin(boneWorld);
+                if (!HooksVectorComponentsAreFinite(boneOrigin) ||
+                    (boneOrigin - selectedOrigin).LengthSqr() > (128.0f * 128.0f))
+                {
+                    return;
+                }
+                overlay->AddLineOverlay(selectedOrigin, boneOrigin, lr, lg, lb, noDepthTest, duration);
+            };
 
         addLineToBone(parent, r, g, bColor);
         for (int bone = 0; bone < numBones; ++bone)
@@ -7111,20 +7111,20 @@ namespace
 
         const float scale = (std::isfinite(vr->m_VRScale) && vr->m_VRScale > 0.001f) ? vr->m_VRScale : 43.2f;
         auto matrixFinite = [](const vr_vm_stabilize::Mat3x4& matrix) -> bool
-        {
-            for (int row = 0; row < 3; ++row)
             {
-                for (int col = 0; col < 4; ++col)
+                for (int row = 0; row < 3; ++row)
                 {
-                    if (!std::isfinite(matrix.m[row][col]))
-                        return false;
+                    for (int col = 0; col < 4; ++col)
+                    {
+                        if (!std::isfinite(matrix.m[row][col]))
+                            return false;
+                    }
                 }
-            }
-            return HooksVectorComponentsAreFinite(vr_vm_stabilize::GetOrigin(matrix)) &&
-                HooksMatrixAxis(matrix, 0).LengthSqr() > 0.000001f &&
-                HooksMatrixAxis(matrix, 1).LengthSqr() > 0.000001f &&
-                HooksMatrixAxis(matrix, 2).LengthSqr() > 0.000001f;
-        };
+                return HooksVectorComponentsAreFinite(vr_vm_stabilize::GetOrigin(matrix)) &&
+                    HooksMatrixAxis(matrix, 0).LengthSqr() > 0.000001f &&
+                    HooksMatrixAxis(matrix, 1).LengthSqr() > 0.000001f &&
+                    HooksMatrixAxis(matrix, 2).LengthSqr() > 0.000001f;
+            };
 
         vr_vm_stabilize::Mat3x4 sourceModelWorld{};
         bool hasSourceModelWorld = false;
@@ -7746,8 +7746,8 @@ namespace
         const int magazineInteractionWeaponId = inferredModelWeaponId > 0
             ? inferredModelWeaponId
             : currentMagazineInteractionWeaponId > 0
-                ? currentMagazineInteractionWeaponId
-                : vr->m_MagazineInteractionWeaponId;
+            ? currentMagazineInteractionWeaponId
+            : vr->m_MagazineInteractionWeaponId;
         const uint32_t boneSignature = HooksBuildViewmodelBoneSignature(
             modelName,
             boneNames,
@@ -7803,19 +7803,19 @@ namespace
             const char* weaponBoxBoundsSource = "none";
             const float scale = (std::isfinite(vr->m_VRScale) && vr->m_VRScale > 0.001f) ? vr->m_VRScale : 43.2f;
             if (BuildVrHandsTwoHandedGripWeaponBoxLocalBounds(
-                    drawState,
-                    hitboxSet,
-                    numBonesOffset,
-                    boneNames,
-                    sourceBones,
-                    numBones,
-                    weaponBoxWorld,
-                    scale,
-                    vr->m_VrHandsTwoHandedGripTargetBoxScale,
-                    weaponBoxMins,
-                    weaponBoxMaxs,
-                    weaponBoxSampleCount,
-                    weaponBoxBoundsSource))
+                drawState,
+                hitboxSet,
+                numBonesOffset,
+                boneNames,
+                sourceBones,
+                numBones,
+                weaponBoxWorld,
+                scale,
+                vr->m_VrHandsTwoHandedGripTargetBoxScale,
+                weaponBoxMins,
+                weaponBoxMaxs,
+                weaponBoxSampleCount,
+                weaponBoxBoundsSource))
             {
                 vr->PublishVrHandsTwoHandedGripWeaponBox(
                     Vector(weaponBoxWorld.m[0][3], weaponBoxWorld.m[1][3], weaponBoxWorld.m[2][3]),
@@ -7963,22 +7963,22 @@ namespace
         Vector maxs;
         const char* boundsSource = "fallback";
         auto useFallbackBounds = [&]()
-        {
-            sampleCount = 1;
-            lengthAxis = HooksDominantAxis(insertionAxisLocal);
-            const Vector centerLocal = insertionAxisLocal * magazineLengthHalf;
-            mins = centerLocal - fallbackHalf - padding;
-            maxs = centerLocal + fallbackHalf + padding;
-            boundsSource = "fallback";
-        };
+            {
+                sampleCount = 1;
+                lengthAxis = HooksDominantAxis(insertionAxisLocal);
+                const Vector centerLocal = insertionAxisLocal * magazineLengthHalf;
+                mins = centerLocal - fallbackHalf - padding;
+                maxs = centerLocal + fallbackHalf + padding;
+                boundsSource = "fallback";
+            };
         if (magazineBoneUsesStockProfileAxes &&
             TryGetOfficialMagazineBoxProfile(
-            lowerModel,
-            padding,
-            mins,
-            maxs,
-            sampleCount,
-            lengthAxis))
+                lowerModel,
+                padding,
+                mins,
+                maxs,
+                sampleCount,
+                lengthAxis))
         {
             boundsSource = "official";
         }
@@ -9118,13 +9118,13 @@ namespace
         int& outBone)
     {
         if (HooksNativeViewmodelHandsOnlyFindNamedBoneOnAncestorChain(
-                boneNames,
-                boneParents,
-                numBones,
-                hand,
-                wristNeedles,
-                side,
-                outBone))
+            boneNames,
+            boneParents,
+            numBones,
+            hand,
+            wristNeedles,
+            side,
+            outBone))
         {
             return true;
         }
@@ -9148,34 +9148,34 @@ namespace
         };
 
         if (HooksNativeViewmodelHandsOnlyFindNamedBoneOnAncestorChain(
-                boneNames,
-                boneParents,
-                numBones,
-                hand,
-                preferredNeedles,
-                side,
-                outBone))
+            boneNames,
+            boneParents,
+            numBones,
+            hand,
+            preferredNeedles,
+            side,
+            outBone))
         {
             return true;
         }
 
         if (HooksNativeViewmodelHandsOnlyFindNamedBone(
-                boneNames,
-                preferredNeedles,
-                side,
-                outBone))
+            boneNames,
+            preferredNeedles,
+            side,
+            outBone))
         {
             return true;
         }
 
         if (HooksNativeViewmodelHandsOnlyFindNamedBoneOnAncestorChain(
-                boneNames,
-                boneParents,
-                numBones,
-                hand,
-                fallbackNeedles,
-                side,
-                outBone))
+            boneNames,
+            boneParents,
+            numBones,
+            hand,
+            fallbackNeedles,
+            side,
+            outBone))
         {
             return true;
         }
@@ -9542,11 +9542,11 @@ namespace
     {
         return HooksNormalizeVector(
             (side < 0)
-                ? Vector(-0.3363f, 0.0192f, -0.9416f)
-                : Vector(0.2984f, 0.1444f, -0.9434f),
+            ? Vector(-0.3363f, 0.0192f, -0.9416f)
+            : Vector(0.2984f, 0.1444f, -0.9434f),
             (side < 0)
-                ? Vector(-0.34f, 0.02f, -0.94f)
-                : Vector(0.30f, 0.14f, -0.94f));
+            ? Vector(-0.34f, 0.02f, -0.94f)
+            : Vector(0.30f, 0.14f, -0.94f));
     }
 
     inline Vector HooksNativeViewmodelHandsOnlyAutoReferenceCutRotationDeg(int side)
@@ -9951,11 +9951,11 @@ namespace
 
             Vector local{};
             if (!HooksNativeViewmodelHandsOnlyReadBoneRestPos(
-                    drawState,
-                    boneIndex,
-                    stride,
-                    current,
-                    local) ||
+                drawState,
+                boneIndex,
+                stride,
+                current,
+                local) ||
                 !HooksNativeViewmodelHandsOnlyVectorFinite(local))
             {
                 return false;
@@ -10072,14 +10072,14 @@ namespace
 
         Vector forearmLocal{};
         if (!HooksNativeViewmodelHandsOnlyResolveRestBonePositionInHandLocal(
-                drawState,
-                boneIndex,
-                stride,
-                boneParents,
-                numBones,
-                keepSide.hand,
-                keepSide.forearm,
-                forearmLocal))
+            drawState,
+            boneIndex,
+            stride,
+            boneParents,
+            numBones,
+            keepSide.hand,
+            keepSide.forearm,
+            forearmLocal))
         {
             return false;
         }
@@ -10090,14 +10090,14 @@ namespace
         {
             Vector wristLocal{};
             if (HooksNativeViewmodelHandsOnlyResolveRestBonePositionInHandLocal(
-                    drawState,
-                    boneIndex,
-                    stride,
-                    boneParents,
-                    numBones,
-                    keepSide.hand,
-                    keepSide.wrist,
-                    wristLocal))
+                drawState,
+                boneIndex,
+                stride,
+                boneParents,
+                numBones,
+                keepSide.hand,
+                keepSide.wrist,
+                wristLocal))
             {
                 const Vector candidate = wristLocal * -1.0f;
                 const float candidateLen = candidate.Length();
@@ -10195,25 +10195,25 @@ namespace
         int wrist = -1;
         int forearm = -1;
         auto resolveSideBones = [&](int side) -> bool
-        {
-            int sideHand = -1;
-            int sideForearm = -1;
-            if (!HooksNativeViewmodelHandsOnlyFindNamedBone(boneNames, handNeedles, side, sideHand) ||
-                !HooksNativeViewmodelHandsOnlyFindBestForearmBone(
-                    boneNames,
-                    boneParents,
-                    numBones,
-                    sideHand,
-                    side,
-                    sideForearm))
             {
-                return false;
-            }
+                int sideHand = -1;
+                int sideForearm = -1;
+                if (!HooksNativeViewmodelHandsOnlyFindNamedBone(boneNames, handNeedles, side, sideHand) ||
+                    !HooksNativeViewmodelHandsOnlyFindBestForearmBone(
+                        boneNames,
+                        boneParents,
+                        numBones,
+                        sideHand,
+                        side,
+                        sideForearm))
+                {
+                    return false;
+                }
 
-            hand = sideHand;
-            forearm = sideForearm;
-            return true;
-        };
+                hand = sideHand;
+                forearm = sideForearm;
+                return true;
+            };
         if (!resolveSideBones(1) && !resolveSideBones(-1))
             return false;
 
@@ -10331,27 +10331,27 @@ namespace
             {
                 sideInfo.deterministicWristPlaneLocalValid =
                     HooksNativeViewmodelHandsOnlyBuildDeterministicWristPlaneLocal(
-                    vr,
-                    drawState,
-                    boneParents,
-                    numBones,
-                    boneIndex,
-                    stride,
-                    sideInfo,
-                    sideInfo.deterministicWristPlaneLocal);
+                        vr,
+                        drawState,
+                        boneParents,
+                        numBones,
+                        boneIndex,
+                        stride,
+                        sideInfo,
+                        sideInfo.deterministicWristPlaneLocal);
             }
 
             float lockedWorldPlane[4]{};
             if (!HooksNativeViewmodelHandsOnlyTryResolveFixedFreezePlaneLock(
-                    vr,
-                    sideInfo,
-                    lowerModel,
-                    bones,
-                    numBones,
-                    nullptr,
-                    nullptr,
-                    lockedWorldPlane,
-                    &handBone))
+                vr,
+                sideInfo,
+                lowerModel,
+                bones,
+                numBones,
+                nullptr,
+                nullptr,
+                lockedWorldPlane,
+                &handBone))
             {
                 return false;
             }
@@ -10592,13 +10592,13 @@ namespace
         float sideDistanceSq = 0.0f;
         float sideRadiusSq = 0.0f;
         if (!HooksNativeViewmodelHandsOnlyBoneRegionDistanceSq(
-                sourceBones,
-                bone,
-                keepSide.handPos,
-                keepSide.anchorPos,
-                keepSide.forearmPos,
-                sideDistanceSq,
-                sideRadiusSq) ||
+            sourceBones,
+            bone,
+            keepSide.handPos,
+            keepSide.anchorPos,
+            keepSide.forearmPos,
+            sideDistanceSq,
+            sideRadiusSq) ||
             sideDistanceSq > sideRadiusSq)
         {
             return false;
@@ -10609,13 +10609,13 @@ namespace
             float oppositeDistanceSq = 0.0f;
             float oppositeRadiusSq = 0.0f;
             if (HooksNativeViewmodelHandsOnlyBoneRegionDistanceSq(
-                    sourceBones,
-                    bone,
-                    keepSide.oppositeHandPos,
-                    keepSide.oppositeAnchorPos,
-                    keepSide.oppositeForearmPos,
-                    oppositeDistanceSq,
-                    oppositeRadiusSq) &&
+                sourceBones,
+                bone,
+                keepSide.oppositeHandPos,
+                keepSide.oppositeAnchorPos,
+                keepSide.oppositeForearmPos,
+                oppositeDistanceSq,
+                oppositeRadiusSq) &&
                 oppositeDistanceSq + 1.0f < sideDistanceSq)
             {
                 return false;
@@ -11034,9 +11034,9 @@ namespace
             return false;
 
         if (!HooksNativeViewmodelHandsOnlyWorldPlaneToClipPlane(
-                vr,
-                normalizedPlane,
-                set.planes[set.planeCount]))
+            vr,
+            normalizedPlane,
+            set.planes[set.planeCount]))
         {
             return false;
         }
@@ -11131,9 +11131,9 @@ namespace
             {
                 float plane[4]{};
                 if (!HooksNativeViewmodelHandsOnlyBuildWorldPlaneFromPointNormal(
-                        center - axis * radius,
-                        axis,
-                        plane))
+                    center - axis * radius,
+                    axis,
+                    plane))
                 {
                     return false;
                 }
@@ -11141,9 +11141,9 @@ namespace
                     return false;
 
                 if (!HooksNativeViewmodelHandsOnlyBuildWorldPlaneFromPointNormal(
-                        center + axis * radius,
-                        axis * -1.0f,
-                        plane))
+                    center + axis * radius,
+                    axis * -1.0f,
+                    plane))
                 {
                     return false;
                 }
@@ -11326,11 +11326,11 @@ namespace
             {
                 int bone = -1;
                 if (!HooksNativeViewmodelHandsOnlyFindBoneByLowerSuffix(
-                        boneNames,
-                        (side < 0)
-                            ? kLeftFingerBones[finger][segment]
-                            : kRightFingerBones[finger][segment],
-                        bone) ||
+                    boneNames,
+                    (side < 0)
+                    ? kLeftFingerBones[finger][segment]
+                    : kRightFingerBones[finger][segment],
+                    bone) ||
                     bone < 0 ||
                     bone >= numBones)
                 {
@@ -11408,9 +11408,9 @@ namespace
 
         int thumbRoot = -1;
         if (!HooksNativeViewmodelHandsOnlyFindBoneByLowerSuffix(
-                boneNames,
-                (side < 0) ? "bip01_l_finger0" : "bip01_r_finger0",
-                thumbRoot) ||
+            boneNames,
+            (side < 0) ? "bip01_l_finger0" : "bip01_r_finger0",
+            thumbRoot) ||
             thumbRoot < 0 ||
             thumbRoot >= numBones)
         {
@@ -11576,11 +11576,11 @@ namespace
 
             Vector childRestOffset{};
             if (!HooksNativeViewmodelHandsOnlyReadBoneRestPos(
-                    drawState,
-                    boneIndex,
-                    stride,
-                    child,
-                    childRestOffset))
+                drawState,
+                boneIndex,
+                stride,
+                child,
+                childRestOffset))
             {
                 break;
             }
@@ -11902,10 +11902,10 @@ namespace
             const std::string currentCanonicalName =
                 HooksNativeViewmodelHandsOnlyCanonicalFreezePoseBoneName(currentLowerName);
             if (!HooksNativeViewmodelHandsOnlyFreezePoseBoneNameMatches(
-                    currentLowerName,
-                    currentCanonicalName,
-                    fileLowerName,
-                    fileCanonicalName))
+                currentLowerName,
+                currentCanonicalName,
+                fileLowerName,
+                fileCanonicalName))
             {
                 continue;
             }
@@ -12375,11 +12375,11 @@ namespace
 
                 int currentBone = -1;
                 if (!HooksNativeViewmodelHandsOnlyTryMapFreezePoseBoneName(
-                        boneNames,
-                        numBones,
-                        keepSide.side,
-                        fields[4],
-                        currentBone) &&
+                    boneNames,
+                    numBones,
+                    keepSide.side,
+                    fields[4],
+                    currentBone) &&
                     haveNumBones &&
                     fileNumBones == numBones &&
                     fileBone >= 0 &&
@@ -12557,10 +12557,10 @@ namespace
     {
         Vector explicitRotation{};
         if (HooksNativeViewmodelHandsOnlyTryResolveExplicitCutRotationDeg(
-                vr,
-                side,
-                lowerModel,
-                explicitRotation))
+            vr,
+            side,
+            lowerModel,
+            explicitRotation))
         {
             return explicitRotation;
         }
@@ -12857,9 +12857,9 @@ namespace
 
             float neutralArmPlaneWorld[4]{};
             if (HooksNativeViewmodelHandsOnlyTransformPlaneByMatrix(
-                    targetAnchor,
-                    neutralArmPlaneLocal,
-                    neutralArmPlaneWorld))
+                targetAnchor,
+                neutralArmPlaneLocal,
+                neutralArmPlaneWorld))
             {
                 memcpy(cache.frozenWristPlaneWorld, neutralArmPlaneWorld, sizeof(cache.frozenWristPlaneWorld));
             }
@@ -12983,16 +12983,16 @@ namespace
             cache.Reset();
             bool foundFreezePoseSideSection = false;
             if (!HooksNativeViewmodelHandsOnlyTryLoadFreezePoseConfig(
-                    vr,
-                    lowerModel,
-                    boneNames,
-                    boneParents,
-                    numBones,
-                    keepSide,
-                    targetAnchor,
-                    generation,
-                    cache,
-                    &foundFreezePoseSideSection))
+                vr,
+                lowerModel,
+                boneNames,
+                boneParents,
+                numBones,
+                keepSide,
+                targetAnchor,
+                generation,
+                cache,
+                &foundFreezePoseSideSection))
             {
                 vr_vm_stabilize::Mat3x4 captureTargetAnchor = targetAnchor;
                 vr_vm_stabilize::Mat3x4 captureTargetDelta = targetDelta;
@@ -13055,9 +13055,9 @@ namespace
                         vr_vm_stabilize::InvertTR(captureTargetAnchor, inverseCaptureAnchor);
                         float fixedLocalPlane[4]{};
                         if (HooksNativeViewmodelHandsOnlyTransformPlaneByMatrix(
-                                inverseCaptureAnchor,
-                                fixedWorldPlane,
-                                fixedLocalPlane))
+                            inverseCaptureAnchor,
+                            fixedWorldPlane,
+                            fixedLocalPlane))
                         {
                             memcpy(cache.frozenWristPlaneWorld, fixedWorldPlane, sizeof(cache.frozenWristPlaneWorld));
                             memcpy(cache.frozenWristPlaneLocal, fixedLocalPlane, sizeof(cache.frozenWristPlaneLocal));
@@ -13080,13 +13080,13 @@ namespace
                         lowerModel.c_str());
                 }
                 else if (!HooksNativeViewmodelHandsOnlyWriteFreezePoseConfig(
-                            vr,
-                            lowerModel,
-                            boneNames,
-                            boneParents,
-                            numBones,
-                            keepSide,
-                            cache))
+                    vr,
+                    lowerModel,
+                    boneNames,
+                    boneParents,
+                    numBones,
+                    keepSide,
+                    cache))
                 {
                     Game::logMsg(
                         "[VR][NativeHandsOnly] failed to write %s-hand freeze pose config path=%s",
@@ -13140,15 +13140,15 @@ namespace
             {
                 float lockedWorldPlane[4]{};
                 if (!HooksNativeViewmodelHandsOnlyTryResolveFixedFreezePlaneLock(
-                        vr,
-                        keepSide,
-                        lowerModel,
-                        captureBones,
-                        numBones,
-                        nullptr,
-                        nullptr,
-                        lockedWorldPlane,
-                        &targetAnchor))
+                    vr,
+                    keepSide,
+                    lowerModel,
+                    captureBones,
+                    numBones,
+                    nullptr,
+                    nullptr,
+                    lockedWorldPlane,
+                    &targetAnchor))
                 {
                     return false;
                 }
@@ -13232,16 +13232,16 @@ namespace
 
         int anchorBone = -1;
         if (!HooksNativeViewmodelHandsOnlyFindBoneByLowerSuffix(
-                boneNames,
-                "bip01_l_wrist",
-                anchorBone) ||
+            boneNames,
+            "bip01_l_wrist",
+            anchorBone) ||
             anchorBone < 0 ||
             anchorBone >= numBones)
         {
             if (!HooksNativeViewmodelHandsOnlyFindBoneByLowerSuffix(
-                    boneNames,
-                    "bip01_l_hand",
-                    anchorBone) ||
+                boneNames,
+                "bip01_l_hand",
+                anchorBone) ||
                 anchorBone < 0 ||
                 anchorBone >= numBones)
             {
@@ -13498,8 +13498,8 @@ namespace
         for (int bone = 0; bone < numBones; ++bone)
         {
             if (!vr_vm_stabilize::SafeRead(
-                    localPoseSource + bone,
-                    baseWorld[static_cast<size_t>(bone)]) ||
+                localPoseSource + bone,
+                baseWorld[static_cast<size_t>(bone)]) ||
                 !HooksNativeViewmodelHandsOnlyMatrixFinite(baseWorld[static_cast<size_t>(bone)]))
             {
                 return false;
@@ -13552,11 +13552,11 @@ namespace
                 {
                     vr_vm_stabilize::Mat3x4 restLocal{};
                     if (HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
-                            drawState,
-                            boneIndex,
-                            stride,
-                            bone,
-                            restLocal))
+                        drawState,
+                        boneIndex,
+                        stride,
+                        bone,
+                        restLocal))
                     {
                         restLocal.m[0][3] = local.m[0][3];
                         restLocal.m[1][3] = local.m[1][3];
@@ -13842,9 +13842,9 @@ namespace
         Vector origin = vr->GetRightControllerAbsPos();
         Vector reprojectedOrigin{};
         if (HooksNativeViewmodelHandsOnlyReprojectScenePointToViewmodelLayer(
-                vr,
-                origin,
-                reprojectedOrigin))
+            vr,
+            origin,
+            reprojectedOrigin))
         {
             origin = reprojectedOrigin;
         }
@@ -14268,32 +14268,32 @@ namespace
             state.Reset();
 
         if (!HooksNativeViewmodelHandsOnlyFixedFreezePlaneLockMatches(
-                state,
-                vr,
-                keepSide.side,
-                keepSide,
-                lowerModel,
-                numBones,
-                generation))
+            state,
+            vr,
+            keepSide.side,
+            keepSide,
+            lowerModel,
+            numBones,
+            generation))
         {
             state.Reset();
 
             vr_vm_stabilize::Mat3x4 targetAnchor{};
             if (!HooksNativeViewmodelHandsOnlyBuildCanonicalFreezeTargetAnchor(
-                    vr,
-                    keepSide.side,
-                    targetAnchor))
+                vr,
+                keepSide.side,
+                targetAnchor))
             {
                 return false;
             }
 
             vr_vm_stabilize::Mat3x4 targetDelta{};
             if (!HooksNativeViewmodelHandsOnlyBuildDeltaToTargetAnchor(
-                    keepSide,
-                    sourceBones,
-                    numBones,
-                    targetAnchor,
-                    targetDelta))
+                keepSide,
+                sourceBones,
+                numBones,
+                targetAnchor,
+                targetDelta))
             {
                 return false;
             }
@@ -14340,9 +14340,9 @@ namespace
                 vr_vm_stabilize::Mat3x4 inverseTargetAnchor{};
                 vr_vm_stabilize::InvertTR(targetAnchor, inverseTargetAnchor);
                 if (!HooksNativeViewmodelHandsOnlyTransformPlaneByMatrix(
-                        inverseTargetAnchor,
-                        fixedPlaneWorld,
-                        fixedPlaneLocal))
+                    inverseTargetAnchor,
+                    fixedPlaneWorld,
+                    fixedPlaneLocal))
                 {
                     return false;
                 }
@@ -14381,11 +14381,11 @@ namespace
         if (outTargetDelta)
         {
             if (!HooksNativeViewmodelHandsOnlyBuildDeltaToTargetAnchor(
-                    keepSide,
-                    sourceBones,
-                    numBones,
-                    state.targetAnchor,
-                    *outTargetDelta))
+                keepSide,
+                sourceBones,
+                numBones,
+                state.targetAnchor,
+                *outTargetDelta))
             {
                 return false;
             }
@@ -14507,8 +14507,8 @@ namespace
         {
             vr_vm_stabilize::Mat3x4 controllerAnchor{};
             if (!HooksNativeViewmodelHandsOnlyBuildRightControllerWorldAnchor(
-                    vr,
-                    controllerAnchor))
+                vr,
+                controllerAnchor))
             {
                 return false;
             }
@@ -14549,7 +14549,7 @@ namespace
                 s_rightControllerHandCalibration.controllerToHand.m[1][3] = 0.0f;
                 s_rightControllerHandCalibration.controllerToHand.m[2][3] = 0.0f;
                 if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
-                        s_rightControllerHandCalibration.controllerToHand))
+                    s_rightControllerHandCalibration.controllerToHand))
                 {
                     s_rightControllerHandCalibration = RightControllerHandCalibration{};
                     return false;
@@ -14758,15 +14758,15 @@ namespace
             {
                 float lockedWorldPlane[4]{};
                 if (HooksNativeViewmodelHandsOnlyTryResolveFixedFreezePlaneLock(
-                        vr,
-                        keepSide,
-                        lowerModel,
-                        sourceBones,
-                        numBones,
-                        nullptr,
-                        nullptr,
-                        lockedWorldPlane,
-                        &targetAnchor))
+                    vr,
+                    keepSide,
+                    lowerModel,
+                    sourceBones,
+                    numBones,
+                    nullptr,
+                    nullptr,
+                    lockedWorldPlane,
+                    &targetAnchor))
                 {
                     memcpy(workingWristPlaneWorld, lockedWorldPlane, sizeof(workingWristPlaneWorld));
                     if (inOutWristPlaneWorld)
@@ -14860,15 +14860,15 @@ namespace
         {
             float lockedWorldPlane[4]{};
             if (HooksNativeViewmodelHandsOnlyTryResolveFixedFreezePlaneLock(
-                    vr,
-                    keepSide,
-                    lowerModel,
-                    sourceBones,
-                    numBones,
-                    nullptr,
-                    nullptr,
-                    lockedWorldPlane,
-                    &targetAnchor))
+                vr,
+                keepSide,
+                lowerModel,
+                sourceBones,
+                numBones,
+                nullptr,
+                nullptr,
+                lockedWorldPlane,
+                &targetAnchor))
             {
                 memcpy(inOutWristPlaneWorld, lockedWorldPlane, sizeof(lockedWorldPlane));
             }
@@ -14889,20 +14889,20 @@ namespace
         {
             appliedFrozenPose =
                 HooksNativeViewmodelHandsOnlyApplyFrozenSideHandPose(
-                vr,
-                drawState,
-                boneIndex,
-                stride,
-                lowerModel,
-                boneNames,
-                boneParents,
-                numBones,
-                keepSide,
-                sourceBones,
-                targetAnchor,
-                targetDelta,
-                isolated,
-                inOutWristPlaneWorld);
+                    vr,
+                    drawState,
+                    boneIndex,
+                    stride,
+                    lowerModel,
+                    boneNames,
+                    boneParents,
+                    numBones,
+                    keepSide,
+                    sourceBones,
+                    targetAnchor,
+                    targetDelta,
+                    isolated,
+                    inOutWristPlaneWorld);
         }
 
         if (!keepSourceViewmodelAnimation)
@@ -15086,14 +15086,14 @@ namespace
         {
             outInfo.deterministicWristPlaneLocalValid =
                 HooksNativeViewmodelHandsOnlyBuildDeterministicWristPlaneLocal(
-                vr,
-                drawState,
-                boneParents,
-                numBones,
-                boneIndex,
-                stride,
-                outInfo,
-                outInfo.deterministicWristPlaneLocal);
+                    vr,
+                    drawState,
+                    boneParents,
+                    numBones,
+                    boneIndex,
+                    stride,
+                    outInfo,
+                    outInfo.deterministicWristPlaneLocal);
         }
         return true;
     }
@@ -15195,7 +15195,7 @@ namespace
         if (!bodyState || !bodyState->bodyActive ||
             bodyState->sceneSerial == 0 || bodyState->playerGeneration == 0 ||
             bodyState->playerGeneration !=
-                g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire))
+            g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire))
         {
             return false;
         }
@@ -15451,10 +15451,10 @@ namespace
         for (int bone = 0; bone < numBones; ++bone)
         {
             if (!HooksNativeViewmodelHandsOnlyIsAncestor(
-                    boneParents,
-                    bone,
-                    rootBone,
-                    numBones))
+                boneParents,
+                bone,
+                rootBone,
+                numBones))
             {
                 continue;
             }
@@ -15550,14 +15550,14 @@ namespace
 
         const Vector rotatedPivot(
             outDelta.m[0][0] * pivot.x +
-                outDelta.m[0][1] * pivot.y +
-                outDelta.m[0][2] * pivot.z,
+            outDelta.m[0][1] * pivot.y +
+            outDelta.m[0][2] * pivot.z,
             outDelta.m[1][0] * pivot.x +
-                outDelta.m[1][1] * pivot.y +
-                outDelta.m[1][2] * pivot.z,
+            outDelta.m[1][1] * pivot.y +
+            outDelta.m[1][2] * pivot.z,
             outDelta.m[2][0] * pivot.x +
-                outDelta.m[2][1] * pivot.y +
-                outDelta.m[2][2] * pivot.z);
+            outDelta.m[2][1] * pivot.y +
+            outDelta.m[2][2] * pivot.z);
         const Vector translation = pivot - rotatedPivot;
         outDelta.m[0][3] = translation.x;
         outDelta.m[1][3] = translation.y;
@@ -15604,14 +15604,14 @@ namespace
 
         const Vector rotatedPivot(
             outDelta.m[0][0] * pivot.x +
-                outDelta.m[0][1] * pivot.y +
-                outDelta.m[0][2] * pivot.z,
+            outDelta.m[0][1] * pivot.y +
+            outDelta.m[0][2] * pivot.z,
             outDelta.m[1][0] * pivot.x +
-                outDelta.m[1][1] * pivot.y +
-                outDelta.m[1][2] * pivot.z,
+            outDelta.m[1][1] * pivot.y +
+            outDelta.m[1][2] * pivot.z,
             outDelta.m[2][0] * pivot.x +
-                outDelta.m[2][1] * pivot.y +
-                outDelta.m[2][2] * pivot.z);
+            outDelta.m[2][1] * pivot.y +
+            outDelta.m[2][2] * pivot.z);
         const Vector translation = pivot - rotatedPivot;
         outDelta.m[0][3] = translation.x;
         outDelta.m[1][3] = translation.y;
@@ -15676,8 +15676,8 @@ namespace
             Vector normalizedCurrent{};
             Vector normalizedDesired{};
             if (!HooksNativeViewmodelArmIkNormalize(
-                    currentProjected,
-                    normalizedCurrent) ||
+                currentProjected,
+                normalizedCurrent) ||
                 !HooksNativeViewmodelArmIkNormalize(
                     desiredProjected,
                     normalizedDesired))
@@ -15741,9 +15741,9 @@ namespace
         Vector targetDirection{};
         float targetDistance = 0.0f;
         if (!HooksNativeViewmodelArmIkNormalize(
-                target - shoulder,
-                targetDirection,
-                &targetDistance))
+            target - shoulder,
+            targetDirection,
+            &targetDistance))
         {
             return false;
         }
@@ -15788,10 +15788,10 @@ namespace
         const float poleLengthSq = DotProduct(poleDirection, poleDirection);
         const float poleStrength =
             poleValid && std::isfinite(poleLengthSq) && poleLengthSq > 0.000001f
-                ? std::sqrt(
-                    DotProduct(rawPoleProjection, rawPoleProjection) /
-                    poleLengthSq)
-                : 0.0f;
+            ? std::sqrt(
+                DotProduct(rawPoleProjection, rawPoleProjection) /
+                poleLengthSq)
+            : 0.0f;
 
         Vector bendDirection{};
         if (poleValid)
@@ -15811,9 +15811,9 @@ namespace
                     1.0f);
                 Vector blended{};
                 if (HooksNativeViewmodelArmIkNormalize(
-                        previousProjected * (1.0f - poleWeight) +
-                            bendDirection * poleWeight,
-                        blended))
+                    previousProjected * (1.0f - poleWeight) +
+                    bendDirection * poleWeight,
+                    blended))
                 {
                     bendDirection = blended;
                 }
@@ -15824,18 +15824,18 @@ namespace
             bendDirection = previousProjected;
         }
         else if (!HooksNativeViewmodelArmIkProjectOntoPlane(
-                     animatedUpperDirection,
-                     targetDirection,
-                     bendDirection))
+            animatedUpperDirection,
+            targetDirection,
+            bendDirection))
         {
             const Vector reference =
                 std::fabs(targetDirection.z) < 0.9f
-                    ? Vector(0.0f, 0.0f, -1.0f)
-                    : Vector(1.0f, 0.0f, 0.0f);
+                ? Vector(0.0f, 0.0f, -1.0f)
+                : Vector(1.0f, 0.0f, 0.0f);
             if (!HooksNativeViewmodelArmIkProjectOntoPlane(
-                    reference,
-                    targetDirection,
-                    bendDirection))
+                reference,
+                targetDirection,
+                bendDirection))
             {
                 return false;
             }
@@ -15878,47 +15878,34 @@ namespace
         Vector& outBodyRight,
         Vector& outBodyUp)
     {
-        Vector ignoredViewForward{};
-        Vector ignoredViewRight{};
-        Vector ignoredViewUp{};
+        Vector viewForward{};
+        Vector viewRight{};
+        Vector viewUp{};
         if (!HooksNativeViewmodelHandsOnlyResolveViewFrame(
-                vr,
-                outViewOrigin,
-                ignoredViewForward,
-                ignoredViewRight,
-                ignoredViewUp))
+            vr,
+            outViewOrigin,
+            viewForward,
+            viewRight,
+            viewUp))
         {
             return false;
         }
 
-        // The shoulder frame is a torso/turn frame, not the current HMD view
-        // frame. Physical head yaw must not orbit the shoulder roots or rotate
-        // the elbow pole. Stick/snap turning still rotates the complete tracked
-        // space through the published rotation offset, so shoulders and both
-        // controller targets remain in the same world frame.
-        float bodyYawDeg = vr->m_RenderRotationOffset.load(std::memory_order_acquire);
-        if (!std::isfinite(bodyYawDeg))
-            bodyYawDeg = vr->m_RotationOffset;
-        if (!std::isfinite(bodyYawDeg))
-            return false;
-        bodyYawDeg -= 360.0f * std::floor((bodyYawDeg + 180.0f) / 360.0f);
-
-        QAngle bodyYawOnly(0.0f, bodyYawDeg, 0.0f);
-        Vector turnForward{};
-        Vector turnRight{};
-        Vector turnUp{};
-        QAngle::AngleVectors(bodyYawOnly, &turnForward, &turnRight, &turnUp);
-
+        // Shoulder roots are positioned in the current horizontal HMD frame.
+        // This keeps the left/right shoulder line centred on the headset even
+        // when the player starts the map facing a non-zero world yaw or turns
+        // physically. Only the HMD position/yaw is used here; pitch and roll do
+        // not tilt the torso.
         outBodyUp = Vector(0.0f, 0.0f, 1.0f);
         if (!HooksNativeViewmodelArmIkNormalize(
-                turnForward - outBodyUp * DotProduct(turnForward, outBodyUp),
-                outBodyForward))
+            viewForward - outBodyUp * DotProduct(viewForward, outBodyUp),
+            outBodyForward))
         {
             return false;
         }
 
         Vector horizontalRight =
-            turnRight - outBodyUp * DotProduct(turnRight, outBodyUp);
+            viewRight - outBodyUp * DotProduct(viewRight, outBodyUp);
         horizontalRight -=
             outBodyForward * DotProduct(horizontalRight, outBodyForward);
         if (!HooksNativeViewmodelArmIkNormalize(horizontalRight, outBodyRight))
@@ -15926,6 +15913,66 @@ namespace
             outBodyRight = CrossProduct(outBodyForward, outBodyUp);
             if (!HooksNativeViewmodelArmIkNormalize(outBodyRight, outBodyRight))
                 return false;
+        }
+        return true;
+    }
+
+    inline bool HooksNativeViewmodelArmIkResolveTurnFrame(
+        VR* vr,
+        Vector& outTurnForward,
+        Vector& outTurnRight,
+        Vector& outTurnUp)
+    {
+        if (!vr)
+            return false;
+
+        // Continuity and the animation-free bind branch stay in the artificial
+        // snap/smooth-turn frame. Keeping this separate from the HMD shoulder
+        // frame prevents physical head yaw from being accumulated as upper-arm
+        // axial twist, while shoulder positions still remain HMD-aligned.
+        float turnYawDeg =
+            vr->m_RenderRotationOffset.load(std::memory_order_acquire);
+        if (!std::isfinite(turnYawDeg))
+            turnYawDeg = vr->m_RotationOffset;
+        if (!std::isfinite(turnYawDeg))
+            return false;
+        turnYawDeg -=
+            360.0f * std::floor((turnYawDeg + 180.0f) / 360.0f);
+
+        QAngle turnYawOnly(0.0f, turnYawDeg, 0.0f);
+        Vector turnForward{};
+        Vector turnRight{};
+        Vector turnUp{};
+        QAngle::AngleVectors(
+            turnYawOnly,
+            &turnForward,
+            &turnRight,
+            &turnUp);
+
+        outTurnUp = Vector(0.0f, 0.0f, 1.0f);
+        if (!HooksNativeViewmodelArmIkNormalize(
+            turnForward -
+            outTurnUp * DotProduct(turnForward, outTurnUp),
+            outTurnForward))
+        {
+            return false;
+        }
+
+        Vector horizontalRight =
+            turnRight - outTurnUp * DotProduct(turnRight, outTurnUp);
+        horizontalRight -=
+            outTurnForward * DotProduct(horizontalRight, outTurnForward);
+        if (!HooksNativeViewmodelArmIkNormalize(
+            horizontalRight,
+            outTurnRight))
+        {
+            outTurnRight = CrossProduct(outTurnForward, outTurnUp);
+            if (!HooksNativeViewmodelArmIkNormalize(
+                outTurnRight,
+                outTurnRight))
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -15948,8 +15995,8 @@ namespace
         if (leftUsesWeaponPose || rightUsesWeaponPose)
         {
             return vr_vm_stabilize::SafeRead(
-                    sourceBones + sideInfo.hand,
-                    outTarget) &&
+                sourceBones + sideInfo.hand,
+                outTarget) &&
                 HooksNativeViewmodelHandsOnlyMatrixFinite(outTarget);
         }
 
@@ -16005,11 +16052,11 @@ namespace
         shoulderTranslation.m[1][3] = shoulderDelta.y;
         shoulderTranslation.m[2][3] = shoulderDelta.z;
         if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
-                boneParents,
-                numBones,
-                chain.upperArm,
-                shoulderTranslation,
-                bones))
+            boneParents,
+            numBones,
+            chain.upperArm,
+            shoulderTranslation,
+            bones))
         {
             return false;
         }
@@ -16067,7 +16114,7 @@ namespace
             if (!std::isfinite(solveUpperLength) ||
                 solveUpperLength < upperLength ||
                 targetDistance >
-                    solveUpperLength + lowerLength - finalReachEpsilon)
+                solveUpperLength + lowerLength - finalReachEpsilon)
             {
                 return false;
             }
@@ -16092,22 +16139,22 @@ namespace
             Vector previousProjected{};
             Vector poleProjected{};
             if (!HooksNativeViewmodelArmIkNormalize(
-                    *previousBendDirection,
-                    sanitizedPreviousBend))
+                *previousBendDirection,
+                sanitizedPreviousBend))
             {
                 previousBendForSolve = nullptr;
             }
             else if (HooksNativeViewmodelArmIkNormalize(
-                         targetPosition - shoulder,
-                         targetDirection) &&
-                     HooksNativeViewmodelArmIkProjectOntoPlane(
-                         sanitizedPreviousBend,
-                         targetDirection,
-                         previousProjected) &&
-                     HooksNativeViewmodelArmIkProjectOntoPlane(
-                         poleDirection,
-                         targetDirection,
-                         poleProjected))
+                targetPosition - shoulder,
+                targetDirection) &&
+                HooksNativeViewmodelArmIkProjectOntoPlane(
+                    sanitizedPreviousBend,
+                    targetDirection,
+                    previousProjected) &&
+                HooksNativeViewmodelArmIkProjectOntoPlane(
+                    poleDirection,
+                    targetDirection,
+                    poleProjected))
             {
                 const Vector rawPoleProjection =
                     poleDirection -
@@ -16119,8 +16166,8 @@ namespace
                 const float poleStrength =
                     std::isfinite(poleLength) && poleLength > 0.0001f &&
                     std::isfinite(projectedPoleLength)
-                        ? projectedPoleLength / poleLength
-                        : 0.0f;
+                    ? projectedPoleLength / poleLength
+                    : 0.0f;
                 if (poleStrength >= 0.15f &&
                     DotProduct(previousProjected, poleProjected) < 0.0f)
                 {
@@ -16136,14 +16183,14 @@ namespace
 
         HooksNativeViewmodelArmIkSolution solution{};
         if (!HooksNativeViewmodelArmIkSolveTwoBone(
-                shoulder,
-                targetPosition,
-                solveUpperLength,
-                lowerLength,
-                poleDirection,
-                previousBendForSolve,
-                animatedUpperDirection,
-                solution))
+            shoulder,
+            targetPosition,
+            solveUpperLength,
+            lowerLength,
+            poleDirection,
+            previousBendForSolve,
+            animatedUpperDirection,
+            solution))
         {
             return false;
         }
@@ -16152,11 +16199,11 @@ namespace
 
         vr_vm_stabilize::Mat3x4 upperDelta{};
         if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
-                shoulder,
-                animatedUpperDirection,
-                solution.elbow - shoulder,
-                poleDirection,
-                upperDelta) ||
+            shoulder,
+            animatedUpperDirection,
+            solution.elbow - shoulder,
+            poleDirection,
+            upperDelta) ||
             !HooksNativeViewmodelArmIkApplyDeltaToBranch(
                 boneParents,
                 numBones,
@@ -16195,11 +16242,11 @@ namespace
             {
                 vr_vm_stabilize::Mat3x4 upperTwistDelta{};
                 if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
-                        shoulder,
-                        currentPlaneNormal,
-                        desiredPlaneNormal,
-                        solution.elbow - shoulder,
-                        upperTwistDelta) ||
+                    shoulder,
+                    currentPlaneNormal,
+                    desiredPlaneNormal,
+                    solution.elbow - shoulder,
+                    upperTwistDelta) ||
                     !HooksNativeViewmodelArmIkApplyDeltaToBranch(
                         boneParents,
                         numBones,
@@ -16230,11 +16277,11 @@ namespace
             upperStretchTranslation.m[1][3] = elbowDelta.y;
             upperStretchTranslation.m[2][3] = elbowDelta.z;
             if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
-                    boneParents,
-                    numBones,
-                    chain.forearm,
-                    upperStretchTranslation,
-                    bones))
+                boneParents,
+                numBones,
+                chain.forearm,
+                upperStretchTranslation,
+                bones))
             {
                 return false;
             }
@@ -16247,11 +16294,11 @@ namespace
 
         vr_vm_stabilize::Mat3x4 forearmDelta{};
         if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
-                solvedElbow,
-                solvedHandBeforeForearm - solvedElbow,
-                solvedHandTarget - solvedElbow,
-                poleDirection,
-                forearmDelta) ||
+            solvedElbow,
+            solvedHandBeforeForearm - solvedElbow,
+            solvedHandTarget - solvedElbow,
+            poleDirection,
+            forearmDelta) ||
             !HooksNativeViewmodelArmIkApplyDeltaToBranch(
                 boneParents,
                 numBones,
@@ -16265,8 +16312,8 @@ namespace
         vr_vm_stabilize::Mat3x4 desiredHandRigid{};
         vr_vm_stabilize::Mat3x4 currentHandRigid{};
         if (!HooksViewmodelAutoGripNormalizeRigidMatrix(
-                handTarget,
-                desiredHandRigid) ||
+            handTarget,
+            desiredHandRigid) ||
             !HooksViewmodelAutoGripNormalizeRigidMatrix(
                 bones[chain.hand],
                 currentHandRigid))
@@ -16283,12 +16330,12 @@ namespace
         vr_vm_stabilize::Mat3x4 forearmTwistDelta{};
         float principalTwistRadians = 0.0f;
         if (!HooksNativeViewmodelArmIkBuildForearmTwistDelta(
-                solvedElbow,
-                solvedHandTarget - solvedElbow,
-                currentHandRigid,
-                desiredHandRigid,
-                forearmTwistDelta,
-                &principalTwistRadians))
+            solvedElbow,
+            solvedHandTarget - solvedElbow,
+            currentHandRigid,
+            desiredHandRigid,
+            forearmTwistDelta,
+            &principalTwistRadians))
         {
             return false;
         }
@@ -16361,8 +16408,8 @@ namespace
             Vector normalizedLower{};
             float elbowBendWeight = 0.0f;
             if (HooksNativeViewmodelArmIkNormalize(
-                    solvedElbow - shoulder,
-                    normalizedUpper) &&
+                solvedElbow - shoulder,
+                normalizedUpper) &&
                 HooksNativeViewmodelArmIkNormalize(
                     solvedHandTarget - solvedElbow,
                     normalizedLower))
@@ -16381,16 +16428,16 @@ namespace
 
             const float upperArmTwistRadians = std::clamp(
                 stabilizedUpperTwistRadians *
-                    kFirstPersonUpperArmTwistShare * elbowBendWeight,
+                kFirstPersonUpperArmTwistShare * elbowBendWeight,
                 -kMaximumUpperArmTwist,
                 kMaximumUpperArmTwist);
 
             vr_vm_stabilize::Mat3x4 upperArmTwistDelta{};
             if (!HooksNativeViewmodelArmIkBuildAxisRotationDelta(
-                    shoulder,
-                    solvedElbow - shoulder,
-                    upperArmTwistRadians,
-                    upperArmTwistDelta) ||
+                shoulder,
+                solvedElbow - shoulder,
+                upperArmTwistRadians,
+                upperArmTwistDelta) ||
                 !HooksNativeViewmodelArmIkApplyDeltaToSingleBone(
                     numBones,
                     chain.upperArm,
@@ -16402,11 +16449,11 @@ namespace
         }
 
         if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
-                boneParents,
-                numBones,
-                chain.forearm,
-                forearmTwistDelta,
-                bones) ||
+            boneParents,
+            numBones,
+            chain.forearm,
+            forearmTwistDelta,
+            bones) ||
             !HooksViewmodelAutoGripNormalizeRigidMatrix(
                 bones[chain.hand],
                 currentHandRigid))
@@ -16436,11 +16483,11 @@ namespace
             handWeldTranslation.m[1][3] = handPositionDelta.y;
             handWeldTranslation.m[2][3] = handPositionDelta.z;
             if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
-                    boneParents,
-                    numBones,
-                    chain.forearm,
-                    handWeldTranslation,
-                    bones) ||
+                boneParents,
+                numBones,
+                chain.forearm,
+                handWeldTranslation,
+                bones) ||
                 !HooksViewmodelAutoGripNormalizeRigidMatrix(
                     bones[chain.hand],
                     currentHandRigid))
@@ -16468,11 +16515,11 @@ namespace
         vr_vm_stabilize::InvertTR(currentHandRigid, inverseCurrentHand);
         vr_vm_stabilize::Mul(desiredHandRigid, inverseCurrentHand, handDelta);
         if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
-                boneParents,
-                numBones,
-                chain.hand,
-                handDelta,
-                bones))
+            boneParents,
+            numBones,
+            chain.hand,
+            handDelta,
+            bones))
         {
             return false;
         }
@@ -16556,8 +16603,8 @@ namespace
 
         const uint8_t* studioHdr = nullptr;
         if (!vr_vm_stabilize::TryGetStudioHdrFromDrawState(
-                drawState,
-                studioHdr) ||
+            drawState,
+            studioHdr) ||
             !studioHdr)
         {
             return false;
@@ -16632,11 +16679,11 @@ namespace
             {
                 vr_vm_stabilize::Mat3x4 local{};
                 if (!HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
-                        drawState,
-                        boneIndex,
-                        stride,
-                        *it,
-                        local) ||
+                    drawState,
+                    boneIndex,
+                    stride,
+                    *it,
+                    local) ||
                     !HooksNativeViewmodelHandsOnlyMatrixFinite(local))
                 {
                     cache.Reset();
@@ -16667,11 +16714,11 @@ namespace
 
                 vr_vm_stabilize::Mat3x4 local{};
                 if (!HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
-                        drawState,
-                        boneIndex,
-                        stride,
-                        bone,
-                        local) ||
+                    drawState,
+                    boneIndex,
+                    stride,
+                    bone,
+                    local) ||
                     !HooksNativeViewmodelHandsOnlyMatrixFinite(local))
                 {
                     cache.Reset();
@@ -16708,8 +16755,8 @@ namespace
             bodyForward.y,
             0.0f);
         if (!HooksNativeViewmodelArmIkNormalize(
-                horizontalBodyForward,
-                horizontalBodyForward))
+            horizontalBodyForward,
+            horizontalBodyForward))
         {
             return false;
         }
@@ -16867,8 +16914,8 @@ namespace
             vr_vm_stabilize::Mat3x4 inverseParent{};
             vr_vm_stabilize::Mat3x4 local{};
             if (!vr_vm_stabilize::SafeRead(
-                    sourceBones + parent,
-                    parentWorld) ||
+                sourceBones + parent,
+                parentWorld) ||
                 !vr_vm_stabilize::SafeRead(
                     sourceBones + bone,
                     boneWorld) ||
@@ -16909,7 +16956,7 @@ namespace
                     continue;
                 }
                 if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
-                        currentBones[parent]))
+                    currentBones[parent]))
                 {
                     return false;
                 }
@@ -16961,8 +17008,8 @@ namespace
         vr_vm_stabilize::Mat3x4 sourceHand{};
         vr_vm_stabilize::Mat3x4 solvedHand{};
         if (!vr_vm_stabilize::SafeRead(
-                sourceBones + sideInfo.hand,
-                sourceHand) ||
+            sourceBones + sideInfo.hand,
+            sourceHand) ||
             !vr_vm_stabilize::SafeRead(
                 currentBones + sideInfo.hand,
                 solvedHand) ||
@@ -17166,13 +17213,13 @@ namespace
         int stride = 0;
         int numBonesOffset = 0;
         if (!vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
-                drawState,
-                boneNames,
-                boneParents,
-                numBones,
-                boneIndex,
-                stride,
-                numBonesOffset) ||
+            drawState,
+            boneNames,
+            boneParents,
+            numBones,
+            boneIndex,
+            stride,
+            numBonesOffset) ||
             numBones <= 0 || numBones > 512 ||
             static_cast<int>(boneNames.size()) < numBones ||
             static_cast<int>(boneParents.size()) < numBones)
@@ -17326,10 +17373,10 @@ namespace
                 for (int bone = 0; bone < numBones; ++bone)
                 {
                     if (!HooksNativeViewmodelHandsOnlyIsAncestor(
-                            boneParents,
-                            bone,
-                            chain.upperArm,
-                            numBones))
+                        boneParents,
+                        bone,
+                        chain.upperArm,
+                        numBones))
                     {
                         continue;
                     }
@@ -17415,19 +17462,31 @@ namespace
         Vector bodyRight{};
         Vector bodyUp{};
         if (!HooksNativeViewmodelArmIkResolveBodyFrame(
-                vr,
-                viewOrigin,
-                bodyForward,
-                bodyRight,
-                bodyUp))
+            vr,
+            viewOrigin,
+            bodyForward,
+            bodyRight,
+            bodyUp))
+        {
+            return false;
+        }
+
+        Vector turnForward{};
+        Vector turnRight{};
+        Vector turnUp{};
+        if (!HooksNativeViewmodelArmIkResolveTurnFrame(
+            vr,
+            turnForward,
+            turnRight,
+            turnUp))
         {
             return false;
         }
 
         const float sourceUnitsPerMeter =
             std::isfinite(vr->m_VRScale) && vr->m_VRScale > 1.0f
-                ? vr->m_VRScale
-                : 39.3701f;
+            ? vr->m_VRScale
+            : 39.3701f;
         const Vector shoulderCenter =
             viewOrigin - bodyForward * (0.08f * sourceUnitsPerMeter) -
             bodyUp * (0.24f * sourceUnitsPerMeter);
@@ -17437,11 +17496,10 @@ namespace
         bool leftShoulderValid = true;
         bool rightShoulderValid = true;
 
-        // The first-person viewmodel arm chain is intentionally independent of
-        // the rendered survivor body's animated shoulder bones. Both shoulders
-        // stay in the HMD-local frame above, and each arm is solved only from
-        // that HMD anchor to its tracked hand target. Turning or animating the
-        // body therefore cannot add a second parent rotation to the forearm.
+        // The first-person viewmodel arm chain is independent of the rendered
+        // survivor body's animated shoulder bones. Both roots are rebuilt from
+        // the current horizontal HMD frame, then each arm is solved only from
+        // that HMD-relative shoulder to its tracked hand target.
 
         // User tuning is applied after the HMD-relative shoulders have been
         // selected. The shared offset
@@ -17463,8 +17521,8 @@ namespace
         {
             Vector measuredShoulderRight{};
             if (HooksNativeViewmodelArmIkNormalize(
-                    rightShoulder - leftShoulder,
-                    measuredShoulderRight))
+                rightShoulder - leftShoulder,
+                measuredShoulderRight))
             {
                 if (DotProduct(measuredShoulderRight, bodyRight) < 0.0f)
                     measuredShoulderRight *= -1.0f;
@@ -17517,9 +17575,9 @@ namespace
             targetTurnLocal[slot] =
                 HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                     targetRelative,
-                    bodyForward,
-                    bodyRight,
-                    bodyUp);
+                    turnForward,
+                    turnRight,
+                    turnUp);
             targetTurnLocalValid[slot] =
                 HooksNativeViewmodelHandsOnlyVectorFinite(
                     targetTurnLocal[slot]);
@@ -17591,16 +17649,16 @@ namespace
                 previousValid[slot] = s_continuity.frameValid[slot];
                 if (previousValid[slot])
                 {
-                    // Continuity is stored in turn space, not the live HMD/view
-                    // frame. Physical head/body-model yaw therefore cannot rotate
-                    // the elbow plane, while an actual snap/smooth turn rotates
-                    // the complete HMD/controller/arm solution together.
+                    // Continuity is stored in the artificial turn frame, not
+                    // the live HMD shoulder frame. Physical head yaw can move the
+                    // shoulder roots around the HMD without directly winding the
+                    // previous elbow direction or upper-arm twist.
                     previousWorld[slot] =
                         HooksNativeViewmodelArmIkBodyLocalDirectionToWorld(
                             s_continuity.frameTurnLocal[slot],
-                            bodyForward,
-                            bodyRight,
-                            bodyUp);
+                            turnForward,
+                            turnRight,
+                            turnUp);
                     previousValid[slot] =
                         HooksNativeViewmodelArmIkNormalize(
                             previousWorld[slot],
@@ -17619,21 +17677,21 @@ namespace
                 // from the preceding frame. Do not feed elbow/twist continuity
                 // across that discontinuity; the current frame is solved from
                 // the animation-free rest branch and becomes the new seed. The
-                // comparison is shoulder-relative turn space, so locomotion, HMD
-                // translation and snap turning do not create false resets.
+                // comparison is shoulder-relative turn space, so locomotion and
+                // HMD translation do not create false resets.
                 const float targetResetDistance =
                     0.15f * sourceUnitsPerMeter;
                 const bool targetModeChanged =
                     s_continuity.frameTargetValid[slot] &&
                     targetTurnLocalValid[slot] &&
                     s_continuity.frameTargetUsesNativeAnimation[slot] !=
-                        targetUsesNativeAnimation[slot];
+                    targetUsesNativeAnimation[slot];
                 const bool targetJumped =
                     s_continuity.frameTargetValid[slot] &&
                     targetTurnLocalValid[slot] &&
                     (targetTurnLocal[slot] -
                         s_continuity.frameTargetTurnLocal[slot]).Length() >
-                        targetResetDistance;
+                    targetResetDistance;
                 if (targetModeChanged || targetJumped)
                 {
                     previousValid[slot] = false;
@@ -17685,8 +17743,8 @@ namespace
                 for (int bone = 0; bone < numBones; ++bone)
                 {
                     if (!vr_vm_stabilize::SafeRead(
-                            sourceBones + bone,
-                            candidate[bone]) ||
+                        sourceBones + bone,
+                        candidate[bone]) ||
                         !HooksNativeViewmodelHandsOnlyMatrixFinite(candidate[bone]))
                     {
                         return false;
@@ -17699,19 +17757,19 @@ namespace
                 // HMD/controller tracking supplies positions; analytic IK supplies
                 // the arm rotations. Third-person keeps its existing path.
                 if (!HooksNativeViewmodelArmIkResetFirstPersonBranchToRestPose(
-                        vr,
-                        drawState,
-                        boneIndex,
-                        stride,
-                        lowerModel,
-                        boneNames,
-                        boneParents,
-                        numBones,
-                        chain,
-                        solveMask,
-                        shoulder,
-                        bodyForward,
-                        candidate))
+                    vr,
+                    drawState,
+                    boneIndex,
+                    stride,
+                    lowerModel,
+                    boneNames,
+                    boneParents,
+                    numBones,
+                    chain,
+                    solveMask,
+                    shoulder,
+                    turnForward,
+                    candidate))
                 {
                     return false;
                 }
@@ -17726,20 +17784,20 @@ namespace
                 Vector bend{};
                 float twistRadians = 0.0f;
                 if (!HooksNativeViewmodelArmIkApplyArm(
-                        boneParents,
-                        numBones,
-                        chain,
-                        shoulder,
-                        target,
-                        bodyForward,
-                        bodyRight,
-                        bodyUp,
-                        previous,
-                        true,
-                        candidate,
-                        bend,
-                        previousTwist,
-                        &twistRadians))
+                    boneParents,
+                    numBones,
+                    chain,
+                    shoulder,
+                    target,
+                    bodyForward,
+                    bodyRight,
+                    bodyUp,
+                    previous,
+                    true,
+                    candidate,
+                    bend,
+                    previousTwist,
+                    &twistRadians))
                 {
                     return false;
                 }
@@ -17762,28 +17820,28 @@ namespace
                 if (useAnimatedFingerPose)
                 {
                     if (!HooksNativeViewmodelArmIkRestoreAnimatedFingerPose(
-                            boneNames,
-                            boneParents,
-                            numBones,
-                            sideInfo,
-                            sourceBones,
-                            candidate))
+                        boneNames,
+                        boneParents,
+                        numBones,
+                        sideInfo,
+                        sourceBones,
+                        candidate))
                     {
                         return false;
                     }
                 }
                 else if (!HooksNativeViewmodelArmIkApplyCroppedEmptyFingerPose(
-                             vr,
-                             drawState,
-                             boneIndex,
-                             stride,
-                             lowerModel,
-                             boneNames,
-                             boneParents,
-                             numBones,
-                             sideInfo,
-                             sourceBones,
-                             candidate))
+                    vr,
+                    drawState,
+                    boneIndex,
+                    stride,
+                    lowerModel,
+                    boneNames,
+                    boneParents,
+                    numBones,
+                    sideInfo,
+                    sourceBones,
+                    candidate))
                 {
                     return false;
                 }
@@ -17857,12 +17915,12 @@ namespace
                         Vector turnLocal =
                             HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                                 world,
-                                bodyForward,
-                                bodyRight,
-                                bodyUp);
+                                turnForward,
+                                turnRight,
+                                turnUp);
                         if (HooksNativeViewmodelArmIkNormalize(
-                                turnLocal,
-                                turnLocal))
+                            turnLocal,
+                            turnLocal))
                         {
                             s_continuity.latestTurnLocal[slot] = turnLocal;
                             s_continuity.latestValid[slot] = true;
@@ -17903,11 +17961,11 @@ namespace
         {
             HooksNativeViewmodelArmIkLogOnce(
                 solvedSide[0]
-                    ? "partial-left|" + lowerModel
-                    : "partial-right|" + lowerModel,
+                ? "partial-left|" + lowerModel
+                : "partial-right|" + lowerModel,
                 solvedSide[0]
-                    ? "[VR][ViewmodelArmIK] only the left viewmodel arm was solved model=%s"
-                    : "[VR][ViewmodelArmIK] only the right viewmodel arm was solved model=%s",
+                ? "[VR][ViewmodelArmIK] only the left viewmodel arm was solved model=%s"
+                : "[VR][ViewmodelArmIK] only the right viewmodel arm was solved model=%s",
                 lowerModel,
                 nullptr,
                 nullptr,
@@ -18073,14 +18131,14 @@ namespace
                 if (HooksNativeViewmodelHandsOnlyShouldUseFixedFreezePlaneLockForSide(vr, hideSide.side))
                 {
                     if (!HooksNativeViewmodelHandsOnlyTryResolveFixedFreezePlaneLock(
-                            vr,
-                            hideSide,
-                            lowerModel,
-                            bones,
-                            numBones,
-                            nullptr,
-                            nullptr,
-                            wristPlaneWorld))
+                        vr,
+                        hideSide,
+                        lowerModel,
+                        bones,
+                        numBones,
+                        nullptr,
+                        nullptr,
+                        wristPlaneWorld))
                     {
                         return false;
                     }
@@ -18340,7 +18398,7 @@ namespace
         if (!HooksNativeViewmodelHandsOnlySourceQueueReadableMemory(getCallQueuePtr, 1))
             return nullptr;
 
-        using GetCallQueueFn = ICallQueue*(__thiscall*)(IMatRenderContext*);
+        using GetCallQueueFn = ICallQueue * (__thiscall*)(IMatRenderContext*);
         ICallQueue* callQueue = reinterpret_cast<GetCallQueueFn>(getCallQueuePtr)(renderContext);
         return HooksNativeViewmodelHandsOnlySourceCallQueueUsable(callQueue) ? callQueue : nullptr;
     }
@@ -18714,9 +18772,9 @@ namespace
         characterName.clear();
         const char* rawModelName = nullptr;
         if (!HooksFirstPersonBodyGetModelNameSafe(
-                modelInfo,
-                model,
-                rawModelName))
+            modelInfo,
+            model,
+            rawModelName))
         {
             return false;
         }
@@ -18770,9 +18828,9 @@ namespace
         constexpr size_t kMaterialsPrefixLength =
             sizeof(kMaterialsPrefix) - 1;
         if (result.compare(
-                0,
-                kMaterialsPrefixLength,
-                kMaterialsPrefix) == 0)
+            0,
+            kMaterialsPrefixLength,
+            kMaterialsPrefix) == 0)
         {
             result.erase(0, kMaterialsPrefixLength);
         }
@@ -18833,24 +18891,24 @@ namespace
         std::string modelName = "<unknown>";
         const char* resolvedModelName = nullptr;
         if (HooksFirstPersonBodyGetModelNameSafe(
-                game->m_ModelInfo,
-                info.pModel,
-                resolvedModelName))
+            game->m_ModelInfo,
+            info.pModel,
+            resolvedModelName))
         {
             modelName = resolvedModelName;
         }
 
         const uint32_t logSession =
             vr
-                ? vr->m_PlayerModelMaterialsLogSession.load(
-                    std::memory_order_acquire)
-                : 0u;
+            ? vr->m_PlayerModelMaterialsLogSession.load(
+                std::memory_order_acquire)
+            : 0u;
         auto matchesCurrentDraw = [&](const PublishedModelKey& key) {
             return key.session == logSession &&
                 key.entityIndex == info.entity_index &&
                 key.renderable == info.pRenderable &&
                 key.modelName == modelName;
-        };
+            };
         {
             std::lock_guard<std::mutex> lock(s_LogStateMutex);
             if (s_PublishedSession != logSession)
@@ -18859,25 +18917,25 @@ namespace
                 s_PublishedModels.clear();
             }
             if (std::find_if(
-                    s_PublishedModels.begin(),
-                    s_PublishedModels.end(),
-                    matchesCurrentDraw) != s_PublishedModels.end())
+                s_PublishedModels.begin(),
+                s_PublishedModels.end(),
+                matchesCurrentDraw) != s_PublishedModels.end())
                 return;
         }
 
         std::string characterName;
         if (!HooksWorldModelClothingGetCharacterName(
-                game->m_ModelInfo,
-                info.pModel,
-                characterName))
+            game->m_ModelInfo,
+            info.pModel,
+            characterName))
         {
             return;
         }
 
         std::vector<std::string> materialNames;
         if (!vr_vm_stabilize::TryGetStudioMaterialNamesFromDrawState(
-                drawState,
-                materialNames))
+            drawState,
+            materialNames))
         {
             return;
         }
@@ -18892,16 +18950,16 @@ namespace
                 s_PublishedModels.clear();
             }
             if (std::find_if(
-                    s_PublishedModels.begin(),
-                    s_PublishedModels.end(),
-                    matchesCurrentDraw) != s_PublishedModels.end())
+                s_PublishedModels.begin(),
+                s_PublishedModels.end(),
+                matchesCurrentDraw) != s_PublishedModels.end())
                 return;
             s_PublishedModels.push_back({
                 logSession,
                 info.entity_index,
                 info.pRenderable,
                 modelName
-            });
+                });
         }
 
         if (vr)
@@ -18926,8 +18984,8 @@ namespace
             modelName.c_str(),
             static_cast<unsigned int>(materialNames.size()));
         for (size_t materialIndex = 0;
-             materialIndex < materialNames.size();
-             ++materialIndex)
+            materialIndex < materialNames.size();
+            ++materialIndex)
         {
             Game::logMsg(
                 "[VR][PlayerModelMaterials] character=%s material[%u/%u]=%s",
@@ -18958,9 +19016,9 @@ namespace
 
         std::string characterName;
         if (!HooksWorldModelClothingGetCharacterName(
-                game->m_ModelInfo,
-                model,
-                characterName))
+            game->m_ModelInfo,
+            model,
+            characterName))
         {
             return false;
         }
@@ -18984,9 +19042,9 @@ namespace
                 }
 
                 if (std::find(
-                        configuredMaterialNames.begin(),
-                        configuredMaterialNames.end(),
-                        rule.materialName) == configuredMaterialNames.end())
+                    configuredMaterialNames.begin(),
+                    configuredMaterialNames.end(),
+                    rule.materialName) == configuredMaterialNames.end())
                 {
                     configuredMaterialNames.push_back(rule.materialName);
                 }
@@ -19002,9 +19060,9 @@ namespace
         std::vector<std::string> modelMaterialNames;
         std::vector<std::string> modelMaterialDirectories;
         if (!vr_vm_stabilize::TryGetStudioMaterialNamesFromDrawState(
-                drawState,
-                modelMaterialNames,
-                &modelMaterialDirectories))
+            drawState,
+            modelMaterialNames,
+            &modelMaterialDirectories))
         {
             return false;
         }
@@ -19025,14 +19083,14 @@ namespace
                 return false;
 
             if (std::find(
-                    hiddenMaterials.begin(),
-                    hiddenMaterials.end(),
-                    material) == hiddenMaterials.end())
+                hiddenMaterials.begin(),
+                hiddenMaterials.end(),
+                material) == hiddenMaterials.end())
             {
                 hiddenMaterials.push_back(material);
             }
             return true;
-        };
+            };
 
         for (const std::string& modelMaterialName : modelMaterialNames)
         {
@@ -19064,7 +19122,7 @@ namespace
                 modelMaterialDirectories)
             {
                 if (addResolvedMaterial(
-                        materialDirectory + modelMaterialName))
+                    materialDirectory + modelMaterialName))
                 {
                     resolved = true;
                     break;
@@ -19270,8 +19328,8 @@ namespace
             int queueMode,
             ICallQueue* callQueue)
             : m_Lease(lease),
-              m_QueueMode(queueMode),
-              m_CallQueue(callQueue)
+            m_QueueMode(queueMode),
+            m_CallQueue(callQueue)
         {
         }
 
@@ -19285,8 +19343,8 @@ namespace
                 std::vector<IMaterial*> queuedMaterials = m_Lease.Detach();
                 auto* releaseFunctor =
                     new (std::nothrow)
-                        HooksFirstPersonBodyQueuedMaterialReleaseFunctor(
-                            std::move(queuedMaterials));
+                    HooksFirstPersonBodyQueuedMaterialReleaseFunctor(
+                        std::move(queuedMaterials));
                 if (releaseFunctor)
                 {
                     m_CallQueue->QueueFunctor(releaseFunctor);
@@ -19486,13 +19544,13 @@ namespace
         int stride = 0;
         int numBonesOffset = 0;
         if (!vr_vm_stabilize::TryCollectBoneNamesFromDrawState(
-                drawState,
-                boneNames,
-                layout.boneParents,
-                layout.numBones,
-                boneIndex,
-                stride,
-                numBonesOffset) ||
+            drawState,
+            boneNames,
+            layout.boneParents,
+            layout.numBones,
+            boneIndex,
+            stride,
+            numBonesOffset) ||
             layout.numBones <= 0 ||
             layout.numBones > 128 ||
             static_cast<int>(boneNames.size()) < layout.numBones ||
@@ -19578,21 +19636,21 @@ namespace
         int frozenRightArmBones = 0;
         const int leftShoulderFreezeRoot =
             (layout.leftClavicleBone >= 0 &&
-             layout.leftClavicleBone < layout.numBones)
-                ? layout.leftClavicleBone
-                : layout.leftUpperArmBone;
+                layout.leftClavicleBone < layout.numBones)
+            ? layout.leftClavicleBone
+            : layout.leftUpperArmBone;
         const int rightShoulderFreezeRoot =
             (layout.rightClavicleBone >= 0 &&
-             layout.rightClavicleBone < layout.numBones)
-                ? layout.rightClavicleBone
-                : layout.rightUpperArmBone;
+                layout.rightClavicleBone < layout.numBones)
+            ? layout.rightClavicleBone
+            : layout.rightUpperArmBone;
         for (int bone = 0; bone < layout.numBones; ++bone)
         {
             if (HooksNativeViewmodelHandsOnlyIsAncestor(
-                    layout.boneParents,
-                    bone,
-                    layout.headBone,
-                    layout.numBones))
+                layout.boneParents,
+                bone,
+                layout.headBone,
+                layout.numBones))
             {
                 layout.hideHeadMask[static_cast<size_t>(bone)] = 1u;
                 ++hiddenHeadBones;
@@ -19804,7 +19862,7 @@ namespace
             !vr->m_FirstPersonBodyEnabled ||
             bodyState->playerGeneration == 0 ||
             bodyState->playerGeneration !=
-                g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) ||
+            g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) ||
             !HooksNativeViewmodelHandsOnlyVectorFinite(bodyState->centerEyePosition) ||
             !std::isfinite(modelInfo.angles.y))
         {
@@ -19813,9 +19871,9 @@ namespace
 
         static thread_local HooksFirstPersonBodyBoneLayout s_layout{};
         if (!HooksFirstPersonBodyBuildBoneLayout(
-                drawState,
-                bodyState->playerGeneration,
-                s_layout))
+            drawState,
+            bodyState->playerGeneration,
+            s_layout))
             return false;
 
         const auto* sourceBones =
@@ -19861,9 +19919,9 @@ namespace
         if (vr->m_FirstPersonBodyHideArms)
         {
             if (!HooksFirstPersonBodyApplyFrozenBranch(
-                    s_layout,
-                    s_layout.freezeLeftArmMask,
-                    anchoredBones) ||
+                s_layout,
+                s_layout.freezeLeftArmMask,
+                anchoredBones) ||
                 !HooksFirstPersonBodyApplyFrozenBranch(
                     s_layout,
                     s_layout.freezeRightArmMask,
@@ -19875,8 +19933,8 @@ namespace
 
         vr_vm_stabilize::Mat3x4 frozenHead{};
         if (!vr_vm_stabilize::SafeRead(
-                anchoredBones + s_layout.headBone,
-                frozenHead) ||
+            anchoredBones + s_layout.headBone,
+            frozenHead) ||
             !HooksNativeViewmodelHandsOnlyMatrixFinite(frozenHead))
         {
             return false;
@@ -19896,8 +19954,8 @@ namespace
 
         const float unitsPerMeter =
             (std::isfinite(vr->m_VRScale) && std::fabs(vr->m_VRScale) > 0.001f)
-                ? std::fabs(vr->m_VRScale)
-                : 43.2f;
+            ? std::fabs(vr->m_VRScale)
+            : 43.2f;
         const Vector& bodyOffsetMeters = vr->m_FirstPersonBodyAnchorOffsetMeters;
         const Vector& anchorRotationOffsetDeg = vr->m_FirstPersonBodyAnchorRotationOffsetDeg;
         const Vector& cameraOffsetMeters = vr->m_FirstPersonBodyCameraOffsetMeters;
@@ -19909,9 +19967,9 @@ namespace
         const float backwardMovementFraction = std::max(-movementFraction, 0.0f);
         const float movementCameraOffsetMeters =
             vr->m_FirstPersonBodyMovementCameraCompensationMeters *
-                forwardMovementFraction -
+            forwardMovementFraction -
             vr->m_FirstPersonBodyBackwardMovementCameraCompensationMeters *
-                backwardMovementFraction;
+            backwardMovementFraction;
         const float crouchCameraOffsetMeters = bodyState->crouched
             ? vr->m_FirstPersonBodyCrouchCameraCompensationMeters
             : 0.0f;
@@ -20132,7 +20190,7 @@ namespace
                     s_layout.hideHeadMask[index] != 0u) ||
                 (vr->m_FirstPersonBodyHideArms &&
                     (s_layout.hideLeftArmMask[index] != 0u ||
-                     s_layout.hideRightArmMask[index] != 0u));
+                        s_layout.hideRightArmMask[index] != 0u));
             if (intentionallyCollapsed)
             {
                 if (outputBasisLength > 1.0e-4)
@@ -20464,1502 +20522,1502 @@ namespace
 
 void Hooks::dAdjustEngineViewport(int& x, int& y, int& width, int& height)
 {
-	hkAdjustEngineViewport.fOriginal(x, y, width, height);
+    hkAdjustEngineViewport.fOriginal(x, y, width, height);
 }
 
 void Hooks::dViewport(void* ecx, void* edx, int x, int y, int width, int height)
 {
-	hkViewport.fOriginal(ecx, x, y, width, height);
+    hkViewport.fOriginal(ecx, x, y, width, height);
 }
 
 void Hooks::dGetViewport(void* ecx, void* edx, int& x, int& y, int& width, int& height)
 {
-	hkGetViewport.fOriginal(ecx, x, y, width, height);
+    hkGetViewport.fOriginal(ecx, x, y, width, height);
 }
 
 int Hooks::dTestMeleeSwingCollisionClient(void* ecx, void* edx, Vector const& vec)
 {
-	const int result = hkTestMeleeSwingCollisionClient.fOriginal(ecx, vec);
-	NotifyLocalMeleeCollisionHaptics(false, ecx, result, -1, -1);
-	return result;
+    const int result = hkTestMeleeSwingCollisionClient.fOriginal(ecx, vec);
+    NotifyLocalMeleeCollisionHaptics(false, ecx, result, -1, -1);
+    return result;
 }
 
 int Hooks::dTestMeleeSwingCollisionServer(void* ecx, void* edx, Vector const& vec)
 {
-	Server_WeaponCSBase* weapon = reinterpret_cast<Server_WeaponCSBase*>(ecx);
-	const int entitiesHitBefore = weapon ? weapon->entitiesHitThisSwing : -1;
-	const int result = hkTestMeleeSwingCollisionServer.fOriginal(ecx, vec);
-	const int entitiesHitAfter = weapon ? weapon->entitiesHitThisSwing : entitiesHitBefore;
-	NotifyLocalMeleeCollisionHaptics(true, ecx, result, entitiesHitBefore, entitiesHitAfter);
-	return result;
+    Server_WeaponCSBase* weapon = reinterpret_cast<Server_WeaponCSBase*>(ecx);
+    const int entitiesHitBefore = weapon ? weapon->entitiesHitThisSwing : -1;
+    const int result = hkTestMeleeSwingCollisionServer.fOriginal(ecx, vec);
+    const int entitiesHitAfter = weapon ? weapon->entitiesHitThisSwing : entitiesHitBefore;
+    NotifyLocalMeleeCollisionHaptics(true, ecx, result, entitiesHitBefore, entitiesHitAfter);
+    return result;
 }
 
 void Hooks::dDoMeleeSwingServer(void* ecx, void* edx)
 {
-	return hkDoMeleeSwingServer.fOriginal(ecx);
+    return hkDoMeleeSwingServer.fOriginal(ecx);
 }
 
 void Hooks::dStartMeleeSwingServer(void* ecx, void* edx, void* player, bool a3)
 {
-	return hkStartMeleeSwingServer.fOriginal(ecx, player, a3);
+    return hkStartMeleeSwingServer.fOriginal(ecx, player, a3);
 }
 
 int Hooks::dPrimaryAttackServer(void* ecx, void* edx)
 {
-	return hkPrimaryAttackServer.fOriginal(ecx);
+    return hkPrimaryAttackServer.fOriginal(ecx);
 }
 
 void Hooks::dItemPostFrameServer(void* ecx, void* edx)
 {
-	hkItemPostFrameServer.fOriginal(ecx);
+    hkItemPostFrameServer.fOriginal(ecx);
 
-	if (!m_VR || !ecx || !IsLocalServerActiveWeapon(ecx))
-		return;
+    if (!m_VR || !ecx || !IsLocalServerActiveWeapon(ecx))
+        return;
 
-	Server_WeaponCSBase* weapon = reinterpret_cast<Server_WeaponCSBase*>(ecx);
-	int weaponId = 0;
+    Server_WeaponCSBase* weapon = reinterpret_cast<Server_WeaponCSBase*>(ecx);
+    int weaponId = 0;
 #ifdef _MSC_VER
-	__try
-	{
-		weaponId = weapon->GetWeaponID();
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return;
-	}
+    __try
+    {
+        weaponId = weapon->GetWeaponID();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return;
+    }
 #else
-	weaponId = weapon->GetWeaponID();
+    weaponId = weapon->GetWeaponID();
 #endif
 
-	void* serverPlayer = m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr;
-	m_VR->MarkMagazineInteractionServerHookSeen(weaponId);
-	if (MagazineInteractionWeaponIdIsShotgun(weaponId))
-	{
-		m_VR->TryApplyMagazineInteractionShotgunServerReloadAbort(ecx, weaponId, serverPlayer);
-		return;
-	}
+    void* serverPlayer = m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr;
+    m_VR->MarkMagazineInteractionServerHookSeen(weaponId);
+    if (MagazineInteractionWeaponIdIsShotgun(weaponId))
+    {
+        m_VR->TryApplyMagazineInteractionShotgunServerReloadAbort(ecx, weaponId, serverPlayer);
+        return;
+    }
 
-	m_VR->TryApplyMagazineInteractionServerClipCommit(ecx, weaponId, serverPlayer);
+    m_VR->TryApplyMagazineInteractionServerClipCommit(ecx, weaponId, serverPlayer);
 }
 
 int Hooks::dGetPrimaryAttackActivity(void* ecx, void* edx, void* meleeInfo)
 {
-	return hkGetPrimaryAttackActivity.fOriginal(ecx, meleeInfo);
+    return hkGetPrimaryAttackActivity.fOriginal(ecx, meleeInfo);
 }
 
 namespace
 {
-	thread_local bool g_ServerUseControllerAimOverride = false;
-	thread_local void* g_ServerUseControllerAimPlayer = nullptr;
-	thread_local Vector g_ServerUseControllerAimOrigin = { 0.0f, 0.0f, 0.0f };
-	thread_local QAngle g_ServerUseControllerAimAngles = { 0.0f, 0.0f, 0.0f };
-	thread_local bool g_ClientUseControllerAimOverride = false;
-	thread_local void* g_ClientUseControllerAimPlayer = nullptr;
-	thread_local Vector g_ClientUseControllerAimOrigin = { 0.0f, 0.0f, 0.0f };
-	thread_local QAngle g_ClientUseControllerAimAngles = { 0.0f, 0.0f, 0.0f };
+    thread_local bool g_ServerUseControllerAimOverride = false;
+    thread_local void* g_ServerUseControllerAimPlayer = nullptr;
+    thread_local Vector g_ServerUseControllerAimOrigin = { 0.0f, 0.0f, 0.0f };
+    thread_local QAngle g_ServerUseControllerAimAngles = { 0.0f, 0.0f, 0.0f };
+    thread_local bool g_ClientUseControllerAimOverride = false;
+    thread_local void* g_ClientUseControllerAimPlayer = nullptr;
+    thread_local Vector g_ClientUseControllerAimOrigin = { 0.0f, 0.0f, 0.0f };
+    thread_local QAngle g_ClientUseControllerAimAngles = { 0.0f, 0.0f, 0.0f };
 
-	static inline bool IsFiniteVector3(const Vector& v)
-	{
-		return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-	}
+    static inline bool IsFiniteVector3(const Vector& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
 
-	static bool IsServerUseControllerAimWindowActive()
-	{
-		if (!Hooks::m_VR || !Hooks::m_VR->m_IsVREnabled)
-			return false;
+    static bool IsServerUseControllerAimWindowActive()
+    {
+        if (!Hooks::m_VR || !Hooks::m_VR->m_IsVREnabled)
+            return false;
 
-		if (Hooks::m_VR->m_ForceNonVRServerMovement)
-			return false;
+        if (Hooks::m_VR->m_ForceNonVRServerMovement)
+            return false;
 
-		const auto now = std::chrono::steady_clock::now();
-		return Hooks::m_VR->m_ServerUseControllerAimActive ||
-			(Hooks::m_VR->m_ServerUseControllerAimUntil.time_since_epoch().count() != 0 &&
-				now <= Hooks::m_VR->m_ServerUseControllerAimUntil);
-	}
+        const auto now = std::chrono::steady_clock::now();
+        return Hooks::m_VR->m_ServerUseControllerAimActive ||
+            (Hooks::m_VR->m_ServerUseControllerAimUntil.time_since_epoch().count() != 0 &&
+                now <= Hooks::m_VR->m_ServerUseControllerAimUntil);
+    }
 
-	static bool TryBuildServerUseControllerPose(void* player, Vector& origin, QAngle& angles)
-	{
-		if (!Hooks::m_Game || !player)
-			return false;
+    static bool TryBuildServerUseControllerPose(void* player, Vector& origin, QAngle& angles)
+    {
+        if (!Hooks::m_Game || !player)
+            return false;
 
-		if (!Hooks::m_VR || Hooks::m_VR->m_ForceNonVRServerMovement)
-			return false;
+        if (!Hooks::m_VR || Hooks::m_VR->m_ForceNonVRServerMovement)
+            return false;
 
-		const int playerIndex = Hooks::m_Game->m_CurrentUsercmdID;
-		if (!Hooks::m_Game->IsValidPlayerIndex(playerIndex))
-			return false;
+        const int playerIndex = Hooks::m_Game->m_CurrentUsercmdID;
+        if (!Hooks::m_Game->IsValidPlayerIndex(playerIndex))
+            return false;
 
-		if (Hooks::m_Game->m_CurrentUsercmdPlayer &&
-			reinterpret_cast<void*>(Hooks::m_Game->m_CurrentUsercmdPlayer) != player)
-			return false;
+        if (Hooks::m_Game->m_CurrentUsercmdPlayer &&
+            reinterpret_cast<void*>(Hooks::m_Game->m_CurrentUsercmdPlayer) != player)
+            return false;
 
-		const Player& vrPlayer = Hooks::m_Game->m_PlayersVRInfo[playerIndex];
-		if (!vrPlayer.isUsingVR)
-			return false;
+        const Player& vrPlayer = Hooks::m_Game->m_PlayersVRInfo[playerIndex];
+        if (!vrPlayer.isUsingVR)
+            return false;
 
-		origin = vrPlayer.controllerPos;
-		angles = vrPlayer.controllerAngle;
-		NormalizeAndClampViewAngles(angles);
+        origin = vrPlayer.controllerPos;
+        angles = vrPlayer.controllerAngle;
+        NormalizeAndClampViewAngles(angles);
 
-		return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
-	}
+        return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
+    }
 
-	static bool TryGetServerControllerAimOverride(void* player, Vector& origin, QAngle& angles, int& reason)
-	{
-		if (!player)
-			return false;
+    static bool TryGetServerControllerAimOverride(void* player, Vector& origin, QAngle& angles, int& reason)
+    {
+        if (!player)
+            return false;
 
-		if (g_ServerUseControllerAimOverride && player == g_ServerUseControllerAimPlayer)
-		{
-			origin = g_ServerUseControllerAimOrigin;
-			angles = g_ServerUseControllerAimAngles;
-			reason = 1;
-			return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
-		}
+        if (g_ServerUseControllerAimOverride && player == g_ServerUseControllerAimPlayer)
+        {
+            origin = g_ServerUseControllerAimOrigin;
+            angles = g_ServerUseControllerAimAngles;
+            reason = 1;
+            return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
+        }
 
-		if (Hooks::m_ServerCommandControllerAimOverride &&
-			player == Hooks::m_ServerCommandControllerAimPlayer)
-		{
-			origin = Hooks::m_ServerCommandControllerAimOrigin;
-			angles = Hooks::m_ServerCommandControllerAimAngles;
-			reason = Hooks::m_ServerCommandControllerAimReason;
-			return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
-		}
+        if (Hooks::m_ServerCommandControllerAimOverride &&
+            player == Hooks::m_ServerCommandControllerAimPlayer)
+        {
+            origin = Hooks::m_ServerCommandControllerAimOrigin;
+            angles = Hooks::m_ServerCommandControllerAimAngles;
+            reason = Hooks::m_ServerCommandControllerAimReason;
+            return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
+        }
 
-		return false;
-	}
+        return false;
+    }
 
-	static bool TryBuildClientUseControllerPose(void* player, Vector& origin, QAngle& angles)
-	{
-		if (!Hooks::m_Game || !Hooks::m_VR || !player)
-			return false;
+    static bool TryBuildClientUseControllerPose(void* player, Vector& origin, QAngle& angles)
+    {
+        if (!Hooks::m_Game || !Hooks::m_VR || !player)
+            return false;
 
-		if (!Hooks::m_VR->m_IsVREnabled)
-			return false;
+        if (!Hooks::m_VR->m_IsVREnabled)
+            return false;
 
-		if (Hooks::m_VR->m_ForceNonVRServerMovement)
-			return false;
+        if (Hooks::m_VR->m_ForceNonVRServerMovement)
+            return false;
 
-		if (!Hooks::m_Game->m_EngineClient || !Hooks::m_Game->m_EngineClient->IsInGame())
-			return false;
+        if (!Hooks::m_Game->m_EngineClient || !Hooks::m_Game->m_EngineClient->IsInGame())
+            return false;
 
-		const int localPlayerIndex = Hooks::m_Game->m_EngineClient->GetLocalPlayer();
-		if (localPlayerIndex <= 0 || !Hooks::m_Game->IsValidPlayerIndex(localPlayerIndex))
-			return false;
+        const int localPlayerIndex = Hooks::m_Game->m_EngineClient->GetLocalPlayer();
+        if (localPlayerIndex <= 0 || !Hooks::m_Game->IsValidPlayerIndex(localPlayerIndex))
+            return false;
 
-		C_BaseEntity* localPlayer = Hooks::m_Game->GetClientEntity(localPlayerIndex);
-		if (!localPlayer || reinterpret_cast<void*>(localPlayer) != player)
-			return false;
+        C_BaseEntity* localPlayer = Hooks::m_Game->GetClientEntity(localPlayerIndex);
+        if (!localPlayer || reinterpret_cast<void*>(localPlayer) != player)
+            return false;
 
-		origin = Hooks::m_VR->GetRightControllerAbsPos();
-		angles = Hooks::m_VR->GetRightControllerAbsAngle();
-		NormalizeAndClampViewAngles(angles);
+        origin = Hooks::m_VR->GetRightControllerAbsPos();
+        angles = Hooks::m_VR->GetRightControllerAbsAngle();
+        NormalizeAndClampViewAngles(angles);
 
-		return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
-	}
+        return IsFiniteVector3(origin) && IsFiniteViewAngle(angles);
+    }
 
-	class ScopedServerUseControllerAimOverride
-	{
-	public:
-		ScopedServerUseControllerAimOverride(void* player, const Vector& origin, const QAngle& angles)
-			: m_prevActive(g_ServerUseControllerAimOverride),
-			m_prevPlayer(g_ServerUseControllerAimPlayer),
-			m_prevOrigin(g_ServerUseControllerAimOrigin),
-			m_prevAngles(g_ServerUseControllerAimAngles)
-		{
-			g_ServerUseControllerAimOverride = true;
-			g_ServerUseControllerAimPlayer = player;
-			g_ServerUseControllerAimOrigin = origin;
-			g_ServerUseControllerAimAngles = angles;
-		}
+    class ScopedServerUseControllerAimOverride
+    {
+    public:
+        ScopedServerUseControllerAimOverride(void* player, const Vector& origin, const QAngle& angles)
+            : m_prevActive(g_ServerUseControllerAimOverride),
+            m_prevPlayer(g_ServerUseControllerAimPlayer),
+            m_prevOrigin(g_ServerUseControllerAimOrigin),
+            m_prevAngles(g_ServerUseControllerAimAngles)
+        {
+            g_ServerUseControllerAimOverride = true;
+            g_ServerUseControllerAimPlayer = player;
+            g_ServerUseControllerAimOrigin = origin;
+            g_ServerUseControllerAimAngles = angles;
+        }
 
-		~ScopedServerUseControllerAimOverride()
-		{
-			g_ServerUseControllerAimOverride = m_prevActive;
-			g_ServerUseControllerAimPlayer = m_prevPlayer;
-			g_ServerUseControllerAimOrigin = m_prevOrigin;
-			g_ServerUseControllerAimAngles = m_prevAngles;
-		}
+        ~ScopedServerUseControllerAimOverride()
+        {
+            g_ServerUseControllerAimOverride = m_prevActive;
+            g_ServerUseControllerAimPlayer = m_prevPlayer;
+            g_ServerUseControllerAimOrigin = m_prevOrigin;
+            g_ServerUseControllerAimAngles = m_prevAngles;
+        }
 
-	private:
-		bool m_prevActive;
-		void* m_prevPlayer;
-		Vector m_prevOrigin;
-		QAngle m_prevAngles;
-	};
+    private:
+        bool m_prevActive;
+        void* m_prevPlayer;
+        Vector m_prevOrigin;
+        QAngle m_prevAngles;
+    };
 
-	class ScopedClientUseControllerAimOverride
-	{
-	public:
-		ScopedClientUseControllerAimOverride(void* player, const Vector& origin, const QAngle& angles)
-			: m_prevActive(g_ClientUseControllerAimOverride),
-			m_prevPlayer(g_ClientUseControllerAimPlayer),
-			m_prevOrigin(g_ClientUseControllerAimOrigin),
-			m_prevAngles(g_ClientUseControllerAimAngles)
-		{
-			g_ClientUseControllerAimOverride = true;
-			g_ClientUseControllerAimPlayer = player;
-			g_ClientUseControllerAimOrigin = origin;
-			g_ClientUseControllerAimAngles = angles;
-		}
+    class ScopedClientUseControllerAimOverride
+    {
+    public:
+        ScopedClientUseControllerAimOverride(void* player, const Vector& origin, const QAngle& angles)
+            : m_prevActive(g_ClientUseControllerAimOverride),
+            m_prevPlayer(g_ClientUseControllerAimPlayer),
+            m_prevOrigin(g_ClientUseControllerAimOrigin),
+            m_prevAngles(g_ClientUseControllerAimAngles)
+        {
+            g_ClientUseControllerAimOverride = true;
+            g_ClientUseControllerAimPlayer = player;
+            g_ClientUseControllerAimOrigin = origin;
+            g_ClientUseControllerAimAngles = angles;
+        }
 
-		~ScopedClientUseControllerAimOverride()
-		{
-			g_ClientUseControllerAimOverride = m_prevActive;
-			g_ClientUseControllerAimPlayer = m_prevPlayer;
-			g_ClientUseControllerAimOrigin = m_prevOrigin;
-			g_ClientUseControllerAimAngles = m_prevAngles;
-		}
+        ~ScopedClientUseControllerAimOverride()
+        {
+            g_ClientUseControllerAimOverride = m_prevActive;
+            g_ClientUseControllerAimPlayer = m_prevPlayer;
+            g_ClientUseControllerAimOrigin = m_prevOrigin;
+            g_ClientUseControllerAimAngles = m_prevAngles;
+        }
 
-	private:
-		bool m_prevActive;
-		void* m_prevPlayer;
-		Vector m_prevOrigin;
-		QAngle m_prevAngles;
-	};
+    private:
+        bool m_prevActive;
+        void* m_prevPlayer;
+        Vector m_prevOrigin;
+        QAngle m_prevAngles;
+    };
 }
 
 Vector* Hooks::dEyePosition(void* ecx, void* edx, Vector* eyePos)
 {
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	int overrideReason = 0;
-	if (eyePos && TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
-	{
-		*eyePos = controllerOrigin;
-		return eyePos;
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    int overrideReason = 0;
+    if (eyePos && TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
+    {
+        *eyePos = controllerOrigin;
+        return eyePos;
+    }
 
-	Vector* result = hkEyePosition.fOriginal(ecx, eyePos);
+    Vector* result = hkEyePosition.fOriginal(ecx, eyePos);
 
-	if (m_Game->m_PerformingMelee)
-	{
-		int i = m_Game->m_CurrentUsercmdID;
-		if (m_Game->IsValidPlayerIndex(i))
-		{
-			*result = m_Game->m_PlayersVRInfo[i].controllerPos;
-		}
-	}
+    if (m_Game->m_PerformingMelee)
+    {
+        int i = m_Game->m_CurrentUsercmdID;
+        if (m_Game->IsValidPlayerIndex(i))
+        {
+            *result = m_Game->m_PlayersVRInfo[i].controllerPos;
+        }
+    }
 
-	return result;
+    return result;
 }
 
 Vector* Hooks::dServerPlayerEyePosition(void* ecx, void* edx, Vector* eyePos)
 {
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	int overrideReason = 0;
-	if (eyePos && TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
-	{
-		static std::chrono::steady_clock::time_point s_lastServerEyePositionOverrideLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastServerEyePositionOverrideLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastServerEyePositionOverrideLog).count() >= 0.50f)
-		{
-			s_lastServerEyePositionOverrideLog = now;
-			Game::logMsg(
-				"[VR][UseAim] ServerPlayerEyePosition override reason=%d origin=(%.1f %.1f %.1f)",
-				overrideReason,
-				controllerOrigin.x,
-				controllerOrigin.y,
-				controllerOrigin.z);
-		}
-		*eyePos = controllerOrigin;
-		return eyePos;
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    int overrideReason = 0;
+    if (eyePos && TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
+    {
+        static std::chrono::steady_clock::time_point s_lastServerEyePositionOverrideLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastServerEyePositionOverrideLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastServerEyePositionOverrideLog).count() >= 0.50f)
+        {
+            s_lastServerEyePositionOverrideLog = now;
+            Game::logMsg(
+                "[VR][UseAim] ServerPlayerEyePosition override reason=%d origin=(%.1f %.1f %.1f)",
+                overrideReason,
+                controllerOrigin.x,
+                controllerOrigin.y,
+                controllerOrigin.z);
+        }
+        *eyePos = controllerOrigin;
+        return eyePos;
+    }
 
-	Vector* result = hkServerPlayerEyePosition.fOriginal(ecx, eyePos);
-	return result;
+    Vector* result = hkServerPlayerEyePosition.fOriginal(ecx, eyePos);
+    return result;
 }
 
 Vector* Hooks::dClientPlayerEyePosition(void* ecx, void* edx, Vector* eyePos)
 {
-	if (eyePos && g_ClientUseControllerAimOverride && ecx == g_ClientUseControllerAimPlayer)
-	{
-		*eyePos = g_ClientUseControllerAimOrigin;
-		return eyePos;
-	}
+    if (eyePos && g_ClientUseControllerAimOverride && ecx == g_ClientUseControllerAimPlayer)
+    {
+        *eyePos = g_ClientUseControllerAimOrigin;
+        return eyePos;
+    }
 
-	return hkClientPlayerEyePosition.fOriginal(ecx, eyePos);
+    return hkClientPlayerEyePosition.fOriginal(ecx, eyePos);
 }
 
 void Hooks::dClientPlayerEyeVectors(void* ecx, void* edx, Vector* forward, Vector* right, Vector* up)
 {
-	if (g_ClientUseControllerAimOverride && ecx == g_ClientUseControllerAimPlayer)
-	{
-		QAngle::AngleVectors(g_ClientUseControllerAimAngles, forward, right, up);
-		return;
-	}
+    if (g_ClientUseControllerAimOverride && ecx == g_ClientUseControllerAimPlayer)
+    {
+        QAngle::AngleVectors(g_ClientUseControllerAimAngles, forward, right, up);
+        return;
+    }
 
-	hkClientPlayerEyeVectors.fOriginal(ecx, forward, right, up);
+    hkClientPlayerEyeVectors.fOriginal(ecx, forward, right, up);
 }
 
 const QAngle* Hooks::dServerPlayerEyeAngles(void* ecx, void* edx)
 {
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	int overrideReason = 0;
-	if (TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
-	{
-		static std::chrono::steady_clock::time_point s_lastServerEyeAnglesOverrideLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastServerEyeAnglesOverrideLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastServerEyeAnglesOverrideLog).count() >= 0.50f)
-		{
-			s_lastServerEyeAnglesOverrideLog = now;
-			Game::logMsg(
-				"[VR][UseAim] ServerPlayerEyeAngles override reason=%d angles=(%.1f %.1f %.1f)",
-				overrideReason,
-				controllerAngles.x,
-				controllerAngles.y,
-				controllerAngles.z);
-		}
-		Hooks::m_ServerCommandControllerAimAngles = controllerAngles;
-		return &Hooks::m_ServerCommandControllerAimAngles;
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    int overrideReason = 0;
+    if (TryGetServerControllerAimOverride(ecx, controllerOrigin, controllerAngles, overrideReason))
+    {
+        static std::chrono::steady_clock::time_point s_lastServerEyeAnglesOverrideLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastServerEyeAnglesOverrideLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastServerEyeAnglesOverrideLog).count() >= 0.50f)
+        {
+            s_lastServerEyeAnglesOverrideLog = now;
+            Game::logMsg(
+                "[VR][UseAim] ServerPlayerEyeAngles override reason=%d angles=(%.1f %.1f %.1f)",
+                overrideReason,
+                controllerAngles.x,
+                controllerAngles.y,
+                controllerAngles.z);
+        }
+        Hooks::m_ServerCommandControllerAimAngles = controllerAngles;
+        return &Hooks::m_ServerCommandControllerAimAngles;
+    }
 
-	return hkServerPlayerEyeAngles.fOriginal(ecx);
+    return hkServerPlayerEyeAngles.fOriginal(ecx);
 }
 
 void Hooks::dPlayerUse(void* ecx, void* edx, void* useEntity)
 {
-	if (void* objectPullTarget =
-			ObjectPullSelectPendingNativePickupTarget(ecx))
-	{
-		// This invocation came from the real ProcessUsercmds pass for our one
-		// injected +use edge. Use the exact entity that reached the controller
-		// instead of letting a nearby item win the ordinary aim lookup.
-		useEntity = objectPullTarget;
-		if (m_VR && m_VR->m_ObjectPullDebugLog)
-		{
-			Game::logMsg(
-				"[VR][ObjectPull][server] PlayerUse native usercmd target override player=%d entity=%p",
-				m_Game ? m_Game->m_CurrentUsercmdID : -1,
-				objectPullTarget);
-		}
-	}
+    if (void* objectPullTarget =
+        ObjectPullSelectPendingNativePickupTarget(ecx))
+    {
+        // This invocation came from the real ProcessUsercmds pass for our one
+        // injected +use edge. Use the exact entity that reached the controller
+        // instead of letting a nearby item win the ordinary aim lookup.
+        useEntity = objectPullTarget;
+        if (m_VR && m_VR->m_ObjectPullDebugLog)
+        {
+            Game::logMsg(
+                "[VR][ObjectPull][server] PlayerUse native usercmd target override player=%d entity=%p",
+                m_Game ? m_Game->m_CurrentUsercmdID : -1,
+                objectPullTarget);
+        }
+    }
 
-	const bool useAimActive = IsServerUseControllerAimWindowActive();
-	if (useAimActive)
-	{
-		static std::chrono::steady_clock::time_point s_lastPlayerUseEntryLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastPlayerUseEntryLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastPlayerUseEntryLog).count() >= 0.50f)
-		{
-			s_lastPlayerUseEntryLog = now;
-			const int playerIndex = m_Game ? m_Game->m_CurrentUsercmdID : -1;
-			const bool validPlayerIndex = m_Game && m_Game->IsValidPlayerIndex(playerIndex);
-			const bool isUsingVR = validPlayerIndex && m_Game->m_PlayersVRInfo[playerIndex].isUsingVR;
-			Game::logMsg(
-				"[VR][UseAim] PlayerUse entry usercmd=%d isVR=%d hasAim=%d player=%p current=%p useEntity=%p",
-				playerIndex,
-				isUsingVR ? 1 : 0,
-				(m_VR && m_VR->m_HasNonVRAimSolution) ? 1 : 0,
-				ecx,
-				m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr,
-				useEntity);
-		}
-	}
+    const bool useAimActive = IsServerUseControllerAimWindowActive();
+    if (useAimActive)
+    {
+        static std::chrono::steady_clock::time_point s_lastPlayerUseEntryLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastPlayerUseEntryLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastPlayerUseEntryLog).count() >= 0.50f)
+        {
+            s_lastPlayerUseEntryLog = now;
+            const int playerIndex = m_Game ? m_Game->m_CurrentUsercmdID : -1;
+            const bool validPlayerIndex = m_Game && m_Game->IsValidPlayerIndex(playerIndex);
+            const bool isUsingVR = validPlayerIndex && m_Game->m_PlayersVRInfo[playerIndex].isUsingVR;
+            Game::logMsg(
+                "[VR][UseAim] PlayerUse entry usercmd=%d isVR=%d hasAim=%d player=%p current=%p useEntity=%p",
+                playerIndex,
+                isUsingVR ? 1 : 0,
+                (m_VR && m_VR->m_HasNonVRAimSolution) ? 1 : 0,
+                ecx,
+                m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr,
+                useEntity);
+        }
+    }
 
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	if (useAimActive && TryBuildServerUseControllerPose(ecx, controllerOrigin, controllerAngles))
-	{
-		static std::chrono::steady_clock::time_point s_lastPlayerUseLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastPlayerUseLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastPlayerUseLog).count() >= 0.50f)
-		{
-			s_lastPlayerUseLog = now;
-			Game::logMsg(
-				"[VR][UseAim] PlayerUse override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
-				controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
-				controllerAngles.x, controllerAngles.y, controllerAngles.z);
-		}
-		ScopedServerUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
-		hkPlayerUse.fOriginal(ecx, useEntity);
-		ObjectPullCompleteNativePickupUsercmd(
-			ecx,
-			useEntity);
-		return;
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    if (useAimActive && TryBuildServerUseControllerPose(ecx, controllerOrigin, controllerAngles))
+    {
+        static std::chrono::steady_clock::time_point s_lastPlayerUseLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastPlayerUseLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastPlayerUseLog).count() >= 0.50f)
+        {
+            s_lastPlayerUseLog = now;
+            Game::logMsg(
+                "[VR][UseAim] PlayerUse override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
+                controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
+                controllerAngles.x, controllerAngles.y, controllerAngles.z);
+        }
+        ScopedServerUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
+        hkPlayerUse.fOriginal(ecx, useEntity);
+        ObjectPullCompleteNativePickupUsercmd(
+            ecx,
+            useEntity);
+        return;
+    }
 
-	hkPlayerUse.fOriginal(ecx, useEntity);
-	ObjectPullCompleteNativePickupUsercmd(
-		ecx,
-		useEntity);
+    hkPlayerUse.fOriginal(ecx, useEntity);
+    ObjectPullCompleteNativePickupUsercmd(
+        ecx,
+        useEntity);
 }
 
 Server_BaseEntity* Hooks::dFindUseEntity(void* ecx, void* edx, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra)
 {
-	if (void* objectPullTarget =
-			ObjectPullSelectPendingNativePickupTarget(ecx))
-	{
-		return reinterpret_cast<Server_BaseEntity*>(
-			objectPullTarget);
-	}
+    if (void* objectPullTarget =
+        ObjectPullSelectPendingNativePickupTarget(ecx))
+    {
+        return reinterpret_cast<Server_BaseEntity*>(
+            objectPullTarget);
+    }
 
-	const bool useAimActive = IsServerUseControllerAimWindowActive();
-	if (useAimActive)
-	{
-		static std::chrono::steady_clock::time_point s_lastFindUseEntryLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastFindUseEntryLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastFindUseEntryLog).count() >= 0.50f)
-		{
-			s_lastFindUseEntryLog = now;
-			const int playerIndex = m_Game ? m_Game->m_CurrentUsercmdID : -1;
-			const bool validPlayerIndex = m_Game && m_Game->IsValidPlayerIndex(playerIndex);
-			const bool isUsingVR = validPlayerIndex && m_Game->m_PlayersVRInfo[playerIndex].isUsingVR;
-			Game::logMsg(
-				"[VR][UseAim] FindUseEntity entry usercmd=%d isVR=%d hasAim=%d player=%p current=%p",
-				playerIndex,
-				isUsingVR ? 1 : 0,
-				(m_VR && m_VR->m_HasNonVRAimSolution) ? 1 : 0,
-				ecx,
-				m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr);
-		}
-	}
+    const bool useAimActive = IsServerUseControllerAimWindowActive();
+    if (useAimActive)
+    {
+        static std::chrono::steady_clock::time_point s_lastFindUseEntryLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastFindUseEntryLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastFindUseEntryLog).count() >= 0.50f)
+        {
+            s_lastFindUseEntryLog = now;
+            const int playerIndex = m_Game ? m_Game->m_CurrentUsercmdID : -1;
+            const bool validPlayerIndex = m_Game && m_Game->IsValidPlayerIndex(playerIndex);
+            const bool isUsingVR = validPlayerIndex && m_Game->m_PlayersVRInfo[playerIndex].isUsingVR;
+            Game::logMsg(
+                "[VR][UseAim] FindUseEntity entry usercmd=%d isVR=%d hasAim=%d player=%p current=%p",
+                playerIndex,
+                isUsingVR ? 1 : 0,
+                (m_VR && m_VR->m_HasNonVRAimSolution) ? 1 : 0,
+                ecx,
+                m_Game ? reinterpret_cast<void*>(m_Game->m_CurrentUsercmdPlayer) : nullptr);
+        }
+    }
 
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	if (useAimActive && TryBuildServerUseControllerPose(ecx, controllerOrigin, controllerAngles))
-	{
-		static std::chrono::steady_clock::time_point s_lastFindUseLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastFindUseLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastFindUseLog).count() >= 0.50f)
-		{
-			s_lastFindUseLog = now;
-			Game::logMsg(
-				"[VR][UseAim] FindUseEntity override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
-				controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
-				controllerAngles.x, controllerAngles.y, controllerAngles.z);
-		}
-		ScopedServerUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
-		return hkFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    if (useAimActive && TryBuildServerUseControllerPose(ecx, controllerOrigin, controllerAngles))
+    {
+        static std::chrono::steady_clock::time_point s_lastFindUseLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastFindUseLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastFindUseLog).count() >= 0.50f)
+        {
+            s_lastFindUseLog = now;
+            Game::logMsg(
+                "[VR][UseAim] FindUseEntity override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
+                controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
+                controllerAngles.x, controllerAngles.y, controllerAngles.z);
+        }
+        ScopedServerUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
+        return hkFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
+    }
 
-	return hkFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
+    return hkFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
 }
 
 static C_BaseEntity* ObjectPullGetClientNativeHighlightTarget(
-	Game* game,
-	VR* vr)
+    Game* game,
+    VR* vr)
 {
-	if (!game ||
-		!vr ||
-		!game->m_ClientEntityList ||
-		!vr->m_ObjectPullVisualsEnabled ||
-		(vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Targeting &&
-			vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Armed))
-	{
-		return nullptr;
-	}
+    if (!game ||
+        !vr ||
+        !game->m_ClientEntityList ||
+        !vr->m_ObjectPullVisualsEnabled ||
+        (vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Targeting &&
+            vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Armed))
+    {
+        return nullptr;
+    }
 
-	C_BaseEntity* pullTarget = vr->m_ObjectPullClientTarget;
-	const int pullTargetIndex =
-		vr->m_ObjectPullClientTargetEntityIndex;
-	void* expectedVtable =
-		vr->m_ObjectPullClientTargetVtable;
-	if (!pullTarget ||
-		!expectedVtable ||
-		pullTargetIndex <= 0 ||
-		pullTargetIndex > 2047)
-	{
-		return nullptr;
-	}
+    C_BaseEntity* pullTarget = vr->m_ObjectPullClientTarget;
+    const int pullTargetIndex =
+        vr->m_ObjectPullClientTargetEntityIndex;
+    void* expectedVtable =
+        vr->m_ObjectPullClientTargetVtable;
+    if (!pullTarget ||
+        !expectedVtable ||
+        pullTargetIndex <= 0 ||
+        pullTargetIndex > 2047)
+    {
+        return nullptr;
+    }
 
 #ifdef _MSC_VER
-	__try
-	{
-		C_BaseEntity* current = static_cast<C_BaseEntity*>(
-			game->m_ClientEntityList->GetClientEntity(
-				pullTargetIndex));
-		if (current == pullTarget &&
-			*reinterpret_cast<void**>(current) == expectedVtable)
-		{
-			return current;
-		}
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-	}
+    __try
+    {
+        C_BaseEntity* current = static_cast<C_BaseEntity*>(
+            game->m_ClientEntityList->GetClientEntity(
+                pullTargetIndex));
+        if (current == pullTarget &&
+            *reinterpret_cast<void**>(current) == expectedVtable)
+        {
+            return current;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
 #else
-	C_BaseEntity* current = static_cast<C_BaseEntity*>(
-		game->m_ClientEntityList->GetClientEntity(
-			pullTargetIndex));
-	if (current == pullTarget &&
-		*reinterpret_cast<void**>(current) == expectedVtable)
-	{
-		return current;
-	}
+    C_BaseEntity* current = static_cast<C_BaseEntity*>(
+        game->m_ClientEntityList->GetClientEntity(
+            pullTargetIndex));
+    if (current == pullTarget &&
+        *reinterpret_cast<void**>(current) == expectedVtable)
+    {
+        return current;
+    }
 #endif
-	return nullptr;
+    return nullptr;
 }
 
 C_BaseEntity* Hooks::dClientFindUseEntity(void* ecx, void* edx, float radius, float dotLimit, float defaultDotLimit, void* traceResult, void* extra)
 {
-	if (C_BaseEntity* pullTarget =
-			ObjectPullGetClientNativeHighlightTarget(m_Game, m_VR))
-	{
-		// This is the same target feed used by L4D2's native item-outline
-		// system. Returning the exact selected entity gives Object Pull the
-		// original game outline without drawing a second ray/marker effect.
-		return pullTarget;
-	}
+    if (C_BaseEntity* pullTarget =
+        ObjectPullGetClientNativeHighlightTarget(m_Game, m_VR))
+    {
+        // This is the same target feed used by L4D2's native item-outline
+        // system. Returning the exact selected entity gives Object Pull the
+        // original game outline without drawing a second ray/marker effect.
+        return pullTarget;
+    }
 
-	Vector controllerOrigin;
-	QAngle controllerAngles;
-	if (TryBuildClientUseControllerPose(ecx, controllerOrigin, controllerAngles))
-	{
-		static std::chrono::steady_clock::time_point s_lastClientFindUseLog{};
-		const auto now = std::chrono::steady_clock::now();
-		if (s_lastClientFindUseLog.time_since_epoch().count() == 0 ||
-			std::chrono::duration<float>(now - s_lastClientFindUseLog).count() >= 1.00f)
-		{
-			s_lastClientFindUseLog = now;
-			Game::logMsg(
-				"[VR][UseAim] ClientFindUseEntity highlight override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
-				controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
-				controllerAngles.x, controllerAngles.y, controllerAngles.z);
-		}
-		ScopedClientUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
-		return hkClientFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
-	}
+    Vector controllerOrigin;
+    QAngle controllerAngles;
+    if (TryBuildClientUseControllerPose(ecx, controllerOrigin, controllerAngles))
+    {
+        static std::chrono::steady_clock::time_point s_lastClientFindUseLog{};
+        const auto now = std::chrono::steady_clock::now();
+        if (s_lastClientFindUseLog.time_since_epoch().count() == 0 ||
+            std::chrono::duration<float>(now - s_lastClientFindUseLog).count() >= 1.00f)
+        {
+            s_lastClientFindUseLog = now;
+            Game::logMsg(
+                "[VR][UseAim] ClientFindUseEntity highlight override origin=(%.1f %.1f %.1f) angles=(%.1f %.1f %.1f)",
+                controllerOrigin.x, controllerOrigin.y, controllerOrigin.z,
+                controllerAngles.x, controllerAngles.y, controllerAngles.z);
+        }
+        ScopedClientUseControllerAimOverride useAim(ecx, controllerOrigin, controllerAngles);
+        return hkClientFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
+    }
 
-	return hkClientFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
+    return hkClientFindUseEntity.fOriginal(ecx, radius, dotLimit, defaultDotLimit, traceResult, extra);
 }
 
 bool __fastcall Hooks::dWorldPoseWeaponSetupBones(
-	void* ecx,
-	void* edx,
-	matrix3x4_t* boneToWorldOut,
-	int maxBones,
-	int boneMask,
-	float currentTime)
+    void* ecx,
+    void* edx,
+    matrix3x4_t* boneToWorldOut,
+    int maxBones,
+    int boneMask,
+    float currentTime)
 {
-	const bool result =
-		hkWorldPoseWeaponSetupBones.fOriginal(
-			ecx,
-			boneToWorldOut,
-			maxBones,
-			boneMask,
-			currentTime);
-	if (result && boneToWorldOut)
-	{
-		HooksWorldPoseApplyWeaponSetupBones(
-			m_VR,
-			m_Game,
-			ecx,
-			boneToWorldOut,
-			maxBones,
-			boneMask,
-			currentTime);
-	}
-	return result;
+    const bool result =
+        hkWorldPoseWeaponSetupBones.fOriginal(
+            ecx,
+            boneToWorldOut,
+            maxBones,
+            boneMask,
+            currentTime);
+    if (result && boneToWorldOut)
+    {
+        HooksWorldPoseApplyWeaponSetupBones(
+            m_VR,
+            m_Game,
+            ecx,
+            boneToWorldOut,
+            maxBones,
+            boneMask,
+            currentTime);
+    }
+    return result;
 }
 
 void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRenderInfo_t& info, void* pCustomBoneToWorld)
 {
-	vr_vm_stabilize::ScopedStableBoneScratch stableBoneScratchScope;
-	constexpr int kStudioShadowDepthTexture = 0x40000000;
-	const bool shadowDepthDraw =
-		(info.flags & kStudioShadowDepthTexture) != 0;
+    vr_vm_stabilize::ScopedStableBoneScratch stableBoneScratchScope;
+    constexpr int kStudioShadowDepthTexture = 0x40000000;
+    const bool shadowDepthDraw =
+        (info.flags & kStudioShadowDepthTexture) != 0;
 
-	HooksMaybePublishAndLogPlayerModelMaterials(
-		m_VR,
-		m_Game,
-		state,
-		info,
-		shadowDepthDraw);
+    HooksMaybePublishAndLogPlayerModelMaterials(
+        m_VR,
+        m_Game,
+        state,
+        info,
+        shadowDepthDraw);
 
-	std::vector<IMaterial*> hiddenWorldModelMaterials;
-	const bool hasHiddenWorldModelMaterials =
-		!shadowDepthDraw &&
-		HooksFirstPersonBodyCollectHiddenMaterials(
-			m_VR,
-			m_Game,
-			state,
-			info.pModel,
-			hiddenWorldModelMaterials);
+    std::vector<IMaterial*> hiddenWorldModelMaterials;
+    const bool hasHiddenWorldModelMaterials =
+        !shadowDepthDraw &&
+        HooksFirstPersonBodyCollectHiddenMaterials(
+            m_VR,
+            m_Game,
+            state,
+            info.pModel,
+            hiddenWorldModelMaterials);
 
-	CMatRenderContextPtr worldModelMaterialContext;
-	ICallQueue* worldModelMaterialCallQueue = nullptr;
-	const int worldModelMaterialQueueMode =
-		(m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
-	if (hasHiddenWorldModelMaterials &&
-		worldModelMaterialQueueMode != 0 &&
-		m_Game &&
-		m_Game->m_MaterialSystem)
-	{
-		worldModelMaterialContext =
-			m_Game->m_MaterialSystem->GetRenderContext();
-		worldModelMaterialCallQueue =
-			HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
-				worldModelMaterialContext);
-	}
+    CMatRenderContextPtr worldModelMaterialContext;
+    ICallQueue* worldModelMaterialCallQueue = nullptr;
+    const int worldModelMaterialQueueMode =
+        (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+    if (hasHiddenWorldModelMaterials &&
+        worldModelMaterialQueueMode != 0 &&
+        m_Game &&
+        m_Game->m_MaterialSystem)
+    {
+        worldModelMaterialContext =
+            m_Game->m_MaterialSystem->GetRenderContext();
+        worldModelMaterialCallQueue =
+            HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
+                worldModelMaterialContext);
+    }
 
-	HooksFirstPersonBodyMaterialHideLease worldModelMaterialHideLease(
-		hiddenWorldModelMaterials);
-	HooksWorldModelClothingQueuedReleaseGuard
-		worldModelMaterialQueuedReleaseGuard(
-			worldModelMaterialHideLease,
-			worldModelMaterialQueueMode,
-			worldModelMaterialCallQueue);
+    HooksFirstPersonBodyMaterialHideLease worldModelMaterialHideLease(
+        hiddenWorldModelMaterials);
+    HooksWorldModelClothingQueuedReleaseGuard
+        worldModelMaterialQueuedReleaseGuard(
+            worldModelMaterialHideLease,
+            worldModelMaterialQueueMode,
+            worldModelMaterialCallQueue);
 
-	HooksFirstPersonBodyEyeSceneState* const firstPersonBodyState =
-		g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
-	const bool firstPersonBodyEyeActive =
-		firstPersonBodyState != nullptr &&
-		firstPersonBodyState->bodyActive &&
-		firstPersonBodyState->playerGeneration ==
-			g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) &&
-		g_FirstPersonBodyPlayerReady.load(std::memory_order_acquire) &&
-		g_FirstPersonBodyActualFirstPerson.load(std::memory_order_acquire) &&
-		m_VR &&
-		!m_VR->m_IsThirdPersonCamera &&
-		InterlockedCompareExchange(
-			&g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
+    HooksFirstPersonBodyEyeSceneState* const firstPersonBodyState =
+        g_FirstPersonBodyPublishedState.load(std::memory_order_acquire);
+    const bool firstPersonBodyEyeActive =
+        firstPersonBodyState != nullptr &&
+        firstPersonBodyState->bodyActive &&
+        firstPersonBodyState->playerGeneration ==
+        g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire) &&
+        g_FirstPersonBodyPlayerReady.load(std::memory_order_acquire) &&
+        g_FirstPersonBodyActualFirstPerson.load(std::memory_order_acquire) &&
+        m_VR &&
+        !m_VR->m_IsThirdPersonCamera &&
+        InterlockedCompareExchange(
+            &g_FirstPersonBodyEyeSceneActive, 0, 0) != 0;
 
-	if (firstPersonBodyEyeActive &&
-		m_VR &&
-		m_Game &&
-		m_VR->m_FirstPersonBodyEnabled)
-	{
-		if (m_VR->m_FirstPersonBodyHideWorldWeapon &&
-			(info.flags & kStudioShadowDepthTexture) == 0 &&
-			firstPersonBodyState->activeWeaponRenderable &&
-			info.pRenderable == firstPersonBodyState->activeWeaponRenderable)
-		{
-			return;
-		}
+    if (firstPersonBodyEyeActive &&
+        m_VR &&
+        m_Game &&
+        m_VR->m_FirstPersonBodyEnabled)
+    {
+        if (m_VR->m_FirstPersonBodyHideWorldWeapon &&
+            (info.flags & kStudioShadowDepthTexture) == 0 &&
+            firstPersonBodyState->activeWeaponRenderable &&
+            info.pRenderable == firstPersonBodyState->activeWeaponRenderable)
+        {
+            return;
+        }
 
-		const bool isLocalPlayerDraw =
-			firstPersonBodyState->localPlayerRenderable &&
-			info.pRenderable == firstPersonBodyState->localPlayerRenderable;
-		if (isLocalPlayerDraw)
-		{
-			// Preserve Source's original shadow submission. HMD anchoring and bone
-			// masking apply only to the per-eye color draw.
-			if ((info.flags & kStudioShadowDepthTexture) != 0)
-			{
-				hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
-				return;
-			}
+        const bool isLocalPlayerDraw =
+            firstPersonBodyState->localPlayerRenderable &&
+            info.pRenderable == firstPersonBodyState->localPlayerRenderable;
+        if (isLocalPlayerDraw)
+        {
+            // Preserve Source's original shadow submission. HMD anchoring and bone
+            // masking apply only to the per-eye color draw.
+            if ((info.flags & kStudioShadowDepthTexture) != 0)
+            {
+                hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+                return;
+            }
 
-			HooksFirstPersonBodyBoneBufferLease bodyBufferLease;
-			HooksFirstPersonBodyBoneBuffer* const bodyBuffer =
-				bodyBufferLease.Get();
-			if (!bodyBuffer)
-			{
-				static std::atomic<bool> s_loggedBodyBufferCap{ false };
-				if (!s_loggedBodyBufferCap.exchange(
-						true, std::memory_order_acq_rel))
-				{
-					Game::logMsg(
-						"[VR][FirstPersonBody] body skipped: more than %u nested bone draws",
-						static_cast<unsigned int>(
-							HooksFirstPersonBodyBoneBufferPool::kMaxBuffers));
-				}
-				return;
-			}
+            HooksFirstPersonBodyBoneBufferLease bodyBufferLease;
+            HooksFirstPersonBodyBoneBuffer* const bodyBuffer =
+                bodyBufferLease.Get();
+            if (!bodyBuffer)
+            {
+                static std::atomic<bool> s_loggedBodyBufferCap{ false };
+                if (!s_loggedBodyBufferCap.exchange(
+                    true, std::memory_order_acq_rel))
+                {
+                    Game::logMsg(
+                        "[VR][FirstPersonBody] body skipped: more than %u nested bone draws",
+                        static_cast<unsigned int>(
+                            HooksFirstPersonBodyBoneBufferPool::kMaxBuffers));
+                }
+                return;
+            }
 
-			vr_vm_stabilize::Mat3x4* anchoredBodyBones = nullptr;
-			if (!HooksFirstPersonBodyBuildAnchoredBones(
-				m_VR,
-				firstPersonBodyState,
-				state,
-				info,
-				pCustomBoneToWorld,
-				bodyBuffer->bones,
-				anchoredBodyBones))
-			{
-				static std::atomic<bool> s_loggedBodyBoneFailure{ false };
-				if (!s_loggedBodyBoneFailure.exchange(true, std::memory_order_acq_rel))
-				{
-					Game::logMsg(
-						"[VR][FirstPersonBody] failed to build HMD-anchored masked body bones entity=%d state=%p bones=%p",
-						info.entity_index,
-						state,
-						pCustomBoneToWorld);
-				}
-				return;
-			}
+            vr_vm_stabilize::Mat3x4* anchoredBodyBones = nullptr;
+            if (!HooksFirstPersonBodyBuildAnchoredBones(
+                m_VR,
+                firstPersonBodyState,
+                state,
+                info,
+                pCustomBoneToWorld,
+                bodyBuffer->bones,
+                anchoredBodyBones))
+            {
+                static std::atomic<bool> s_loggedBodyBoneFailure{ false };
+                if (!s_loggedBodyBoneFailure.exchange(true, std::memory_order_acq_rel))
+                {
+                    Game::logMsg(
+                        "[VR][FirstPersonBody] failed to build HMD-anchored masked body bones entity=%d state=%p bones=%p",
+                        info.entity_index,
+                        state,
+                        pCustomBoneToWorld);
+                }
+                return;
+            }
 
-			static std::atomic<bool> s_loggedBodyDrawReached{ false };
-			if (!s_loggedBodyDrawReached.exchange(true, std::memory_order_acq_rel))
-			{
-				Game::logMsg(
-					"[VR][FirstPersonBody] HMD-anchored masked local body draw reached entity=%d bones=%p->%p",
-					info.entity_index,
-					pCustomBoneToWorld,
-					anchoredBodyBones);
-			}
+            static std::atomic<bool> s_loggedBodyDrawReached{ false };
+            if (!s_loggedBodyDrawReached.exchange(true, std::memory_order_acq_rel))
+            {
+                Game::logMsg(
+                    "[VR][FirstPersonBody] HMD-anchored masked local body draw reached entity=%d bones=%p->%p",
+                    info.entity_index,
+                    pCustomBoneToWorld,
+                    anchoredBodyBones);
+            }
 
-			hkDrawModelExecute.fOriginal(
-				ecx,
-				state,
-				info,
-				anchoredBodyBones);
-			return;
-		}
-	}
+            hkDrawModelExecute.fOriginal(
+                ecx,
+                state,
+                info,
+                anchoredBodyBones);
+            return;
+        }
+    }
 
-	if (m_Game->m_SwitchedWeapons)
-		m_Game->m_CachedArmsModel = false;
+    if (m_Game->m_SwitchedWeapons)
+        m_Game->m_CachedArmsModel = false;
 
-	const bool nativeViewmodelHandsOnlyActive =
-		HooksNativeViewmodelHandsOnlyActive(m_VR);
-	const bool emptyHandsPlaceholderActiveAtEntry =
-		m_VR &&
-		m_VR->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
-	bool hideArms =
-		!emptyHandsPlaceholderActiveAtEntry &&
-		(m_VR->m_HideArms ||
-			(m_Game->m_IsMeleeWeaponActive && !nativeViewmodelHandsOnlyActive));
+    const bool nativeViewmodelHandsOnlyActive =
+        HooksNativeViewmodelHandsOnlyActive(m_VR);
+    const bool emptyHandsPlaceholderActiveAtEntry =
+        m_VR &&
+        m_VR->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
+    bool hideArms =
+        !emptyHandsPlaceholderActiveAtEntry &&
+        (m_VR->m_HideArms ||
+            (m_Game->m_IsMeleeWeaponActive && !nativeViewmodelHandsOnlyActive));
 
-	void* pBonesToWorldFinal = pCustomBoneToWorld;
-	vr_vm_stabilize::Mat3x4* magazineInteractionDetachedMagazineBones = nullptr;
-	bool drawMagazineInteractionDetachedMagazine = false;
-	vr_vm_stabilize::Mat3x4* magazineInteractionCalibrationPreviewBones = nullptr;
-	vr_vm_stabilize::Mat3x4* magazineInteractionCalibrationPreviewModelToWorld = nullptr;
-	bool drawMagazineInteractionCalibrationPreview = false;
-	Vector magazineInteractionCalibrationPreviewOrigin(0.0f, 0.0f, 0.0f);
-	QAngle magazineInteractionCalibrationPreviewAngles(0.0f, 0.0f, 0.0f);
-	bool magazineInteractionCalibrationPreviewDrawnAsPrimary = false;
-	bool drawEntityIsViewmodelClass = false;
-	bool viewmodelAutoGripApplied = false;
+    void* pBonesToWorldFinal = pCustomBoneToWorld;
+    vr_vm_stabilize::Mat3x4* magazineInteractionDetachedMagazineBones = nullptr;
+    bool drawMagazineInteractionDetachedMagazine = false;
+    vr_vm_stabilize::Mat3x4* magazineInteractionCalibrationPreviewBones = nullptr;
+    vr_vm_stabilize::Mat3x4* magazineInteractionCalibrationPreviewModelToWorld = nullptr;
+    bool drawMagazineInteractionCalibrationPreview = false;
+    Vector magazineInteractionCalibrationPreviewOrigin(0.0f, 0.0f, 0.0f);
+    QAngle magazineInteractionCalibrationPreviewAngles(0.0f, 0.0f, 0.0f);
+    bool magazineInteractionCalibrationPreviewDrawnAsPrimary = false;
+    bool drawEntityIsViewmodelClass = false;
+    bool viewmodelAutoGripApplied = false;
 
-	// Per-draw origin/angles override (used for multicore viewmodel stabilization).
-	// We never write into shared entity state here; we only override the ModelRenderInfo_t
-	// passed down to the renderer for this draw call (frame-stable, avoids queued-thread tearing).
-	ModelRenderInfo_t drawInfo = info;
-	const ModelRenderInfo_t* pDrawInfo = &info;
+    // Per-draw origin/angles override (used for multicore viewmodel stabilization).
+    // We never write into shared entity state here; we only override the ModelRenderInfo_t
+    // passed down to the renderer for this draw call (frame-stable, avoids queued-thread tearing).
+    ModelRenderInfo_t drawInfo = info;
+    const ModelRenderInfo_t* pDrawInfo = &info;
 
-	std::string modelName;
-	if (info.pModel)
-	{
-		modelName = m_Game->m_ModelInfo->GetModelName(info.pModel);
-		// In desktop-mirror overlay hide mode, special-infected arrows are cached
-		// from the RenderView hook at a fixed stereo-pass point. Never scan from
-		// DrawModelExecute in that mode: under mat_queue_mode 2 this hook can run
-		// once per model and would multiply client-entity-list scan requests.
-		const bool desktopMirrorOverlayHideActiveEarly =
-			m_VR->m_DesktopMirrorHidePluginOverlays && m_VR->m_DesktopMirrorEnabled;
-		if (!desktopMirrorOverlayHideActiveEarly)
-			m_VR->ScanSpecialInfectedEntitiesFromClientList();
+    std::string modelName;
+    if (info.pModel)
+    {
+        modelName = m_Game->m_ModelInfo->GetModelName(info.pModel);
+        // In desktop-mirror overlay hide mode, special-infected arrows are cached
+        // from the RenderView hook at a fixed stereo-pass point. Never scan from
+        // DrawModelExecute in that mode: under mat_queue_mode 2 this hook can run
+        // once per model and would multiply client-entity-list scan requests.
+        const bool desktopMirrorOverlayHideActiveEarly =
+            m_VR->m_DesktopMirrorHidePluginOverlays && m_VR->m_DesktopMirrorEnabled;
+        if (!desktopMirrorOverlayHideActiveEarly)
+            m_VR->ScanSpecialInfectedEntitiesFromClientList();
 
-		const C_BaseEntity* entity = nullptr;
-		if (m_Game->m_ClientEntityList && info.entity_index > 0 && info.entity_index <= 2048)
-		{
-			entity = HooksSafeGetClientEntity(m_Game, info.entity_index);
-		}
-		bool isPlayerClass = false;
-		const char* className = nullptr;
-		if (entity)
-		{
-			className = HooksSafeGetNetworkClassName(m_Game, const_cast<C_BaseEntity*>(entity));
-			isPlayerClass = className && (std::strcmp(className, "CTerrorPlayer") == 0 || std::strcmp(className, "C_TerrorPlayer") == 0);
-		}
-		const bool isSurvivorWorldModel =
-			entity &&
-			info.entity_index > 0 &&
-			info.entity_index <= 64 &&
-			modelName.find("models/survivors/") != std::string::npos;
-		const bool isPlayerWorldModel =
-			isPlayerClass || isSurvivorWorldModel;
-		if (m_VR->m_WorldModelVRPoseDebugLog &&
-			m_Game->m_EngineClient &&
-			info.entity_index == m_Game->m_EngineClient->GetLocalPlayer() &&
-			isSurvivorWorldModel)
-		{
-			static thread_local std::uint64_t s_lastLocalWorldPoseStageLog = 0u;
-			const std::uint64_t now =
-				static_cast<std::uint64_t>(GetTickCount64());
-			if (now - s_lastLocalWorldPoseStageLog >= 1000u)
-			{
-				s_lastLocalWorldPoseStageLog = now;
-				Game::logMsg(
-					"[VR][WorldPose] local draw stage class=%s model=%s thirdPerson=%d firstPersonBodyEye=%d bones=%p shadow=%d",
-					className ? className : "<null>",
-					modelName.c_str(),
-					m_VR->m_IsThirdPersonCamera ? 1 : 0,
-					firstPersonBodyEyeActive ? 1 : 0,
-					pBonesToWorldFinal,
-					shadowDepthDraw ? 1 : 0);
-			}
-		}
-		const bool isViewmodelClassForProbe = className &&
-			(std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0);
-		drawEntityIsViewmodelClass = isViewmodelClassForProbe;
-		if (m_VR->m_VrHandsDebugLog && (isViewmodelClassForProbe || HooksModelNameIsViewmodel(modelName)))
-		{
-			MaybeLogVrHandsViewmodelBoneProbe(
-				state,
-				modelName,
-				info.entity_index,
-				className,
-				pCustomBoneToWorld,
-				pCustomBoneToWorld != nullptr);
-		}
-		// A server SetOrigin teleport can leave one queued first-person viewmodel draw
-		// produced against the pre-teleport anchor. Drop that short transition window
-		// instead of rendering a weapon model that flashes once and disappears.
-		const bool teleportSuppressibleViewmodel =
-			(className && (std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0)) ||
-			(modelName.find("models/weapons/v_") != std::string::npos) ||
-			(modelName.find("/v_models/") != std::string::npos) ||
-			(modelName.find("models/v_models/") != std::string::npos) ||
-			(modelName.find("models/weapons/melee/v_") != std::string::npos) ||
-			(modelName.find("/melee/v_") != std::string::npos) ||
-			(modelName.find("models/weapons/arms/") != std::string::npos) ||
-			(modelName.find("/arms/") != std::string::npos) ||
-			(modelName.find("v_arms") != std::string::npos) ||
-			(modelName.find("models/weapons/hands/") != std::string::npos) ||
-			(modelName.find("/hands/") != std::string::npos) ||
-			(modelName.find("v_hands") != std::string::npos);
-		const std::string lowerWorldPoseModelName =
-			vr_vm_stabilize::ToLowerAscii(modelName);
-		const bool looksLikeHeldWorldModel =
-			lowerWorldPoseModelName.find("/w_models/") !=
-				std::string::npos ||
-			lowerWorldPoseModelName.find("models/weapons/w_") !=
-				std::string::npos ||
-			lowerWorldPoseModelName.find("/weapons/w_") !=
-				std::string::npos ||
-			lowerWorldPoseModelName.find("/melee/w_") !=
-				std::string::npos;
-		if (emptyHandsPlaceholderActiveAtEntry &&
-			m_VR->m_IsThirdPersonCamera &&
-			looksLikeHeldWorldModel &&
-			m_Game &&
-			m_Game->m_EngineClient &&
-			m_Game->m_ClientEntityList)
-		{
-			const int localPlayerIndex =
-				m_Game->m_EngineClient->GetLocalPlayer();
-			C_BaseEntity* const localPlayerEntity =
-				(localPlayerIndex > 0)
-					? HooksSafeGetClientEntity(
-						m_Game,
-						localPlayerIndex)
-					: nullptr;
-			C_BaseCombatWeapon* activeWeapon = nullptr;
-			void* activeWeaponRenderable = nullptr;
-			if (localPlayerEntity &&
-				HooksWorldPoseGetActiveWeaponSafe(
-					localPlayerEntity,
-					activeWeapon,
-					activeWeaponRenderable) &&
-				activeWeaponRenderable &&
-				(info.pRenderable == activeWeaponRenderable ||
-				 entity == activeWeapon))
-			{
-				// The server-side dummy pistol keeps native shove/use behavior
-				// after the real inventory is empty. Hide only that local active
-				// renderable; dropped weapons and other players remain visible.
-				return;
-			}
-		}
-		if (teleportSuppressibleViewmodel && m_VR->ShouldSuppressTeleportViewmodelRender())
-			return;
-		if (teleportSuppressibleViewmodel)
-			m_VR->DrawVrHandsWorldDepthMaskBeforeViewmodel();
-		const bool emptyHandsPlaceholderActive =
-			m_VR->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
-		if (emptyHandsPlaceholderActive &&
-			teleportSuppressibleViewmodel &&
-			!HooksModelNameIsArmsOrHands(vr_vm_stabilize::ToLowerAscii(modelName)))
-		{
-			// The native placeholder pistol supplies stock shove behavior, but its
-			// weapon model is not visible. Keep the separate survivor arms model;
-			// the forced NativeViewmodelHandsOnly path below trims it to both hands.
-			return;
-		}
+        const C_BaseEntity* entity = nullptr;
+        if (m_Game->m_ClientEntityList && info.entity_index > 0 && info.entity_index <= 2048)
+        {
+            entity = HooksSafeGetClientEntity(m_Game, info.entity_index);
+        }
+        bool isPlayerClass = false;
+        const char* className = nullptr;
+        if (entity)
+        {
+            className = HooksSafeGetNetworkClassName(m_Game, const_cast<C_BaseEntity*>(entity));
+            isPlayerClass = className && (std::strcmp(className, "CTerrorPlayer") == 0 || std::strcmp(className, "C_TerrorPlayer") == 0);
+        }
+        const bool isSurvivorWorldModel =
+            entity &&
+            info.entity_index > 0 &&
+            info.entity_index <= 64 &&
+            modelName.find("models/survivors/") != std::string::npos;
+        const bool isPlayerWorldModel =
+            isPlayerClass || isSurvivorWorldModel;
+        if (m_VR->m_WorldModelVRPoseDebugLog &&
+            m_Game->m_EngineClient &&
+            info.entity_index == m_Game->m_EngineClient->GetLocalPlayer() &&
+            isSurvivorWorldModel)
+        {
+            static thread_local std::uint64_t s_lastLocalWorldPoseStageLog = 0u;
+            const std::uint64_t now =
+                static_cast<std::uint64_t>(GetTickCount64());
+            if (now - s_lastLocalWorldPoseStageLog >= 1000u)
+            {
+                s_lastLocalWorldPoseStageLog = now;
+                Game::logMsg(
+                    "[VR][WorldPose] local draw stage class=%s model=%s thirdPerson=%d firstPersonBodyEye=%d bones=%p shadow=%d",
+                    className ? className : "<null>",
+                    modelName.c_str(),
+                    m_VR->m_IsThirdPersonCamera ? 1 : 0,
+                    firstPersonBodyEyeActive ? 1 : 0,
+                    pBonesToWorldFinal,
+                    shadowDepthDraw ? 1 : 0);
+            }
+        }
+        const bool isViewmodelClassForProbe = className &&
+            (std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0);
+        drawEntityIsViewmodelClass = isViewmodelClassForProbe;
+        if (m_VR->m_VrHandsDebugLog && (isViewmodelClassForProbe || HooksModelNameIsViewmodel(modelName)))
+        {
+            MaybeLogVrHandsViewmodelBoneProbe(
+                state,
+                modelName,
+                info.entity_index,
+                className,
+                pCustomBoneToWorld,
+                pCustomBoneToWorld != nullptr);
+        }
+        // A server SetOrigin teleport can leave one queued first-person viewmodel draw
+        // produced against the pre-teleport anchor. Drop that short transition window
+        // instead of rendering a weapon model that flashes once and disappears.
+        const bool teleportSuppressibleViewmodel =
+            (className && (std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0)) ||
+            (modelName.find("models/weapons/v_") != std::string::npos) ||
+            (modelName.find("/v_models/") != std::string::npos) ||
+            (modelName.find("models/v_models/") != std::string::npos) ||
+            (modelName.find("models/weapons/melee/v_") != std::string::npos) ||
+            (modelName.find("/melee/v_") != std::string::npos) ||
+            (modelName.find("models/weapons/arms/") != std::string::npos) ||
+            (modelName.find("/arms/") != std::string::npos) ||
+            (modelName.find("v_arms") != std::string::npos) ||
+            (modelName.find("models/weapons/hands/") != std::string::npos) ||
+            (modelName.find("/hands/") != std::string::npos) ||
+            (modelName.find("v_hands") != std::string::npos);
+        const std::string lowerWorldPoseModelName =
+            vr_vm_stabilize::ToLowerAscii(modelName);
+        const bool looksLikeHeldWorldModel =
+            lowerWorldPoseModelName.find("/w_models/") !=
+            std::string::npos ||
+            lowerWorldPoseModelName.find("models/weapons/w_") !=
+            std::string::npos ||
+            lowerWorldPoseModelName.find("/weapons/w_") !=
+            std::string::npos ||
+            lowerWorldPoseModelName.find("/melee/w_") !=
+            std::string::npos;
+        if (emptyHandsPlaceholderActiveAtEntry &&
+            m_VR->m_IsThirdPersonCamera &&
+            looksLikeHeldWorldModel &&
+            m_Game &&
+            m_Game->m_EngineClient &&
+            m_Game->m_ClientEntityList)
+        {
+            const int localPlayerIndex =
+                m_Game->m_EngineClient->GetLocalPlayer();
+            C_BaseEntity* const localPlayerEntity =
+                (localPlayerIndex > 0)
+                ? HooksSafeGetClientEntity(
+                    m_Game,
+                    localPlayerIndex)
+                : nullptr;
+            C_BaseCombatWeapon* activeWeapon = nullptr;
+            void* activeWeaponRenderable = nullptr;
+            if (localPlayerEntity &&
+                HooksWorldPoseGetActiveWeaponSafe(
+                    localPlayerEntity,
+                    activeWeapon,
+                    activeWeaponRenderable) &&
+                activeWeaponRenderable &&
+                (info.pRenderable == activeWeaponRenderable ||
+                    entity == activeWeapon))
+            {
+                // The server-side dummy pistol keeps native shove/use behavior
+                // after the real inventory is empty. Hide only that local active
+                // renderable; dropped weapons and other players remain visible.
+                return;
+            }
+        }
+        if (teleportSuppressibleViewmodel && m_VR->ShouldSuppressTeleportViewmodelRender())
+            return;
+        if (teleportSuppressibleViewmodel)
+            m_VR->DrawVrHandsWorldDepthMaskBeforeViewmodel();
+        const bool emptyHandsPlaceholderActive =
+            m_VR->m_ManualInventoryEmptyHandsActive.load(std::memory_order_acquire);
+        if (emptyHandsPlaceholderActive &&
+            teleportSuppressibleViewmodel &&
+            !HooksModelNameIsArmsOrHands(vr_vm_stabilize::ToLowerAscii(modelName)))
+        {
+            // The native placeholder pistol supplies stock shove behavior, but its
+            // weapon model is not visible. Keep the separate survivor arms model;
+            // the forced NativeViewmodelHandsOnly path below trims it to both hands.
+            return;
+        }
 
-		const bool suppressDesktopMirrorPluginOverlays =
-			m_VR->m_DesktopMirrorCleanRenderingPass && m_VR->m_DesktopMirrorHidePluginOverlays;
-		const bool desktopMirrorOverlayHideActive =
-			m_VR->m_DesktopMirrorHidePluginOverlays && m_VR->m_DesktopMirrorEnabled;
-		const bool singlePassDesktopMirrorPluginOverlays = false;
-		const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
-		if (queueMode == 0 &&
-			!suppressDesktopMirrorPluginOverlays &&
-			(info.entity_index == -1 || (info.entity_index > 0 && info.entity_index <= 2048)))
-		{
-			m_VR->DrawItemModelLabel(info.entity_index, modelName, info.origin, entity, className);
-		}
-		// Scope RTT pass: optionally hide the local player model so scoped view isn't blocked by your own head/body.
-		if (m_VR->m_ScopeRenderingPass && m_VR->m_ScopeHideLocalPlayerModelInScope && isPlayerClass && m_Game->m_EngineClient)
-		{
-			const int localPlayerIndex = m_Game->m_EngineClient->GetLocalPlayer();
-			if (info.entity_index == localPlayerIndex)
-				return;
-		}
+        const bool suppressDesktopMirrorPluginOverlays =
+            m_VR->m_DesktopMirrorCleanRenderingPass && m_VR->m_DesktopMirrorHidePluginOverlays;
+        const bool desktopMirrorOverlayHideActive =
+            m_VR->m_DesktopMirrorHidePluginOverlays && m_VR->m_DesktopMirrorEnabled;
+        const bool singlePassDesktopMirrorPluginOverlays = false;
+        const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+        if (queueMode == 0 &&
+            !suppressDesktopMirrorPluginOverlays &&
+            (info.entity_index == -1 || (info.entity_index > 0 && info.entity_index <= 2048)))
+        {
+            m_VR->DrawItemModelLabel(info.entity_index, modelName, info.origin, entity, className);
+        }
+        // Scope RTT pass: optionally hide the local player model so scoped view isn't blocked by your own head/body.
+        if (m_VR->m_ScopeRenderingPass && m_VR->m_ScopeHideLocalPlayerModelInScope && isPlayerClass && m_Game->m_EngineClient)
+        {
+            const int localPlayerIndex = m_Game->m_EngineClient->GetLocalPlayer();
+            if (info.entity_index == localPlayerIndex)
+                return;
+        }
 
-		// Reconstruct the observer-visible VR pose only in the render copy of
-		// CTerrorPlayer's final matrices.  The local player goes through this
-		// same path in a third-person scene, which makes protocol/IK testing
-		// possible without a second client.
-		if (isPlayerWorldModel &&
-			!shadowDepthDraw &&
-			pBonesToWorldFinal &&
-			entity)
-		{
-			vr_vm_stabilize::Mat3x4* worldPoseBones = nullptr;
-			if (HooksWorldPoseBuildPlayerBones(
-					m_VR,
-					m_Game,
-					state,
-					info,
-					entity,
-					firstPersonBodyEyeActive,
-					pBonesToWorldFinal,
-					worldPoseBones))
-			{
-				pBonesToWorldFinal = worldPoseBones;
-			}
-		}
+        // Reconstruct the observer-visible VR pose only in the render copy of
+        // CTerrorPlayer's final matrices.  The local player goes through this
+        // same path in a third-person scene, which makes protocol/IK testing
+        // possible without a second client.
+        if (isPlayerWorldModel &&
+            !shadowDepthDraw &&
+            pBonesToWorldFinal &&
+            entity)
+        {
+            vr_vm_stabilize::Mat3x4* worldPoseBones = nullptr;
+            if (HooksWorldPoseBuildPlayerBones(
+                m_VR,
+                m_Game,
+                state,
+                info,
+                entity,
+                firstPersonBodyEyeActive,
+                pBonesToWorldFinal,
+                worldPoseBones))
+            {
+                pBonesToWorldFinal = worldPoseBones;
+            }
+        }
 
-		// Active world weapons are rendered separately from their owning player
-		// and otherwise remain bonemerged to Source's unmodified hand.  Move the
-		// weapon's render-copy bones by the exact native-hand -> VR-hand delta.
-		// This keeps the stock hand-to-gun offset and internal firing/reload
-		// animation while cancelling the large native idle attachment motion.
-		// Do not gate this on the reported network class or a custom-bone
-		// pointer: L4D2 bonemerge children can report the owning player's class
-		// and can deliberately submit a null custom-bone array.
-		if (!isSurvivorWorldModel &&
-			!shadowDepthDraw &&
-			!teleportSuppressibleViewmodel)
-		{
-			vr_vm_stabilize::Mat3x4* alignedWorldWeaponBones = nullptr;
-			vr_vm_stabilize::Mat3x4 weaponNativeToFinal =
-				vr_vm_stabilize::Identity();
-			int weaponOwnerPlayerIndex = -1;
-			std::uint64_t weaponHandAgeMs = 0u;
-			Vector weaponHandDisplacement(0.0f, 0.0f, 0.0f);
-			int weaponMatchMask = 0;
-			if (HooksWorldPoseBuildActiveWeaponBones(
-					m_VR,
-					m_Game,
-					state,
-					info,
-					entity,
-					looksLikeHeldWorldModel,
-					pBonesToWorldFinal,
-					alignedWorldWeaponBones,
-					weaponNativeToFinal,
-					weaponOwnerPlayerIndex,
-					weaponHandAgeMs,
-					weaponHandDisplacement,
-					weaponMatchMask))
-			{
-				bool weaponBoneTransformApplied = false;
-				bool weaponModelTransformApplied = false;
-				if (alignedWorldWeaponBones)
-				{
-					pBonesToWorldFinal =
-						alignedWorldWeaponBones;
-					weaponBoneTransformApplied = true;
-				}
-				else if (!pCustomBoneToWorld)
-				{
-					vr_vm_stabilize::Mat3x4 sourceModelWorld{};
-					bool sourceModelWorldValid = false;
-					if (info.pModelToWorld)
-					{
-						sourceModelWorldValid =
-							vr_vm_stabilize::SafeRead(
-								reinterpret_cast<
-									const vr_vm_stabilize::Mat3x4*>(
-										info.pModelToWorld),
-								sourceModelWorld) &&
-							HooksNativeViewmodelHandsOnlyMatrixFinite(
-								sourceModelWorld);
-					}
-					if (!sourceModelWorldValid)
-					{
-						vr_vm_stabilize::BuildFromOrgAngles(
-							info.origin,
-							info.angles,
-							sourceModelWorld);
-						sourceModelWorldValid =
-							HooksNativeViewmodelHandsOnlyMatrixFinite(
-								sourceModelWorld);
-					}
+        // Active world weapons are rendered separately from their owning player
+        // and otherwise remain bonemerged to Source's unmodified hand.  Move the
+        // weapon's render-copy bones by the exact native-hand -> VR-hand delta.
+        // This keeps the stock hand-to-gun offset and internal firing/reload
+        // animation while cancelling the large native idle attachment motion.
+        // Do not gate this on the reported network class or a custom-bone
+        // pointer: L4D2 bonemerge children can report the owning player's class
+        // and can deliberately submit a null custom-bone array.
+        if (!isSurvivorWorldModel &&
+            !shadowDepthDraw &&
+            !teleportSuppressibleViewmodel)
+        {
+            vr_vm_stabilize::Mat3x4* alignedWorldWeaponBones = nullptr;
+            vr_vm_stabilize::Mat3x4 weaponNativeToFinal =
+                vr_vm_stabilize::Identity();
+            int weaponOwnerPlayerIndex = -1;
+            std::uint64_t weaponHandAgeMs = 0u;
+            Vector weaponHandDisplacement(0.0f, 0.0f, 0.0f);
+            int weaponMatchMask = 0;
+            if (HooksWorldPoseBuildActiveWeaponBones(
+                m_VR,
+                m_Game,
+                state,
+                info,
+                entity,
+                looksLikeHeldWorldModel,
+                pBonesToWorldFinal,
+                alignedWorldWeaponBones,
+                weaponNativeToFinal,
+                weaponOwnerPlayerIndex,
+                weaponHandAgeMs,
+                weaponHandDisplacement,
+                weaponMatchMask))
+            {
+                bool weaponBoneTransformApplied = false;
+                bool weaponModelTransformApplied = false;
+                if (alignedWorldWeaponBones)
+                {
+                    pBonesToWorldFinal =
+                        alignedWorldWeaponBones;
+                    weaponBoneTransformApplied = true;
+                }
+                else if (!pCustomBoneToWorld)
+                {
+                    vr_vm_stabilize::Mat3x4 sourceModelWorld{};
+                    bool sourceModelWorldValid = false;
+                    if (info.pModelToWorld)
+                    {
+                        sourceModelWorldValid =
+                            vr_vm_stabilize::SafeRead(
+                                reinterpret_cast<
+                                const vr_vm_stabilize::Mat3x4*>(
+                                    info.pModelToWorld),
+                                sourceModelWorld) &&
+                            HooksNativeViewmodelHandsOnlyMatrixFinite(
+                                sourceModelWorld);
+                    }
+                    if (!sourceModelWorldValid)
+                    {
+                        vr_vm_stabilize::BuildFromOrgAngles(
+                            info.origin,
+                            info.angles,
+                            sourceModelWorld);
+                        sourceModelWorldValid =
+                            HooksNativeViewmodelHandsOnlyMatrixFinite(
+                                sourceModelWorld);
+                    }
 
-					vr_vm_stabilize::Mat3x4 targetModelWorld{};
-					QAngle targetModelAngles{};
-					if (sourceModelWorldValid)
-					{
-						vr_vm_stabilize::Mul(
-							weaponNativeToFinal,
-							sourceModelWorld,
-							targetModelWorld);
-					}
-					if (sourceModelWorldValid &&
-						HooksNativeViewmodelHandsOnlyMatrixFinite(
-							targetModelWorld) &&
-						HooksViewmodelAutoGripMatrixAngles(
-							targetModelWorld,
-							targetModelAngles))
-					{
-						std::uint32_t sequence =
-							m_VR->m_RenderFrameSeq.load(
-								std::memory_order_acquire) &
-							~1u;
-						if (sequence == 0u)
-							sequence = 2u;
-						vr_vm_stabilize::Mat3x4*
-							stableModelToWorld =
-								vr_vm_stabilize::AllocStableBones(
-									1,
-									sequence);
-						if (stableModelToWorld)
-						{
-							*stableModelToWorld =
-								targetModelWorld;
-							drawInfo = info;
-							drawInfo.origin =
-								vr_vm_stabilize::GetOrigin(
-									targetModelWorld);
-							drawInfo.angles =
-								targetModelAngles;
-							drawInfo.pModelToWorld =
-								reinterpret_cast<
-									const matrix3x4_t*>(
-										stableModelToWorld);
-							pDrawInfo = &drawInfo;
-							weaponModelTransformApplied = true;
-						}
-					}
-				}
+                    vr_vm_stabilize::Mat3x4 targetModelWorld{};
+                    QAngle targetModelAngles{};
+                    if (sourceModelWorldValid)
+                    {
+                        vr_vm_stabilize::Mul(
+                            weaponNativeToFinal,
+                            sourceModelWorld,
+                            targetModelWorld);
+                    }
+                    if (sourceModelWorldValid &&
+                        HooksNativeViewmodelHandsOnlyMatrixFinite(
+                            targetModelWorld) &&
+                        HooksViewmodelAutoGripMatrixAngles(
+                            targetModelWorld,
+                            targetModelAngles))
+                    {
+                        std::uint32_t sequence =
+                            m_VR->m_RenderFrameSeq.load(
+                                std::memory_order_acquire) &
+                            ~1u;
+                        if (sequence == 0u)
+                            sequence = 2u;
+                        vr_vm_stabilize::Mat3x4*
+                            stableModelToWorld =
+                            vr_vm_stabilize::AllocStableBones(
+                                1,
+                                sequence);
+                        if (stableModelToWorld)
+                        {
+                            *stableModelToWorld =
+                                targetModelWorld;
+                            drawInfo = info;
+                            drawInfo.origin =
+                                vr_vm_stabilize::GetOrigin(
+                                    targetModelWorld);
+                            drawInfo.angles =
+                                targetModelAngles;
+                            drawInfo.pModelToWorld =
+                                reinterpret_cast<
+                                const matrix3x4_t*>(
+                                    stableModelToWorld);
+                            pDrawInfo = &drawInfo;
+                            weaponModelTransformApplied = true;
+                        }
+                    }
+                }
 
-				if (m_VR->m_WorldModelVRPoseDebugLog)
-				{
-					static thread_local std::array<
-						std::uint64_t,
-						Game::kMaxPlayers> s_lastWeaponApplyLog{};
-					const std::uint64_t now =
-						static_cast<std::uint64_t>(GetTickCount64());
-					std::uint64_t& last =
-						s_lastWeaponApplyLog[
-							static_cast<size_t>(
-								weaponOwnerPlayerIndex)];
-					if (now - last >= 1000u)
-					{
-						last = now;
-						Game::logMsg(
-							"[VR][WorldPoseWeapon] match player=%d entity=%d model=%s age=%llums match=0x%02X apply=%s handDelta=(%.1f %.1f %.1f) bones=%p->%p",
-							weaponOwnerPlayerIndex,
-							info.entity_index,
-							modelName.c_str(),
-							static_cast<unsigned long long>(
-								weaponHandAgeMs),
-							weaponMatchMask,
-							weaponBoneTransformApplied
-								? "bones"
-								: (weaponModelTransformApplied
-									? "model_transform"
-									: "none"),
-							weaponHandDisplacement.x,
-							weaponHandDisplacement.y,
-							weaponHandDisplacement.z,
-							pCustomBoneToWorld,
-							alignedWorldWeaponBones);
-					}
-				}
-			}
-		}
+                if (m_VR->m_WorldModelVRPoseDebugLog)
+                {
+                    static thread_local std::array<
+                        std::uint64_t,
+                        Game::kMaxPlayers> s_lastWeaponApplyLog{};
+                    const std::uint64_t now =
+                        static_cast<std::uint64_t>(GetTickCount64());
+                    std::uint64_t& last =
+                        s_lastWeaponApplyLog[
+                            static_cast<size_t>(
+                                weaponOwnerPlayerIndex)];
+                    if (now - last >= 1000u)
+                    {
+                        last = now;
+                        Game::logMsg(
+                            "[VR][WorldPoseWeapon] match player=%d entity=%d model=%s age=%llums match=0x%02X apply=%s handDelta=(%.1f %.1f %.1f) bones=%p->%p",
+                            weaponOwnerPlayerIndex,
+                            info.entity_index,
+                            modelName.c_str(),
+                            static_cast<unsigned long long>(
+                                weaponHandAgeMs),
+                            weaponMatchMask,
+                            weaponBoneTransformApplied
+                            ? "bones"
+                            : (weaponModelTransformApplied
+                                ? "model_transform"
+                                : "none"),
+                            weaponHandDisplacement.x,
+                            weaponHandDisplacement.y,
+                            weaponHandDisplacement.z,
+                            pCustomBoneToWorld,
+                            alignedWorldWeaponBones);
+                    }
+                }
+            }
+        }
 
 
-// --- Multicore viewmodel stabilization (first-person viewmodel ghosting fix) ---
-// In queued rendering (mat_queue_mode!=0), viewmodels are frequently submitted with custom bone matrices.
-// In that case, overriding ModelRenderInfo_t.origin/angles does NOT move the model (it stays "head-locked").
-// So we apply a rigid delta to the bone matrices for this draw call, based on our controller-anchored target.
-if (m_VR->m_IsVREnabled && queueMode == 2 &&
-	(m_VR->m_QueuedViewmodelStabilize ||
-	 m_VR->m_ViewmodelDisableMoveBob ||
-	 (!m_VR->m_MouseModeEnabled &&
-	  (m_VR->m_VrHandsRightUseViewmodelPose ||
-	   emptyHandsPlaceholderActive ||
-	   m_VR->IsVrHandsTwoHandedGripPoseActive()))))
-{
-	const bool isViewmodelClass = className &&
-		(std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0);
-    const bool isArmsOrHandsModel = HooksModelNameIsArmsOrHands(modelName);
-    const bool isViewmodelModel = HooksModelNameIsViewmodel(modelName);
+        // --- Multicore viewmodel stabilization (first-person viewmodel ghosting fix) ---
+        // In queued rendering (mat_queue_mode!=0), viewmodels are frequently submitted with custom bone matrices.
+        // In that case, overriding ModelRenderInfo_t.origin/angles does NOT move the model (it stays "head-locked").
+        // So we apply a rigid delta to the bone matrices for this draw call, based on our controller-anchored target.
+        if (m_VR->m_IsVREnabled && queueMode == 2 &&
+            (m_VR->m_QueuedViewmodelStabilize ||
+                m_VR->m_ViewmodelDisableMoveBob ||
+                (!m_VR->m_MouseModeEnabled &&
+                    (m_VR->m_VrHandsRightUseViewmodelPose ||
+                        emptyHandsPlaceholderActive ||
+                        m_VR->IsVrHandsTwoHandedGripPoseActive()))))
+        {
+            const bool isViewmodelClass = className &&
+                (std::strcmp(className, "CBaseViewModel") == 0 || std::strcmp(className, "C_BaseViewModel") == 0);
+            const bool isArmsOrHandsModel = HooksModelNameIsArmsOrHands(modelName);
+            const bool isViewmodelModel = HooksModelNameIsViewmodel(modelName);
 
-	if (isViewmodelClass || isViewmodelModel)
-	{
-		struct RenderSnapshotTLSGuard
-		{
-			bool prev = false;
-			RenderSnapshotTLSGuard()
-			{
-				prev = VR::t_UseRenderFrameSnapshot;
-				VR::t_UseRenderFrameSnapshot = true;
-			}
-			~RenderSnapshotTLSGuard()
-			{
-				VR::t_UseRenderFrameSnapshot = prev;
-			}
-		} tlsGuard;
+            if (isViewmodelClass || isViewmodelModel)
+            {
+                struct RenderSnapshotTLSGuard
+                {
+                    bool prev = false;
+                    RenderSnapshotTLSGuard()
+                    {
+                        prev = VR::t_UseRenderFrameSnapshot;
+                        VR::t_UseRenderFrameSnapshot = true;
+                    }
+                    ~RenderSnapshotTLSGuard()
+                    {
+                        VR::t_UseRenderFrameSnapshot = prev;
+                    }
+                } tlsGuard;
 
-		const Vector targetOrigin = m_VR->GetRecommendedViewmodelAbsPos();
-		const QAngle targetAngles = m_VR->GetRecommendedViewmodelAbsAngle();
+                const Vector targetOrigin = m_VR->GetRecommendedViewmodelAbsPos();
+                const QAngle targetAngles = m_VR->GetRecommendedViewmodelAbsAngle();
 
-		// Always override origin/angles for lighting/etc (even if bones are used).
-		drawInfo = info;
-		drawInfo.origin = targetOrigin;
-		drawInfo.angles = targetAngles;
-		pDrawInfo = &drawInfo;
+                // Always override origin/angles for lighting/etc (even if bones are used).
+                drawInfo = info;
+                drawInfo.origin = targetOrigin;
+                drawInfo.angles = targetAngles;
+                pDrawInfo = &drawInfo;
 
-		bool appliedBoneDelta = false;
-		int numBones = 0;
+                bool appliedBoneDelta = false;
+                int numBones = 0;
 
-		if (pCustomBoneToWorld)
-		{
-			if (vr_vm_stabilize::TryGetNumBonesFromDrawState(state, numBones) && numBones > 0)
-			{
-				uint32_t seqEven = m_VR->m_RenderFrameSeq.load(std::memory_order_acquire);
-				seqEven &= ~1u;
-				if (seqEven == 0)
-					seqEven = 2;
+                if (pCustomBoneToWorld)
+                {
+                    if (vr_vm_stabilize::TryGetNumBonesFromDrawState(state, numBones) && numBones > 0)
+                    {
+                        uint32_t seqEven = m_VR->m_RenderFrameSeq.load(std::memory_order_acquire);
+                        seqEven &= ~1u;
+                        if (seqEven == 0)
+                            seqEven = 2;
 
-				vr_vm_stabilize::Mat3x4* bonesCopy = vr_vm_stabilize::AllocStableBones(numBones, seqEven);
-				if (bonesCopy)
-				{
-					memcpy(bonesCopy, pCustomBoneToWorld, (size_t)numBones * sizeof(vr_vm_stabilize::Mat3x4));
+                        vr_vm_stabilize::Mat3x4* bonesCopy = vr_vm_stabilize::AllocStableBones(numBones, seqEven);
+                        if (bonesCopy)
+                        {
+                            memcpy(bonesCopy, pCustomBoneToWorld, (size_t)numBones * sizeof(vr_vm_stabilize::Mat3x4));
 
-					// NOTE:
-					// pCustomBoneToWorld is already in WORLD space. However, bone[0] is NOT guaranteed
-					// to be at the entity origin (studio root can have a built-in offset). Using bone[0]
-					// as the reference will mis-anchor the whole model (often looks like it's still HMD-bound).
-					//
-					// Correct approach: treat the bones as (EntityToWorld * BoneLocal). Recover BoneLocal
-					// via inverse(EntityToWorld), then re-apply with TargetEntityToWorld.
-					vr_vm_stabilize::Mat3x4 origEntity{};
-					vr_vm_stabilize::BuildFromOrgAngles(info.origin, info.angles, origEntity);
-					vr_vm_stabilize::Mat3x4 origInv{};
-					vr_vm_stabilize::InvertTR(origEntity, origInv);
-					vr_vm_stabilize::Mat3x4 targetEntity{};
-					vr_vm_stabilize::BuildFromOrgAngles(targetOrigin, targetAngles, targetEntity);
-					vr_vm_stabilize::Mat3x4 delta{};
-					vr_vm_stabilize::Mul(targetEntity, origInv, delta);
+                            // NOTE:
+                            // pCustomBoneToWorld is already in WORLD space. However, bone[0] is NOT guaranteed
+                            // to be at the entity origin (studio root can have a built-in offset). Using bone[0]
+                            // as the reference will mis-anchor the whole model (often looks like it's still HMD-bound).
+                            //
+                            // Correct approach: treat the bones as (EntityToWorld * BoneLocal). Recover BoneLocal
+                            // via inverse(EntityToWorld), then re-apply with TargetEntityToWorld.
+                            vr_vm_stabilize::Mat3x4 origEntity{};
+                            vr_vm_stabilize::BuildFromOrgAngles(info.origin, info.angles, origEntity);
+                            vr_vm_stabilize::Mat3x4 origInv{};
+                            vr_vm_stabilize::InvertTR(origEntity, origInv);
+                            vr_vm_stabilize::Mat3x4 targetEntity{};
+                            vr_vm_stabilize::BuildFromOrgAngles(targetOrigin, targetAngles, targetEntity);
+                            vr_vm_stabilize::Mat3x4 delta{};
+                            vr_vm_stabilize::Mul(targetEntity, origInv, delta);
 
-					bool splitApplied = false;
-					if (m_VR->m_SplitArmsToControllers && isArmsOrHandsModel && numBones > 8 && !m_VR->m_MouseModeEnabled)
-					{
-						const Vector leftCtrlPos = m_VR->GetLeftControllerAbsPos();
-						const QAngle leftCtrlAng = m_VR->GetLeftControllerAbsAngle();
+                            bool splitApplied = false;
+                            if (m_VR->m_SplitArmsToControllers && isArmsOrHandsModel && numBones > 8 && !m_VR->m_MouseModeEnabled)
+                            {
+                                const Vector leftCtrlPos = m_VR->GetLeftControllerAbsPos();
+                                const QAngle leftCtrlAng = m_VR->GetLeftControllerAbsAngle();
 
-						Vector leftForward{}, leftRight{}, leftUp{};
-						QAngle::AngleVectors(leftCtrlAng, &leftForward, &leftRight, &leftUp);
+                                Vector leftForward{}, leftRight{}, leftUp{};
+                                QAngle::AngleVectors(leftCtrlAng, &leftForward, &leftRight, &leftUp);
 
-						leftForward = VectorRotate(leftForward, leftRight, -45.0f);
-						leftUp = VectorRotate(leftUp, leftRight, -45.0f);
+                                leftForward = VectorRotate(leftForward, leftRight, -45.0f);
+                                leftUp = VectorRotate(leftUp, leftRight, -45.0f);
 
-						leftForward = VectorRotate(leftForward, leftUp, m_VR->m_ViewmodelAngOffset.y);
-						leftRight = VectorRotate(leftRight, leftUp, m_VR->m_ViewmodelAngOffset.y);
-						leftForward = VectorRotate(leftForward, leftRight, m_VR->m_ViewmodelAngOffset.x);
-						leftUp = VectorRotate(leftUp, leftRight, m_VR->m_ViewmodelAngOffset.x);
-						leftRight = VectorRotate(leftRight, leftForward, m_VR->m_ViewmodelAngOffset.z);
-						leftUp = VectorRotate(leftUp, leftForward, m_VR->m_ViewmodelAngOffset.z);
+                                leftForward = VectorRotate(leftForward, leftUp, m_VR->m_ViewmodelAngOffset.y);
+                                leftRight = VectorRotate(leftRight, leftUp, m_VR->m_ViewmodelAngOffset.y);
+                                leftForward = VectorRotate(leftForward, leftRight, m_VR->m_ViewmodelAngOffset.x);
+                                leftUp = VectorRotate(leftUp, leftRight, m_VR->m_ViewmodelAngOffset.x);
+                                leftRight = VectorRotate(leftRight, leftForward, m_VR->m_ViewmodelAngOffset.z);
+                                leftUp = VectorRotate(leftUp, leftForward, m_VR->m_ViewmodelAngOffset.z);
 
-						Vector leftVmPos = leftCtrlPos
-							- (leftForward * m_VR->m_ViewmodelPosOffset.x)
-							- (leftRight * m_VR->m_ViewmodelPosOffset.y)
-							- (leftUp * m_VR->m_ViewmodelPosOffset.z);
+                                Vector leftVmPos = leftCtrlPos
+                                    - (leftForward * m_VR->m_ViewmodelPosOffset.x)
+                                    - (leftRight * m_VR->m_ViewmodelPosOffset.y)
+                                    - (leftUp * m_VR->m_ViewmodelPosOffset.z);
 
-						QAngle leftVmAng{};
-						QAngle::VectorAngles(leftForward, leftUp, leftVmAng);
+                                QAngle leftVmAng{};
+                                QAngle::VectorAngles(leftForward, leftUp, leftVmAng);
 
-						vr_vm_stabilize::Mat3x4 leftTargetEntity{};
-						vr_vm_stabilize::BuildFromOrgAngles(leftVmPos, leftVmAng, leftTargetEntity);
+                                vr_vm_stabilize::Mat3x4 leftTargetEntity{};
+                                vr_vm_stabilize::BuildFromOrgAngles(leftVmPos, leftVmAng, leftTargetEntity);
 
-						vr_vm_stabilize::Mat3x4 leftDelta{};
-						vr_vm_stabilize::Mul(leftTargetEntity, origInv, leftDelta);
+                                vr_vm_stabilize::Mat3x4 leftDelta{};
+                                vr_vm_stabilize::Mul(leftTargetEntity, origInv, leftDelta);
 
-						std::vector<float> localY((size_t)numBones, 0.0f);
-						Vector posSum{ 0.0f, 0.0f, 0.0f };
-						Vector negSum{ 0.0f, 0.0f, 0.0f };
-						int posCount = 0;
-						int negCount = 0;
-						float minY = 1e9f;
-						float maxY = -1e9f;
+                                std::vector<float> localY((size_t)numBones, 0.0f);
+                                Vector posSum{ 0.0f, 0.0f, 0.0f };
+                                Vector negSum{ 0.0f, 0.0f, 0.0f };
+                                int posCount = 0;
+                                int negCount = 0;
+                                float minY = 1e9f;
+                                float maxY = -1e9f;
 
-						const auto* srcBones = reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
-						for (int i = 0; i < numBones; ++i)
-						{
-							vr_vm_stabilize::Mat3x4 localBone{};
-							vr_vm_stabilize::Mul(origInv, srcBones[i], localBone);
-							const float y = localBone.m[1][3];
-							localY[(size_t)i] = y;
-							minY = std::min(minY, y);
-							maxY = std::max(maxY, y);
+                                const auto* srcBones = reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pCustomBoneToWorld);
+                                for (int i = 0; i < numBones; ++i)
+                                {
+                                    vr_vm_stabilize::Mat3x4 localBone{};
+                                    vr_vm_stabilize::Mul(origInv, srcBones[i], localBone);
+                                    const float y = localBone.m[1][3];
+                                    localY[(size_t)i] = y;
+                                    minY = std::min(minY, y);
+                                    maxY = std::max(maxY, y);
 
-							const Vector worldPos = vr_vm_stabilize::GetOrigin(srcBones[i]);
-							if (y > 1.0f)
-							{
-								posSum += worldPos;
-								++posCount;
-							}
-							else if (y < -1.0f)
-							{
-								negSum += worldPos;
-								++negCount;
-							}
-						}
+                                    const Vector worldPos = vr_vm_stabilize::GetOrigin(srcBones[i]);
+                                    if (y > 1.0f)
+                                    {
+                                        posSum += worldPos;
+                                        ++posCount;
+                                    }
+                                    else if (y < -1.0f)
+                                    {
+                                        negSum += worldPos;
+                                        ++negCount;
+                                    }
+                                }
 
-						if (posCount > 0 && negCount > 0 && (maxY - minY) > 4.0f)
-						{
-							const Vector rightCtrlPos = m_VR->GetRightControllerAbsPos();
-							const Vector posAvg = posSum / (float)posCount;
-							const Vector negAvg = negSum / (float)negCount;
-							const bool positiveYIsRight = (posAvg - rightCtrlPos).LengthSqr() <= (negAvg - rightCtrlPos).LengthSqr();
-							const float deadZone = std::max(1.0f, (maxY - minY) * 0.08f);
+                                if (posCount > 0 && negCount > 0 && (maxY - minY) > 4.0f)
+                                {
+                                    const Vector rightCtrlPos = m_VR->GetRightControllerAbsPos();
+                                    const Vector posAvg = posSum / (float)posCount;
+                                    const Vector negAvg = negSum / (float)negCount;
+                                    const bool positiveYIsRight = (posAvg - rightCtrlPos).LengthSqr() <= (negAvg - rightCtrlPos).LengthSqr();
+                                    const float deadZone = std::max(1.0f, (maxY - minY) * 0.08f);
 
-							for (int i = 0; i < numBones; ++i)
-							{
-								const float y = localY[(size_t)i];
-								const bool isCenter = std::fabs(y) <= deadZone;
-								const bool useRightDelta = isCenter || ((y > 0.0f) == positiveYIsRight);
-								vr_vm_stabilize::Mat3x4 tmp{};
-								vr_vm_stabilize::Mul(useRightDelta ? delta : leftDelta, bonesCopy[i], tmp);
-								bonesCopy[i] = tmp;
-							}
-							splitApplied = true;
-						}
-					}
+                                    for (int i = 0; i < numBones; ++i)
+                                    {
+                                        const float y = localY[(size_t)i];
+                                        const bool isCenter = std::fabs(y) <= deadZone;
+                                        const bool useRightDelta = isCenter || ((y > 0.0f) == positiveYIsRight);
+                                        vr_vm_stabilize::Mat3x4 tmp{};
+                                        vr_vm_stabilize::Mul(useRightDelta ? delta : leftDelta, bonesCopy[i], tmp);
+                                        bonesCopy[i] = tmp;
+                                    }
+                                    splitApplied = true;
+                                }
+                            }
 
-					if (!splitApplied)
-						vr_vm_stabilize::ApplyDelta(delta, bonesCopy, numBones);
+                            if (!splitApplied)
+                                vr_vm_stabilize::ApplyDelta(delta, bonesCopy, numBones);
 
-					pBonesToWorldFinal = bonesCopy;
-					appliedBoneDelta = true;
-				}
-			}
-		}
+                            pBonesToWorldFinal = bonesCopy;
+                            appliedBoneDelta = true;
+                        }
+                    }
+                }
 
-		if (m_VR->m_QueuedViewmodelStabilizeDebugLog)
-		{
-			static thread_local std::chrono::steady_clock::time_point s_last{};
-			if (!ShouldThrottleLog(s_last, m_VR->m_QueuedViewmodelStabilizeDebugLogHz))
-			{
-				const uint32_t seq = m_VR->m_RenderFrameSeq.load(std::memory_order_relaxed);
-				const uint32_t tid = (uint32_t)GetCurrentThreadId();
-										Vector root0 = info.origin;
-										Vector root1 = targetOrigin;
-										if (pCustomBoneToWorld)
-										{
-											vr_vm_stabilize::Mat3x4 r0{};
-											if (vr_vm_stabilize::SafeRead(pCustomBoneToWorld, r0))
-												root0 = vr_vm_stabilize::GetOrigin(r0);
-										}
-										if (appliedBoneDelta && pBonesToWorldFinal)
-										{
-											root1 = vr_vm_stabilize::GetOrigin(reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pBonesToWorldFinal)[0]);
-										}
+                if (m_VR->m_QueuedViewmodelStabilizeDebugLog)
+                {
+                    static thread_local std::chrono::steady_clock::time_point s_last{};
+                    if (!ShouldThrottleLog(s_last, m_VR->m_QueuedViewmodelStabilizeDebugLogHz))
+                    {
+                        const uint32_t seq = m_VR->m_RenderFrameSeq.load(std::memory_order_relaxed);
+                        const uint32_t tid = (uint32_t)GetCurrentThreadId();
+                        Vector root0 = info.origin;
+                        Vector root1 = targetOrigin;
+                        if (pCustomBoneToWorld)
+                        {
+                            vr_vm_stabilize::Mat3x4 r0{};
+                            if (vr_vm_stabilize::SafeRead(pCustomBoneToWorld, r0))
+                                root0 = vr_vm_stabilize::GetOrigin(r0);
+                        }
+                        if (appliedBoneDelta && pBonesToWorldFinal)
+                        {
+                            root1 = vr_vm_stabilize::GetOrigin(reinterpret_cast<const vr_vm_stabilize::Mat3x4*>(pBonesToWorldFinal)[0]);
+                        }
 
-										const Vector eyeO = m_VR->m_HmdPosAbs;
-										const Vector rcO = m_VR->GetRightControllerAbsPos();
-										const float dTgtRc = (targetOrigin - rcO).Length();
-                                        const Vector entDelta = targetOrigin - info.origin;
-                                        Vector bone0Off(0.0f, 0.0f, 0.0f);
-                                        if (pCustomBoneToWorld)
-                                        {
-                                            vr_vm_stabilize::Mat3x4 r0{};
-                                            if (vr_vm_stabilize::SafeRead(pCustomBoneToWorld, r0))
-                                                bone0Off = vr_vm_stabilize::GetOrigin(r0) - info.origin;
-                                        }
+                        const Vector eyeO = m_VR->m_HmdPosAbs;
+                        const Vector rcO = m_VR->GetRightControllerAbsPos();
+                        const float dTgtRc = (targetOrigin - rcO).Length();
+                        const Vector entDelta = targetOrigin - info.origin;
+                        Vector bone0Off(0.0f, 0.0f, 0.0f);
+                        if (pCustomBoneToWorld)
+                        {
+                            vr_vm_stabilize::Mat3x4 r0{};
+                            if (vr_vm_stabilize::SafeRead(pCustomBoneToWorld, r0))
+                                bone0Off = vr_vm_stabilize::GetOrigin(r0) - info.origin;
+                        }
 
-										Game::logMsg(
-										"[VR][VM][draw] tid=%u qmode=%d seq=%u ent=%d model=\"%s\" customBones=%d bones=%d applied=%d slot=%u root0=(%.2f %.2f %.2f) root1=(%.2f %.2f %.2f) eyeO=(%.2f %.2f %.2f) rcO=(%.2f %.2f %.2f) dTgtRc=%.2f entD=(%.2f %.2f %.2f) bone0Off=(%.2f %.2f %.2f) origO=(%.2f %.2f %.2f) origA=(%.2f %.2f %.2f) tgtO=(%.2f %.2f %.2f) tgtA=(%.2f %.2f %.2f)"
-										,
-										tid, queueMode, seq, info.entity_index, modelName.c_str(),
-										(pCustomBoneToWorld != nullptr) ? 1 : 0,
-										numBones,
-										appliedBoneDelta ? 1 : 0,
-										(uint32_t)((seq >> 1) % 64),
-										root0.x, root0.y, root0.z,
-										root1.x, root1.y, root1.z,
-										eyeO.x, eyeO.y, eyeO.z,
-										rcO.x, rcO.y, rcO.z,
-										dTgtRc,
-                                        entDelta.x, entDelta.y, entDelta.z,
-                                        bone0Off.x, bone0Off.y, bone0Off.z,
-										info.origin.x, info.origin.y, info.origin.z,
-										info.angles.x, info.angles.y, info.angles.z,
-										targetOrigin.x, targetOrigin.y, targetOrigin.z,
-										targetAngles.x, targetAngles.y, targetAngles.z);
-			}
-		}
-	}
-}
+                        Game::logMsg(
+                            "[VR][VM][draw] tid=%u qmode=%d seq=%u ent=%d model=\"%s\" customBones=%d bones=%d applied=%d slot=%u root0=(%.2f %.2f %.2f) root1=(%.2f %.2f %.2f) eyeO=(%.2f %.2f %.2f) rcO=(%.2f %.2f %.2f) dTgtRc=%.2f entD=(%.2f %.2f %.2f) bone0Off=(%.2f %.2f %.2f) origO=(%.2f %.2f %.2f) origA=(%.2f %.2f %.2f) tgtO=(%.2f %.2f %.2f) tgtA=(%.2f %.2f %.2f)"
+                            ,
+                            tid, queueMode, seq, info.entity_index, modelName.c_str(),
+                            (pCustomBoneToWorld != nullptr) ? 1 : 0,
+                            numBones,
+                            appliedBoneDelta ? 1 : 0,
+                            (uint32_t)((seq >> 1) % 64),
+                            root0.x, root0.y, root0.z,
+                            root1.x, root1.y, root1.z,
+                            eyeO.x, eyeO.y, eyeO.z,
+                            rcO.x, rcO.y, rcO.z,
+                            dTgtRc,
+                            entDelta.x, entDelta.y, entDelta.z,
+                            bone0Off.x, bone0Off.y, bone0Off.z,
+                            info.origin.x, info.origin.y, info.origin.z,
+                            info.angles.x, info.angles.y, info.angles.z,
+                            targetOrigin.x, targetOrigin.y, targetOrigin.z,
+                            targetAngles.x, targetAngles.y, targetAngles.z);
+                    }
+                }
+            }
+        }
 
         viewmodelAutoGripApplied = ApplyViewmodelAutoGripAlignment(
             m_VR,
             state,
             modelName,
-			drawEntityIsViewmodelClass,
-			drawInfo,
-			pDrawInfo,
-			pBonesToWorldFinal);
+            drawEntityIsViewmodelClass,
+            drawInfo,
+            pDrawInfo,
+            pBonesToWorldFinal);
 
-		const VR::SpecialInfectedType entityInfectedType =
-			entity ? m_VR->GetSpecialInfectedType(entity) : VR::SpecialInfectedType::None;
-		const VR::SpecialInfectedType modelInfectedType = m_VR->GetSpecialInfectedTypeFromModel(modelName);
-		const bool useWitchModelFallback =
-			modelInfectedType == VR::SpecialInfectedType::Witch &&
-			entityInfectedType == VR::SpecialInfectedType::None;
+        const VR::SpecialInfectedType entityInfectedType =
+            entity ? m_VR->GetSpecialInfectedType(entity) : VR::SpecialInfectedType::None;
+        const VR::SpecialInfectedType modelInfectedType = m_VR->GetSpecialInfectedTypeFromModel(modelName);
+        const bool useWitchModelFallback =
+            modelInfectedType == VR::SpecialInfectedType::Witch &&
+            entityInfectedType == VR::SpecialInfectedType::None;
 
-		if (!suppressDesktopMirrorPluginOverlays && !desktopMirrorOverlayHideActive && useWitchModelFallback)
-		{
-			if (m_VR->m_SpecialInfectedArrowDebugLog && m_VR->m_SpecialInfectedArrowDebugLogHz > 0.0f)
-			{
-				static std::unordered_map<int, std::chrono::steady_clock::time_point> s_lastWitchModelDebugLog;
-				const int debugKey = info.entity_index > 0 ? info.entity_index : -1;
-				bool doDebugLog = true;
-				auto& last = s_lastWitchModelDebugLog[debugKey];
-				const auto now = std::chrono::steady_clock::now();
-				if (last.time_since_epoch().count() != 0)
-				{
-					const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedArrowDebugLogHz);
-					const float elapsed = std::chrono::duration<float>(now - last).count();
-					if (elapsed >= 0.0f && elapsed < minInterval)
-						doDebugLog = false;
-				}
-				if (doDebugLog)
-				{
-					last = now;
-					Game::logMsg(
-						"[VR][SIArrow][model] idx=%d class=%s model=\"%s\" type=%d origin=(%.1f %.1f %.1f)",
-						info.entity_index,
-						(className && *className) ? className : "<null>",
-						modelName.c_str(),
-						static_cast<int>(modelInfectedType),
-						info.origin.x,
-						info.origin.y,
-						info.origin.z);
-				}
-			}
+        if (!suppressDesktopMirrorPluginOverlays && !desktopMirrorOverlayHideActive && useWitchModelFallback)
+        {
+            if (m_VR->m_SpecialInfectedArrowDebugLog && m_VR->m_SpecialInfectedArrowDebugLogHz > 0.0f)
+            {
+                static std::unordered_map<int, std::chrono::steady_clock::time_point> s_lastWitchModelDebugLog;
+                const int debugKey = info.entity_index > 0 ? info.entity_index : -1;
+                bool doDebugLog = true;
+                auto& last = s_lastWitchModelDebugLog[debugKey];
+                const auto now = std::chrono::steady_clock::now();
+                if (last.time_since_epoch().count() != 0)
+                {
+                    const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedArrowDebugLogHz);
+                    const float elapsed = std::chrono::duration<float>(now - last).count();
+                    if (elapsed >= 0.0f && elapsed < minInterval)
+                        doDebugLog = false;
+                }
+                if (doDebugLog)
+                {
+                    last = now;
+                    Game::logMsg(
+                        "[VR][SIArrow][model] idx=%d class=%s model=\"%s\" type=%d origin=(%.1f %.1f %.1f)",
+                        info.entity_index,
+                        (className && *className) ? className : "<null>",
+                        modelName.c_str(),
+                        static_cast<int>(modelInfectedType),
+                        info.origin.x,
+                        info.origin.y,
+                        info.origin.z);
+                }
+            }
 
-			m_VR->RefreshSpecialInfectedPreWarning(info.origin, modelInfectedType, info.entity_index, false);
+            m_VR->RefreshSpecialInfectedPreWarning(info.origin, modelInfectedType, info.entity_index, false);
 
-			bool doOverlay = true;
-			if (!singlePassDesktopMirrorPluginOverlays && info.entity_index > 0 && m_VR->m_SpecialInfectedOverlayMaxHz > 0.0f)
-			{
-				auto& last = m_VR->m_LastSpecialInfectedOverlayTime[info.entity_index];
-				const auto now = std::chrono::steady_clock::now();
-				if (last.time_since_epoch().count() != 0)
-				{
-					const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedOverlayMaxHz);
-					const float elapsed = std::chrono::duration<float>(now - last).count();
-					if (elapsed >= 0.0f && elapsed < minInterval)
-						doOverlay = false;
-				}
-				if (doOverlay)
-					last = now;
-			}
+            bool doOverlay = true;
+            if (!singlePassDesktopMirrorPluginOverlays && info.entity_index > 0 && m_VR->m_SpecialInfectedOverlayMaxHz > 0.0f)
+            {
+                auto& last = m_VR->m_LastSpecialInfectedOverlayTime[info.entity_index];
+                const auto now = std::chrono::steady_clock::now();
+                if (last.time_since_epoch().count() != 0)
+                {
+                    const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedOverlayMaxHz);
+                    const float elapsed = std::chrono::duration<float>(now - last).count();
+                    if (elapsed >= 0.0f && elapsed < minInterval)
+                        doOverlay = false;
+                }
+                if (doOverlay)
+                    last = now;
+            }
 
-			if (doOverlay)
-			{
-				if (m_VR->m_RearMirrorEnabled && m_VR->m_RearMirrorShowOnlyOnSpecialWarning
-					&& m_VR->m_RearMirrorSpecialShowHoldSeconds > 0.0f && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
-				{
-					Vector to = info.origin - m_VR->m_HmdPosAbs;
-					to.z = 0.0f;
-					const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
-					if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
-					{
-						Vector fwd = m_VR->m_HmdForward;
-						fwd.z = 0.0f;
-						if (VectorNormalize(fwd) == 0.0f)
-							fwd = { 1.0f, 0.0f, 0.0f };
-						VectorNormalize(to);
-						if (DotProduct(to, fwd) < 0.0f)
-							m_VR->NotifyRearMirrorSpecialWarning();
-						m_VR->m_RearMirrorSawSpecialThisPass = true;
-					}
-				}
+            if (doOverlay)
+            {
+                if (m_VR->m_RearMirrorEnabled && m_VR->m_RearMirrorShowOnlyOnSpecialWarning
+                    && m_VR->m_RearMirrorSpecialShowHoldSeconds > 0.0f && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
+                {
+                    Vector to = info.origin - m_VR->m_HmdPosAbs;
+                    to.z = 0.0f;
+                    const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
+                    if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
+                    {
+                        Vector fwd = m_VR->m_HmdForward;
+                        fwd.z = 0.0f;
+                        if (VectorNormalize(fwd) == 0.0f)
+                            fwd = { 1.0f, 0.0f, 0.0f };
+                        VectorNormalize(to);
+                        if (DotProduct(to, fwd) < 0.0f)
+                            m_VR->NotifyRearMirrorSpecialWarning();
+                        m_VR->m_RearMirrorSawSpecialThisPass = true;
+                    }
+                }
 
-				m_VR->DrawSpecialInfectedArrow(info.origin, modelInfectedType);
-			}
-		}
+                m_VR->DrawSpecialInfectedArrow(info.origin, modelInfectedType);
+            }
+        }
 
-		if (!suppressDesktopMirrorPluginOverlays && !desktopMirrorOverlayHideActive && entity && entityInfectedType != VR::SpecialInfectedType::None)
-		{
-			if (m_VR->IsEntityAlive(entity))
-			{
-				// 1) 高优先级：自瞄/目标刷新不要被 Overlay 节流影响（否则锁定会飘）
-				// RefreshSpecialInfectedPreWarning 内部会用到 Trace 缓存（TraceMaxHz），所以这里高频调用不会把 CPU 打爆。
-				m_VR->RefreshSpecialInfectedPreWarning(info.origin, entityInfectedType, info.entity_index, isPlayerClass);
+        if (!suppressDesktopMirrorPluginOverlays && !desktopMirrorOverlayHideActive && entity && entityInfectedType != VR::SpecialInfectedType::None)
+        {
+            if (m_VR->IsEntityAlive(entity))
+            {
+                // 1) 高优先级：自瞄/目标刷新不要被 Overlay 节流影响（否则锁定会飘）
+                // RefreshSpecialInfectedPreWarning 内部会用到 Trace 缓存（TraceMaxHz），所以这里高频调用不会把 CPU 打爆。
+                m_VR->RefreshSpecialInfectedPreWarning(info.origin, entityInfectedType, info.entity_index, isPlayerClass);
 
-				// Rear mirror pop-up: if enabled, show the mirror briefly when a special infected is behind you
-				// within the configured warning distance. This detection runs on the main render pass so the
-				// mirror can wake up without relying on the mirror RTT pass.
-				if (m_VR->m_RearMirrorEnabled && m_VR->m_RearMirrorShowOnlyOnSpecialWarning
-					&& m_VR->m_RearMirrorSpecialShowHoldSeconds > 0.0f && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
-				{
-					Vector to = info.origin - m_VR->m_HmdPosAbs;
-					to.z = 0.0f;
-					const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
-					if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
-					{
-						Vector fwd = m_VR->m_HmdForward;
-						fwd.z = 0.0f;
-						if (VectorNormalize(fwd) == 0.0f)
-							fwd = { 1.0f, 0.0f, 0.0f };
-						VectorNormalize(to);
-						// Behind = more likely you want the rear mirror.
-						if (DotProduct(to, fwd) < 0.0f)
-							m_VR->NotifyRearMirrorSpecialWarning();
-					}
-				}
+                // Rear mirror pop-up: if enabled, show the mirror briefly when a special infected is behind you
+                // within the configured warning distance. This detection runs on the main render pass so the
+                // mirror can wake up without relying on the mirror RTT pass.
+                if (m_VR->m_RearMirrorEnabled && m_VR->m_RearMirrorShowOnlyOnSpecialWarning
+                    && m_VR->m_RearMirrorSpecialShowHoldSeconds > 0.0f && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
+                {
+                    Vector to = info.origin - m_VR->m_HmdPosAbs;
+                    to.z = 0.0f;
+                    const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
+                    if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
+                    {
+                        Vector fwd = m_VR->m_HmdForward;
+                        fwd.z = 0.0f;
+                        if (VectorNormalize(fwd) == 0.0f)
+                            fwd = { 1.0f, 0.0f, 0.0f };
+                        VectorNormalize(to);
+                        // Behind = more likely you want the rear mirror.
+                        if (DotProduct(to, fwd) < 0.0f)
+                            m_VR->NotifyRearMirrorSpecialWarning();
+                    }
+                }
 
-				// 2) 低优先级：视觉 Overlay（箭头/盲区提示）继续按实体节流，避免 dDrawModelExecute 多次调用导致尖峰
-				bool doOverlay = true;
-				if (!singlePassDesktopMirrorPluginOverlays && info.entity_index > 0 && m_VR->m_SpecialInfectedOverlayMaxHz > 0.0f)
-				{
-					auto& last = m_VR->m_LastSpecialInfectedOverlayTime[info.entity_index];
-					const auto now = std::chrono::steady_clock::now();
-					if (last.time_since_epoch().count() != 0)
-					{
-						const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedOverlayMaxHz);
-						const float elapsed = std::chrono::duration<float>(now - last).count();
-						if (elapsed < minInterval)
-							doOverlay = false;
-					}
-					if (doOverlay)
-						last = now;
-				}
+                // 2) 低优先级：视觉 Overlay（箭头/盲区提示）继续按实体节流，避免 dDrawModelExecute 多次调用导致尖峰
+                bool doOverlay = true;
+                if (!singlePassDesktopMirrorPluginOverlays && info.entity_index > 0 && m_VR->m_SpecialInfectedOverlayMaxHz > 0.0f)
+                {
+                    auto& last = m_VR->m_LastSpecialInfectedOverlayTime[info.entity_index];
+                    const auto now = std::chrono::steady_clock::now();
+                    if (last.time_since_epoch().count() != 0)
+                    {
+                        const float minInterval = 1.0f / std::max(1.0f, m_VR->m_SpecialInfectedOverlayMaxHz);
+                        const float elapsed = std::chrono::duration<float>(now - last).count();
+                        if (elapsed < minInterval)
+                            doOverlay = false;
+                    }
+                    if (doOverlay)
+                        last = now;
+                }
 
-				if (doOverlay)
-				{
-					// Rear-mirror hint: if this special-infected arrow is being rendered during the rear-mirror RTT pass
-					// and within the configured distance, enlarge the mirror overlay.
-					if (m_VR->m_RearMirrorRenderingPass && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
-					{
-						Vector to = info.origin - m_VR->m_HmdPosAbs;
-						to.z = 0.0f;
-						const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
-						if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
-							m_VR->m_RearMirrorSawSpecialThisPass = true;
-					}
-					if (entityInfectedType != VR::SpecialInfectedType::Tank
-						&& entityInfectedType != VR::SpecialInfectedType::Witch
-						&& entityInfectedType != VR::SpecialInfectedType::Charger)
-					{
-						m_VR->RefreshSpecialInfectedBlindSpotWarning(info.origin);
-					}
-					m_VR->DrawSpecialInfectedArrow(info.origin, entityInfectedType);
-				}
-			}
-		}
+                if (doOverlay)
+                {
+                    // Rear-mirror hint: if this special-infected arrow is being rendered during the rear-mirror RTT pass
+                    // and within the configured distance, enlarge the mirror overlay.
+                    if (m_VR->m_RearMirrorRenderingPass && m_VR->m_RearMirrorSpecialWarningDistance > 0.0f)
+                    {
+                        Vector to = info.origin - m_VR->m_HmdPosAbs;
+                        to.z = 0.0f;
+                        const float maxD = m_VR->m_RearMirrorSpecialWarningDistance;
+                        if (!to.IsZero() && to.LengthSqr() <= (maxD * maxD))
+                            m_VR->m_RearMirrorSawSpecialThisPass = true;
+                    }
+                    if (entityInfectedType != VR::SpecialInfectedType::Tank
+                        && entityInfectedType != VR::SpecialInfectedType::Witch
+                        && entityInfectedType != VR::SpecialInfectedType::Charger)
+                    {
+                        m_VR->RefreshSpecialInfectedBlindSpotWarning(info.origin);
+                    }
+                    m_VR->DrawSpecialInfectedArrow(info.origin, entityInfectedType);
+                }
+            }
+        }
 
         {
             MagazineInteractionRenderSnapshotScope detachedMagazineSnapshot(queueMode != 0);
@@ -21974,60 +22032,60 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
         ApplyMagazineInteractionViewmodelOverride(
             m_VR,
             state,
-			modelName,
-			*pDrawInfo,
-			pBonesToWorldFinal);
+            modelName,
+            *pDrawInfo,
+            pBonesToWorldFinal);
 
-		ApplyManualThrowViewmodelAnimationFreeze(
-			m_VR,
-			state,
-			modelName,
-			drawEntityIsViewmodelClass,
-			*pDrawInfo,
-			pBonesToWorldFinal);
+        ApplyManualThrowViewmodelAnimationFreeze(
+            m_VR,
+            state,
+            modelName,
+            drawEntityIsViewmodelClass,
+            *pDrawInfo,
+            pBonesToWorldFinal);
 
-		PublishMagazineInteractionCalibrationSnapshotFromDraw(
-			m_VR,
-			state,
-			modelName,
-			className,
-			drawEntityIsViewmodelClass,
-			info.entity_index,
-			pBonesToWorldFinal);
+        PublishMagazineInteractionCalibrationSnapshotFromDraw(
+            m_VR,
+            state,
+            modelName,
+            className,
+            drawEntityIsViewmodelClass,
+            info.entity_index,
+            pBonesToWorldFinal);
 
-		{
-			MagazineInteractionRenderSnapshotScope calibrationPreviewSnapshot(queueMode != 0);
-			drawMagazineInteractionCalibrationPreview = BuildMagazineInteractionCalibrationPreviewBones(
-				m_VR,
-				state,
-				modelName,
-				*pDrawInfo,
-				drawEntityIsViewmodelClass,
-				info.entity_index,
-				info.hitboxset,
-				pBonesToWorldFinal,
-				magazineInteractionCalibrationPreviewBones,
-				magazineInteractionCalibrationPreviewModelToWorld,
-				magazineInteractionCalibrationPreviewOrigin,
-				magazineInteractionCalibrationPreviewAngles);
-		}
+        {
+            MagazineInteractionRenderSnapshotScope calibrationPreviewSnapshot(queueMode != 0);
+            drawMagazineInteractionCalibrationPreview = BuildMagazineInteractionCalibrationPreviewBones(
+                m_VR,
+                state,
+                modelName,
+                *pDrawInfo,
+                drawEntityIsViewmodelClass,
+                info.entity_index,
+                info.hitboxset,
+                pBonesToWorldFinal,
+                magazineInteractionCalibrationPreviewBones,
+                magazineInteractionCalibrationPreviewModelToWorld,
+                magazineInteractionCalibrationPreviewOrigin,
+                magazineInteractionCalibrationPreviewAngles);
+        }
 
-		MaybeDrawViewmodelBoneLabels(
-			m_VR,
-			state,
-			modelName,
-			className,
-			pBonesToWorldFinal);
+        MaybeDrawViewmodelBoneLabels(
+            m_VR,
+            state,
+            modelName,
+            className,
+            pBonesToWorldFinal);
 
-		const bool magazineInteractionCalibrationOverlayActive =
-			m_VR &&
-			m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed);
-		if (!m_VR ||
-			(!magazineInteractionCalibrationOverlayActive &&
-			!m_VR->ShouldHideMagazineInteractionNativeClip()))
-		{
+        const bool magazineInteractionCalibrationOverlayActive =
+            m_VR &&
+            m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed);
+        if (!m_VR ||
+            (!magazineInteractionCalibrationOverlayActive &&
+                !m_VR->ShouldHideMagazineInteractionNativeClip()))
+        {
             const bool isViewmodelModel = HooksModelNameIsViewmodel(modelName);
-            if(isViewmodelModel)
+            if (isViewmodelModel)
                 DrawCurrentWeaponMagazineBox(
                     m_VR,
                     state,
@@ -22037,216 +22095,216 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
                     info.hitboxset,
                     info.pModelToWorld,
                     pBonesToWorldFinal);
-		}
-	}
+        }
+    }
 
-	// Capture the exact arm matrices submitted to Source. In queued rendering
-	// pBonesToWorldFinal contains the same stabilization delta as the visible gun,
-	// so the standalone right glove follows controller rotation and HMD movement.
-	MaybeCaptureViewmodelMuzzleSmokePose(m_VR, state, modelName, *pDrawInfo, pBonesToWorldFinal);
-	MaybeCaptureVrHandsVmPose(
-		m_VR,
-		state,
-		modelName,
-		*pDrawInfo,
-		pBonesToWorldFinal,
-		viewmodelAutoGripApplied);
-	const std::string lowerModelForCalibrationHide = vr_vm_stabilize::ToLowerAscii(modelName);
-	const bool hideMagazineInteractionCalibrationOriginalViewmodel =
-		m_VR &&
-		m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
-		(drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
-		!HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
+    // Capture the exact arm matrices submitted to Source. In queued rendering
+    // pBonesToWorldFinal contains the same stabilization delta as the visible gun,
+    // so the standalone right glove follows controller rotation and HMD movement.
+    MaybeCaptureViewmodelMuzzleSmokePose(m_VR, state, modelName, *pDrawInfo, pBonesToWorldFinal);
+    MaybeCaptureVrHandsVmPose(
+        m_VR,
+        state,
+        modelName,
+        *pDrawInfo,
+        pBonesToWorldFinal,
+        viewmodelAutoGripApplied);
+    const std::string lowerModelForCalibrationHide = vr_vm_stabilize::ToLowerAscii(modelName);
+    const bool hideMagazineInteractionCalibrationOriginalViewmodel =
+        m_VR &&
+        m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
+        (drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
+        !HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
 
-	if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
-	{
-		if (modelName.find("/arms/") != std::string::npos)
-		{
-			m_Game->m_ArmsMaterial = m_Game->m_MaterialSystem->FindMaterial(modelName.c_str(), "Model textures");
-			m_Game->m_ArmsModel = info.pModel;
-			m_Game->m_CachedArmsModel = true;
-		}
-	}
+    if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
+    {
+        if (modelName.find("/arms/") != std::string::npos)
+        {
+            m_Game->m_ArmsMaterial = m_Game->m_MaterialSystem->FindMaterial(modelName.c_str(), "Model textures");
+            m_Game->m_ArmsModel = info.pModel;
+            m_Game->m_CachedArmsModel = true;
+        }
+    }
 
-	if (info.pModel && info.pModel == m_Game->m_ArmsModel && hideArms)
-	{
-		m_Game->m_ArmsMaterial->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, true);
-		m_Game->m_ModelRender->ForcedMaterialOverride(m_Game->m_ArmsMaterial);
-		hkDrawModelExecute.fOriginal(ecx, state, *pDrawInfo, pBonesToWorldFinal);
-		m_Game->m_ModelRender->ForcedMaterialOverride(NULL);
-		return;
-	}
+    if (info.pModel && info.pModel == m_Game->m_ArmsModel && hideArms)
+    {
+        m_Game->m_ArmsMaterial->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, true);
+        m_Game->m_ModelRender->ForcedMaterialOverride(m_Game->m_ArmsMaterial);
+        hkDrawModelExecute.fOriginal(ecx, state, *pDrawInfo, pBonesToWorldFinal);
+        m_Game->m_ModelRender->ForcedMaterialOverride(NULL);
+        return;
+    }
 
-	{
-		struct NativeHandsOnlyRenderSnapshotTLSGuard
-		{
-			bool active = false;
-			bool previous = false;
+    {
+        struct NativeHandsOnlyRenderSnapshotTLSGuard
+        {
+            bool active = false;
+            bool previous = false;
 
-			explicit NativeHandsOnlyRenderSnapshotTLSGuard(bool enable)
-				: active(enable)
-			{
-				if (active)
-				{
-					previous = VR::t_UseRenderFrameSnapshot;
-					VR::t_UseRenderFrameSnapshot = true;
-				}
-			}
+            explicit NativeHandsOnlyRenderSnapshotTLSGuard(bool enable)
+                : active(enable)
+            {
+                if (active)
+                {
+                    previous = VR::t_UseRenderFrameSnapshot;
+                    VR::t_UseRenderFrameSnapshot = true;
+                }
+            }
 
-			~NativeHandsOnlyRenderSnapshotTLSGuard()
-			{
-				if (active)
-					VR::t_UseRenderFrameSnapshot = previous;
-			}
-		};
+            ~NativeHandsOnlyRenderSnapshotTLSGuard()
+            {
+                if (active)
+                    VR::t_UseRenderFrameSnapshot = previous;
+            }
+        };
 
-		const int nativeHandsOnlyQueueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
-		NativeHandsOnlyRenderSnapshotTLSGuard nativeHandsOnlySnapshotGuard(nativeHandsOnlyQueueMode != 0);
+        const int nativeHandsOnlyQueueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+        NativeHandsOnlyRenderSnapshotTLSGuard nativeHandsOnlySnapshotGuard(nativeHandsOnlyQueueMode != 0);
 
-		bool nativeHandsOnlyDrawn = false;
-		vr_vm_stabilize::Mat3x4* nativeViewmodelFullArmIkBones = nullptr;
-		if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
-			HooksNativeViewmodelBuildFullArmIkBones(
-				m_VR,
-				state,
-				modelName,
-				pBonesToWorldFinal,
-				nativeViewmodelFullArmIkBones))
-		{
-			hkDrawModelExecute.fOriginal(
-				ecx,
-				state,
-				*pDrawInfo,
-				nativeViewmodelFullArmIkBones);
-			nativeHandsOnlyDrawn = true;
-		}
-		std::vector<HooksNativeViewmodelHandsOnlyClipSet> nativeHandsOnlyClipSets;
-		ICallQueue* nativeHandsOnlyCallQueue = nullptr;
-		CRefPtr<IMatRenderContext> nativeHandsOnlyRenderContext;
-		if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
-			nativeHandsOnlyQueueMode != 0 && m_Game && m_Game->m_MaterialSystem)
-		{
-			// GetRenderContext returns an owned reference. Adopt it and retain
-			// the exact context through both clip-plane functor insertions.
-			nativeHandsOnlyRenderContext =
-				m_Game->m_MaterialSystem->GetRenderContext();
-			nativeHandsOnlyCallQueue =
-				HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
-					nativeHandsOnlyRenderContext);
-		}
-		if (!nativeHandsOnlyDrawn &&
-			!hideMagazineInteractionCalibrationOriginalViewmodel &&
-			HooksNativeViewmodelHandsOnlyBuildSplitClipSets(
-			m_VR,
-			state,
-			modelName,
-			pBonesToWorldFinal,
-			nativeHandsOnlyClipSets))
-		{
-			for (const HooksNativeViewmodelHandsOnlyClipSet& clipSet : nativeHandsOnlyClipSets)
-			{
-				if (nativeHandsOnlyQueueMode == 0)
-				{
-					ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(m_VR, clipSet);
-					if (!nativeHandsOnlyClip.Active())
-						continue;
-					hkDrawModelExecute.fOriginal(
-						ecx,
-						state,
-						*pDrawInfo,
-						clipSet.isolatedBones);
-					nativeHandsOnlyDrawn = true;
-				}
-				else if (clipSet.isolatedBones && nativeHandsOnlyCallQueue)
-				{
-					HooksQueuedNativeViewmodelHandsOnlyClipState* queuedClip =
-						new HooksQueuedNativeViewmodelHandsOnlyClipState(m_VR, clipSet);
-					nativeHandsOnlyCallQueue->QueueFunctor(
-						new HooksQueuedNativeViewmodelHandsOnlyClipBeginFunctor(queuedClip));
-					hkDrawModelExecute.fOriginal(
-						ecx,
-						state,
-						*pDrawInfo,
-						clipSet.isolatedBones);
-					nativeHandsOnlyCallQueue->QueueFunctor(
-						new HooksQueuedNativeViewmodelHandsOnlyClipEndFunctor(queuedClip));
-					nativeHandsOnlyDrawn = true;
-				}
-				else
-				{
-					ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(m_VR, clipSet);
-					if (!nativeHandsOnlyClip.Active())
-						continue;
-					hkDrawModelExecute.fOriginal(
-						ecx,
-						state,
-						*pDrawInfo,
-						clipSet.isolatedBones);
-					nativeHandsOnlyDrawn = true;
-				}
-			}
-		}
+        bool nativeHandsOnlyDrawn = false;
+        vr_vm_stabilize::Mat3x4* nativeViewmodelFullArmIkBones = nullptr;
+        if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
+            HooksNativeViewmodelBuildFullArmIkBones(
+                m_VR,
+                state,
+                modelName,
+                pBonesToWorldFinal,
+                nativeViewmodelFullArmIkBones))
+        {
+            hkDrawModelExecute.fOriginal(
+                ecx,
+                state,
+                *pDrawInfo,
+                nativeViewmodelFullArmIkBones);
+            nativeHandsOnlyDrawn = true;
+        }
+        std::vector<HooksNativeViewmodelHandsOnlyClipSet> nativeHandsOnlyClipSets;
+        ICallQueue* nativeHandsOnlyCallQueue = nullptr;
+        CRefPtr<IMatRenderContext> nativeHandsOnlyRenderContext;
+        if (!hideMagazineInteractionCalibrationOriginalViewmodel &&
+            nativeHandsOnlyQueueMode != 0 && m_Game && m_Game->m_MaterialSystem)
+        {
+            // GetRenderContext returns an owned reference. Adopt it and retain
+            // the exact context through both clip-plane functor insertions.
+            nativeHandsOnlyRenderContext =
+                m_Game->m_MaterialSystem->GetRenderContext();
+            nativeHandsOnlyCallQueue =
+                HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
+                    nativeHandsOnlyRenderContext);
+        }
+        if (!nativeHandsOnlyDrawn &&
+            !hideMagazineInteractionCalibrationOriginalViewmodel &&
+            HooksNativeViewmodelHandsOnlyBuildSplitClipSets(
+                m_VR,
+                state,
+                modelName,
+                pBonesToWorldFinal,
+                nativeHandsOnlyClipSets))
+        {
+            for (const HooksNativeViewmodelHandsOnlyClipSet& clipSet : nativeHandsOnlyClipSets)
+            {
+                if (nativeHandsOnlyQueueMode == 0)
+                {
+                    ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(m_VR, clipSet);
+                    if (!nativeHandsOnlyClip.Active())
+                        continue;
+                    hkDrawModelExecute.fOriginal(
+                        ecx,
+                        state,
+                        *pDrawInfo,
+                        clipSet.isolatedBones);
+                    nativeHandsOnlyDrawn = true;
+                }
+                else if (clipSet.isolatedBones && nativeHandsOnlyCallQueue)
+                {
+                    HooksQueuedNativeViewmodelHandsOnlyClipState* queuedClip =
+                        new HooksQueuedNativeViewmodelHandsOnlyClipState(m_VR, clipSet);
+                    nativeHandsOnlyCallQueue->QueueFunctor(
+                        new HooksQueuedNativeViewmodelHandsOnlyClipBeginFunctor(queuedClip));
+                    hkDrawModelExecute.fOriginal(
+                        ecx,
+                        state,
+                        *pDrawInfo,
+                        clipSet.isolatedBones);
+                    nativeHandsOnlyCallQueue->QueueFunctor(
+                        new HooksQueuedNativeViewmodelHandsOnlyClipEndFunctor(queuedClip));
+                    nativeHandsOnlyDrawn = true;
+                }
+                else
+                {
+                    ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(m_VR, clipSet);
+                    if (!nativeHandsOnlyClip.Active())
+                        continue;
+                    hkDrawModelExecute.fOriginal(
+                        ecx,
+                        state,
+                        *pDrawInfo,
+                        clipSet.isolatedBones);
+                    nativeHandsOnlyDrawn = true;
+                }
+            }
+        }
 
-		if (!nativeHandsOnlyDrawn)
-		{
-			if (hideMagazineInteractionCalibrationOriginalViewmodel)
-			{
-				if (drawMagazineInteractionCalibrationPreview && magazineInteractionCalibrationPreviewBones)
-				{
-					ModelRenderInfo_t previewInfo = *pDrawInfo;
-					previewInfo.origin = magazineInteractionCalibrationPreviewOrigin;
-					previewInfo.angles = magazineInteractionCalibrationPreviewAngles;
-					if (magazineInteractionCalibrationPreviewModelToWorld)
-					{
-						previewInfo.pModelToWorld = reinterpret_cast<const matrix3x4_t*>(magazineInteractionCalibrationPreviewModelToWorld);
-						previewInfo.pLightingOffset = nullptr;
-						previewInfo.pLightingOrigin = nullptr;
-					}
-					hkDrawModelExecute.fOriginal(
-						ecx,
-						state,
-						previewInfo,
-						magazineInteractionCalibrationPreviewBones);
-					magazineInteractionCalibrationPreviewDrawnAsPrimary = true;
-				}
-			}
-			else
-			{
-				ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(
-					m_VR,
-					state,
-					modelName,
-					pBonesToWorldFinal);
-				hkDrawModelExecute.fOriginal(
-					ecx,
-					state,
-					*pDrawInfo,
-					pBonesToWorldFinal);
-			}
-		}
-	}
+        if (!nativeHandsOnlyDrawn)
+        {
+            if (hideMagazineInteractionCalibrationOriginalViewmodel)
+            {
+                if (drawMagazineInteractionCalibrationPreview && magazineInteractionCalibrationPreviewBones)
+                {
+                    ModelRenderInfo_t previewInfo = *pDrawInfo;
+                    previewInfo.origin = magazineInteractionCalibrationPreviewOrigin;
+                    previewInfo.angles = magazineInteractionCalibrationPreviewAngles;
+                    if (magazineInteractionCalibrationPreviewModelToWorld)
+                    {
+                        previewInfo.pModelToWorld = reinterpret_cast<const matrix3x4_t*>(magazineInteractionCalibrationPreviewModelToWorld);
+                        previewInfo.pLightingOffset = nullptr;
+                        previewInfo.pLightingOrigin = nullptr;
+                    }
+                    hkDrawModelExecute.fOriginal(
+                        ecx,
+                        state,
+                        previewInfo,
+                        magazineInteractionCalibrationPreviewBones);
+                    magazineInteractionCalibrationPreviewDrawnAsPrimary = true;
+                }
+            }
+            else
+            {
+                ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(
+                    m_VR,
+                    state,
+                    modelName,
+                    pBonesToWorldFinal);
+                hkDrawModelExecute.fOriginal(
+                    ecx,
+                    state,
+                    *pDrawInfo,
+                    pBonesToWorldFinal);
+            }
+        }
+    }
 
-	// Draw the detached/new magazine as a second pass of the original weapon
-	// viewmodel. Every non-clip bone is moved out of view, so Source applies the
-	// same active material, shader, skin, lighting and post-processing as the gun.
-	if (drawMagazineInteractionDetachedMagazine && magazineInteractionDetachedMagazineBones)
-		hkDrawModelExecute.fOriginal(ecx, state, *pDrawInfo, magazineInteractionDetachedMagazineBones);
+    // Draw the detached/new magazine as a second pass of the original weapon
+    // viewmodel. Every non-clip bone is moved out of view, so Source applies the
+    // same active material, shader, skin, lighting and post-processing as the gun.
+    if (drawMagazineInteractionDetachedMagazine && magazineInteractionDetachedMagazineBones)
+        hkDrawModelExecute.fOriginal(ecx, state, *pDrawInfo, magazineInteractionDetachedMagazineBones);
 
-	if (drawMagazineInteractionCalibrationPreview &&
-		magazineInteractionCalibrationPreviewBones &&
-		!magazineInteractionCalibrationPreviewDrawnAsPrimary)
-	{
-		ModelRenderInfo_t previewInfo = *pDrawInfo;
-		previewInfo.origin = magazineInteractionCalibrationPreviewOrigin;
-		previewInfo.angles = magazineInteractionCalibrationPreviewAngles;
-		if (magazineInteractionCalibrationPreviewModelToWorld)
-		{
-			previewInfo.pModelToWorld = reinterpret_cast<const matrix3x4_t*>(magazineInteractionCalibrationPreviewModelToWorld);
-			previewInfo.pLightingOffset = nullptr;
-			previewInfo.pLightingOrigin = nullptr;
-		}
-		hkDrawModelExecute.fOriginal(ecx, state, previewInfo, magazineInteractionCalibrationPreviewBones);
-	}
+    if (drawMagazineInteractionCalibrationPreview &&
+        magazineInteractionCalibrationPreviewBones &&
+        !magazineInteractionCalibrationPreviewDrawnAsPrimary)
+    {
+        ModelRenderInfo_t previewInfo = *pDrawInfo;
+        previewInfo.origin = magazineInteractionCalibrationPreviewOrigin;
+        previewInfo.angles = magazineInteractionCalibrationPreviewAngles;
+        if (magazineInteractionCalibrationPreviewModelToWorld)
+        {
+            previewInfo.pModelToWorld = reinterpret_cast<const matrix3x4_t*>(magazineInteractionCalibrationPreviewModelToWorld);
+            previewInfo.pLightingOffset = nullptr;
+            previewInfo.pLightingOrigin = nullptr;
+        }
+        hkDrawModelExecute.fOriginal(ecx, state, previewInfo, magazineInteractionCalibrationPreviewBones);
+    }
 }
 
 // Returns true if the engine RT being pushed looks like the HUD/VGUI render target.
@@ -22642,20 +22700,20 @@ DWORD* Hooks::dPrePushRenderTarget(void* ecx, void* edx, int a2)
 
 void Hooks::dSayText(void* msgData)
 {
-	TryLogHudUserMessagePayload("SayText", msgData);
-	hkSayText.fOriginal(msgData);
+    TryLogHudUserMessagePayload("SayText", msgData);
+    hkSayText.fOriginal(msgData);
 }
 
 void Hooks::dSayText2(void* msgData)
 {
-	TryLogHudUserMessagePayload("SayText2", msgData);
-	hkSayText2.fOriginal(msgData);
+    TryLogHudUserMessagePayload("SayText2", msgData);
+    hkSayText2.fOriginal(msgData);
 }
 
 void Hooks::dTextMsg(void* msgData)
 {
-	TryLogHudUserMessagePayload("TextMsg", msgData);
-	hkTextMsg.fOriginal(msgData);
+    TryLogHudUserMessagePayload("TextMsg", msgData);
+    hkTextMsg.fOriginal(msgData);
 }
 
 void Hooks::dConVarSetValueString(void* ecx, void* edx, const char* value)
