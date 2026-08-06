@@ -15455,6 +15455,26 @@ namespace
         return true;
     }
 
+    inline bool HooksNativeViewmodelArmIkApplyDeltaToSingleBone(
+        int numBones,
+        int boneIndex,
+        const vr_vm_stabilize::Mat3x4& delta,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!bones || boneIndex < 0 || boneIndex >= numBones ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(delta))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 transformed{};
+        vr_vm_stabilize::Mul(delta, bones[boneIndex], transformed);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(transformed))
+            return false;
+        bones[boneIndex] = transformed;
+        return true;
+    }
+
     inline bool HooksNativeViewmodelArmIkBuildAlignmentDelta(
         const Vector& pivot,
         const Vector& fromDirection,
@@ -15530,6 +15550,162 @@ namespace
         outDelta.m[1][3] = translation.y;
         outDelta.m[2][3] = translation.z;
         return HooksNativeViewmodelHandsOnlyMatrixFinite(outDelta);
+    }
+
+    inline bool HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+        const Vector& pivot,
+        const Vector& axisDirection,
+        float radians,
+        vr_vm_stabilize::Mat3x4& outDelta)
+    {
+        outDelta = vr_vm_stabilize::Identity();
+        Vector axis{};
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(pivot) ||
+            !std::isfinite(radians) ||
+            !HooksNativeViewmodelArmIkNormalize(axisDirection, axis))
+        {
+            return false;
+        }
+
+        if (std::fabs(radians) <= 0.000001f)
+            return true;
+
+        const float cosine = std::cos(radians);
+        const float sine = std::sin(radians);
+        if (!std::isfinite(cosine) || !std::isfinite(sine))
+            return false;
+
+        const float oneMinusCosine = 1.0f - cosine;
+        const float x = axis.x;
+        const float y = axis.y;
+        const float z = axis.z;
+        outDelta.m[0][0] = cosine + x * x * oneMinusCosine;
+        outDelta.m[0][1] = x * y * oneMinusCosine - z * sine;
+        outDelta.m[0][2] = x * z * oneMinusCosine + y * sine;
+        outDelta.m[1][0] = y * x * oneMinusCosine + z * sine;
+        outDelta.m[1][1] = cosine + y * y * oneMinusCosine;
+        outDelta.m[1][2] = y * z * oneMinusCosine - x * sine;
+        outDelta.m[2][0] = z * x * oneMinusCosine - y * sine;
+        outDelta.m[2][1] = z * y * oneMinusCosine + x * sine;
+        outDelta.m[2][2] = cosine + z * z * oneMinusCosine;
+
+        const Vector rotatedPivot(
+            outDelta.m[0][0] * pivot.x +
+                outDelta.m[0][1] * pivot.y +
+                outDelta.m[0][2] * pivot.z,
+            outDelta.m[1][0] * pivot.x +
+                outDelta.m[1][1] * pivot.y +
+                outDelta.m[1][2] * pivot.z,
+            outDelta.m[2][0] * pivot.x +
+                outDelta.m[2][1] * pivot.y +
+                outDelta.m[2][2] * pivot.z);
+        const Vector translation = pivot - rotatedPivot;
+        outDelta.m[0][3] = translation.x;
+        outDelta.m[1][3] = translation.y;
+        outDelta.m[2][3] = translation.z;
+        return HooksNativeViewmodelHandsOnlyMatrixFinite(outDelta);
+    }
+
+    inline bool HooksNativeViewmodelArmIkBuildForearmTwistDelta(
+        const Vector& elbow,
+        const Vector& forearmDirection,
+        const vr_vm_stabilize::Mat3x4& currentHand,
+        const vr_vm_stabilize::Mat3x4& desiredHand,
+        vr_vm_stabilize::Mat3x4& outDelta,
+        float* outRadians = nullptr)
+    {
+        outDelta = vr_vm_stabilize::Identity();
+        if (outRadians)
+            *outRadians = 0.0f;
+        Vector axis{};
+        vr_vm_stabilize::Mat3x4 currentRigid{};
+        vr_vm_stabilize::Mat3x4 desiredRigid{};
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(elbow) ||
+            !HooksNativeViewmodelArmIkNormalize(forearmDirection, axis) ||
+            !HooksViewmodelAutoGripNormalizeRigidMatrix(
+                currentHand,
+                currentRigid) ||
+            !HooksViewmodelAutoGripNormalizeRigidMatrix(
+                desiredHand,
+                desiredRigid))
+        {
+            return false;
+        }
+
+        // Use all three corresponding hand axes instead of selecting one axis.
+        // This avoids a 90-degree roll jump when the best projected axis changes
+        // as the controller passes through a near-parallel orientation.
+        float weightedCosine = 0.0f;
+        float weightedSine = 0.0f;
+        float totalProjectionWeight = 0.0f;
+        for (int column = 0; column < 3; ++column)
+        {
+            const Vector currentAxis =
+                HooksViewmodelAutoGripMatrixAxis(currentRigid, column);
+            const Vector desiredAxis =
+                HooksViewmodelAutoGripMatrixAxis(desiredRigid, column);
+            const Vector currentProjected =
+                currentAxis - axis * DotProduct(currentAxis, axis);
+            const Vector desiredProjected =
+                desiredAxis - axis * DotProduct(desiredAxis, axis);
+            const float currentLength = currentProjected.Length();
+            const float desiredLength = desiredProjected.Length();
+            if (!std::isfinite(currentLength) ||
+                !std::isfinite(desiredLength))
+            {
+                return false;
+            }
+
+            const float projectionWeight = currentLength * desiredLength;
+            if (projectionWeight <= 0.000001f)
+                continue;
+
+            Vector normalizedCurrent{};
+            Vector normalizedDesired{};
+            if (!HooksNativeViewmodelArmIkNormalize(
+                    currentProjected,
+                    normalizedCurrent) ||
+                !HooksNativeViewmodelArmIkNormalize(
+                    desiredProjected,
+                    normalizedDesired))
+            {
+                continue;
+            }
+
+            const float cosine = std::clamp(
+                DotProduct(normalizedCurrent, normalizedDesired),
+                -1.0f,
+                1.0f);
+            const float sine = std::clamp(
+                DotProduct(
+                    axis,
+                    CrossProduct(normalizedCurrent, normalizedDesired)),
+                -1.0f,
+                1.0f);
+            weightedCosine += cosine * projectionWeight;
+            weightedSine += sine * projectionWeight;
+            totalProjectionWeight += projectionWeight;
+        }
+
+        if (totalProjectionWeight <= 0.000001f ||
+            !std::isfinite(weightedCosine) ||
+            !std::isfinite(weightedSine) ||
+            std::fabs(weightedCosine) + std::fabs(weightedSine) <= 0.000001f)
+        {
+            return false;
+        }
+
+        const float radians = std::atan2(weightedSine, weightedCosine);
+        if (!std::isfinite(radians))
+            return false;
+        if (outRadians)
+            *outRadians = radians;
+
+        return HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+            elbow,
+            axis,
+            radians,
+            outDelta);
     }
 
     inline bool HooksNativeViewmodelArmIkSolveTwoBone(
@@ -15689,29 +15865,47 @@ namespace
         Vector& outBodyRight,
         Vector& outBodyUp)
     {
-        Vector viewForward{};
-        Vector viewRight{};
-        Vector viewUp{};
+        Vector ignoredViewForward{};
+        Vector ignoredViewRight{};
+        Vector ignoredViewUp{};
         if (!HooksNativeViewmodelHandsOnlyResolveViewFrame(
                 vr,
                 outViewOrigin,
-                viewForward,
-                viewRight,
-                viewUp))
+                ignoredViewForward,
+                ignoredViewRight,
+                ignoredViewUp))
         {
             return false;
         }
 
+        // The shoulder frame is a torso/turn frame, not the current HMD view
+        // frame. Physical head yaw must not orbit the shoulder roots or rotate
+        // the elbow pole. Stick/snap turning still rotates the complete tracked
+        // space through the published rotation offset, so shoulders and both
+        // controller targets remain in the same world frame.
+        float bodyYawDeg = vr->m_RenderRotationOffset.load(std::memory_order_acquire);
+        if (!std::isfinite(bodyYawDeg))
+            bodyYawDeg = vr->m_RotationOffset;
+        if (!std::isfinite(bodyYawDeg))
+            return false;
+        bodyYawDeg -= 360.0f * std::floor((bodyYawDeg + 180.0f) / 360.0f);
+
+        QAngle bodyYawOnly(0.0f, bodyYawDeg, 0.0f);
+        Vector turnForward{};
+        Vector turnRight{};
+        Vector turnUp{};
+        QAngle::AngleVectors(bodyYawOnly, &turnForward, &turnRight, &turnUp);
+
         outBodyUp = Vector(0.0f, 0.0f, 1.0f);
         if (!HooksNativeViewmodelArmIkNormalize(
-                viewForward - outBodyUp * DotProduct(viewForward, outBodyUp),
+                turnForward - outBodyUp * DotProduct(turnForward, outBodyUp),
                 outBodyForward))
         {
             return false;
         }
 
         Vector horizontalRight =
-            viewRight - outBodyUp * DotProduct(viewRight, outBodyUp);
+            turnRight - outBodyUp * DotProduct(turnRight, outBodyUp);
         horizontalRight -=
             outBodyForward * DotProduct(horizontalRight, outBodyForward);
         if (!HooksNativeViewmodelArmIkNormalize(horizontalRight, outBodyRight))
@@ -15766,10 +15960,14 @@ namespace
         const Vector& bodyRight,
         const Vector& bodyUp,
         const Vector* previousBendDirection,
-        bool weldHandToTarget,
+        bool stretchUpperArmToTarget,
         vr_vm_stabilize::Mat3x4* bones,
-        Vector& outBendDirection)
+        Vector& outBendDirection,
+        const float* previousTwistRadians = nullptr,
+        float* outTwistRadians = nullptr)
     {
+        if (outTwistRadians)
+            *outTwistRadians = 0.0f;
         if (!bones || chain.side == 0 || chain.upperArm < 0 ||
             chain.forearm < 0 || chain.hand < 0 ||
             chain.upperArm >= numBones || chain.forearm >= numBones ||
@@ -15824,15 +16022,68 @@ namespace
             return false;
         }
 
-        const Vector poleDirection =
+        float solveUpperLength = upperLength;
+        if (stretchUpperArmToTarget)
+        {
+            const float targetDistance = (targetPosition - shoulder).Length();
+            if (!std::isfinite(targetDistance) || targetDistance < 0.01f)
+                return false;
+
+            // Keep the authored forearm length. If the controller/weapon hand is
+            // outside the normal two-bone reach, add only the missing distance to
+            // the shoulder-to-elbow segment. The solver keeps a tiny non-zero bend
+            // margin, so grow the upper length until its own maximum-reach formula
+            // includes the real hand target.
+            for (int iteration = 0; iteration < 3; ++iteration)
+            {
+                const float reachEpsilon = std::max(
+                    0.01f,
+                    (solveUpperLength + lowerLength) * 0.0005f);
+                const float maximumReach =
+                    solveUpperLength + lowerLength - reachEpsilon;
+                if (targetDistance <= maximumReach)
+                    break;
+
+                solveUpperLength +=
+                    targetDistance - maximumReach + 0.001f;
+            }
+
+            const float finalReachEpsilon = std::max(
+                0.01f,
+                (solveUpperLength + lowerLength) * 0.0005f);
+            if (!std::isfinite(solveUpperLength) ||
+                solveUpperLength < upperLength ||
+                targetDistance >
+                    solveUpperLength + lowerLength - finalReachEpsilon)
+            {
+                return false;
+            }
+        }
+
+        Vector poleDirection =
             bodyRight * static_cast<float>(chain.side) -
             bodyUp * 0.45f -
             bodyForward * 0.15f;
+        if (stretchUpperArmToTarget && previousBendDirection)
+        {
+            Vector stablePreviousBend{};
+            if (HooksNativeViewmodelArmIkNormalize(
+                    *previousBendDirection,
+                    stablePreviousBend))
+            {
+                // Once the first-person elbow has a valid world-space bend,
+                // keep that bend as the pole. Re-projecting it onto the new
+                // shoulder-to-hand plane still lets the arm follow controller
+                // motion, but rotating the body or HMD can no longer drag the
+                // upper arm toward a newly rotated torso pole every frame.
+                poleDirection = stablePreviousBend;
+            }
+        }
         HooksNativeViewmodelArmIkSolution solution{};
         if (!HooksNativeViewmodelArmIkSolveTwoBone(
                 shoulder,
                 targetPosition,
-                upperLength,
+                solveUpperLength,
                 lowerLength,
                 poleDirection,
                 previousBendDirection,
@@ -15842,7 +16093,7 @@ namespace
             return false;
         }
         const Vector solvedHandTarget =
-            weldHandToTarget ? targetPosition : solution.hand;
+            stretchUpperArmToTarget ? targetPosition : solution.hand;
 
         vr_vm_stabilize::Mat3x4 upperDelta{};
         if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
@@ -15861,44 +16112,73 @@ namespace
             return false;
         }
 
-        // The whole stock viewmodel is oriented from the weapon hand. A simple
-        // shortest-arc upper-arm correction removes the segment direction but
-        // leaves its axial twist intact, so rotating the right controller can
-        // still roll the independently solved left sleeve. Stabilize that twist
-        // by rotating the full arm branch around the already solved upper-arm
-        // axis until its current bend plane matches the analytic IK bend plane.
         Vector solvedElbow =
             vr_vm_stabilize::GetOrigin(bones[chain.forearm]);
         Vector solvedHandBeforeForearm =
             vr_vm_stabilize::GetOrigin(bones[chain.hand]);
-        Vector currentPlaneNormal = CrossProduct(
-            solvedElbow - shoulder,
-            solvedHandBeforeForearm - solvedElbow);
-        Vector desiredPlaneNormal = CrossProduct(
-            solution.elbow - shoulder,
-            solvedHandTarget - solution.elbow);
-        const bool currentPlaneValid =
-            HooksNativeViewmodelArmIkNormalize(
-                currentPlaneNormal,
-                currentPlaneNormal);
-        const bool desiredPlaneValid =
-            HooksNativeViewmodelArmIkNormalize(
-                desiredPlaneNormal,
-                desiredPlaneNormal);
-        if (currentPlaneValid && desiredPlaneValid)
+
+        if (!stretchUpperArmToTarget)
         {
-            vr_vm_stabilize::Mat3x4 upperTwistDelta{};
-            if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
-                    shoulder,
+            // Keep the existing world-model correction. First-person starts from
+            // a cached bind branch; applying this correction near a straight arm
+            // amplified tiny plane-normal errors into visible upper-arm vibration.
+            Vector currentPlaneNormal = CrossProduct(
+                solvedElbow - shoulder,
+                solvedHandBeforeForearm - solvedElbow);
+            Vector desiredPlaneNormal = CrossProduct(
+                solution.elbow - shoulder,
+                solvedHandTarget - solution.elbow);
+            const bool currentPlaneValid =
+                HooksNativeViewmodelArmIkNormalize(
                     currentPlaneNormal,
+                    currentPlaneNormal);
+            const bool desiredPlaneValid =
+                HooksNativeViewmodelArmIkNormalize(
                     desiredPlaneNormal,
-                    solution.elbow - shoulder,
-                    upperTwistDelta) ||
-                !HooksNativeViewmodelArmIkApplyDeltaToBranch(
+                    desiredPlaneNormal);
+            if (currentPlaneValid && desiredPlaneValid)
+            {
+                vr_vm_stabilize::Mat3x4 upperTwistDelta{};
+                if (!HooksNativeViewmodelArmIkBuildAlignmentDelta(
+                        shoulder,
+                        currentPlaneNormal,
+                        desiredPlaneNormal,
+                        solution.elbow - shoulder,
+                        upperTwistDelta) ||
+                    !HooksNativeViewmodelArmIkApplyDeltaToBranch(
+                        boneParents,
+                        numBones,
+                        chain.upperArm,
+                        upperTwistDelta,
+                        bones))
+                {
+                    return false;
+                }
+
+                solvedElbow =
+                    vr_vm_stabilize::GetOrigin(bones[chain.forearm]);
+                solvedHandBeforeForearm =
+                    vr_vm_stabilize::GetOrigin(bones[chain.hand]);
+            }
+        }
+
+        if (stretchUpperArmToTarget)
+        {
+            // Rotating the authored upper arm preserves its original length. Move
+            // the complete forearm branch to the analytic elbow instead, which
+            // lengthens only the upper-arm segment while preserving every
+            // elbow-to-hand distance in the forearm branch.
+            const Vector elbowDelta = solution.elbow - solvedElbow;
+            vr_vm_stabilize::Mat3x4 upperStretchTranslation =
+                vr_vm_stabilize::Identity();
+            upperStretchTranslation.m[0][3] = elbowDelta.x;
+            upperStretchTranslation.m[1][3] = elbowDelta.y;
+            upperStretchTranslation.m[2][3] = elbowDelta.z;
+            if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
                     boneParents,
                     numBones,
-                    chain.upperArm,
-                    upperTwistDelta,
+                    chain.forearm,
+                    upperStretchTranslation,
                     bones))
             {
                 return false;
@@ -15938,12 +16218,184 @@ namespace
         {
             return false;
         }
-        // Independent viewmodel meshes can weld to an unreachable controller
-        // and tolerate a stretched lower segment. Connected world models keep
-        // both authored segment lengths at the analytic reachable endpoint.
-        desiredHandRigid.m[0][3] = solvedHandTarget.x;
-        desiredHandRigid.m[1][3] = solvedHandTarget.y;
-        desiredHandRigid.m[2][3] = solvedHandTarget.z;
+
+        // Applying the complete controller rotation only at the hand leaves the
+        // lower arm static and twists the wrist skin into a corkscrew. Extract
+        // the signed controller roll around the solved elbow-to-wrist axis and
+        // apply it to the whole forearm branch before welding the palm. Direction
+        // plus this roll fully determines the forearm, so Source's native
+        // fire/reload/locomotion forearm rotation cannot survive the IK solve.
+        vr_vm_stabilize::Mat3x4 forearmTwistDelta{};
+        float principalTwistRadians = 0.0f;
+        if (!HooksNativeViewmodelArmIkBuildForearmTwistDelta(
+                solvedElbow,
+                solvedHandTarget - solvedElbow,
+                currentHandRigid,
+                desiredHandRigid,
+                forearmTwistDelta,
+                &principalTwistRadians))
+        {
+            return false;
+        }
+
+        float continuousTwistRadians = principalTwistRadians;
+        if (stretchUpperArmToTarget && previousTwistRadians &&
+            std::isfinite(*previousTwistRadians))
+        {
+            constexpr float kPi = 3.14159265358979323846f;
+            constexpr float kTwoPi = kPi * 2.0f;
+            while (continuousTwistRadians - *previousTwistRadians > kPi)
+                continuousTwistRadians -= kTwoPi;
+            while (continuousTwistRadians - *previousTwistRadians < -kPi)
+                continuousTwistRadians += kTwoPi;
+        }
+        float stabilizedUpperTwistRadians = continuousTwistRadians;
+        if (stretchUpperArmToTarget && previousTwistRadians &&
+            std::isfinite(*previousTwistRadians))
+        {
+            // The palm and forearm still use the exact current controller roll.
+            // Only the cosmetic upper-arm share is rate-limited and filtered;
+            // otherwise tiny pose noise or an Euler wrap can make the upper arm
+            // visibly shake while the hand itself is stationary.
+            constexpr float kUpperTwistDeadbandRadians = 0.0035f;
+            constexpr float kUpperTwistMaximumStepRadians = 0.35f;
+            constexpr float kUpperTwistFollow = 0.5f;
+            float delta = continuousTwistRadians - *previousTwistRadians;
+            if (std::fabs(delta) <= kUpperTwistDeadbandRadians)
+            {
+                stabilizedUpperTwistRadians = *previousTwistRadians;
+            }
+            else
+            {
+                delta = std::clamp(
+                    delta,
+                    -kUpperTwistMaximumStepRadians,
+                    kUpperTwistMaximumStepRadians);
+                stabilizedUpperTwistRadians =
+                    *previousTwistRadians + delta * kUpperTwistFollow;
+            }
+        }
+        if (outTwistRadians)
+            *outTwistRadians = stabilizedUpperTwistRadians;
+
+        if (stretchUpperArmToTarget &&
+            std::fabs(stabilizedUpperTwistRadians) > 0.000001f)
+        {
+            // There are no dedicated twist bones. Keep the full roll on the
+            // forearm so the palm reaches the tracked orientation, and rotate
+            // only the upper-arm absolute matrix by a visual share of the stable
+            // roll. Child positions stay solved while elbow skinning shares the
+            // twist. Fade the share near a straight elbow, where the bend plane
+            // is underdetermined and any upper-arm roll is visually unstable.
+            constexpr float kPi = 3.14159265358979323846f;
+            constexpr float kFirstPersonUpperArmTwistShare = 0.5f;
+            constexpr float kMaximumUpperArmTwist = kPi * 0.5f;
+
+            Vector normalizedUpper{};
+            Vector normalizedLower{};
+            float elbowBendWeight = 0.0f;
+            if (HooksNativeViewmodelArmIkNormalize(
+                    solvedElbow - shoulder,
+                    normalizedUpper) &&
+                HooksNativeViewmodelArmIkNormalize(
+                    solvedHandTarget - solvedElbow,
+                    normalizedLower))
+            {
+                const float bendSine = CrossProduct(
+                    normalizedUpper,
+                    normalizedLower).Length();
+                if (std::isfinite(bendSine))
+                {
+                    elbowBendWeight = std::clamp(
+                        (bendSine - 0.03f) / 0.22f,
+                        0.0f,
+                        1.0f);
+                }
+            }
+
+            const float upperArmTwistRadians = std::clamp(
+                stabilizedUpperTwistRadians *
+                    kFirstPersonUpperArmTwistShare * elbowBendWeight,
+                -kMaximumUpperArmTwist,
+                kMaximumUpperArmTwist);
+
+            vr_vm_stabilize::Mat3x4 upperArmTwistDelta{};
+            if (!HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+                    shoulder,
+                    solvedElbow - shoulder,
+                    upperArmTwistRadians,
+                    upperArmTwistDelta) ||
+                !HooksNativeViewmodelArmIkApplyDeltaToSingleBone(
+                    numBones,
+                    chain.upperArm,
+                    upperArmTwistDelta,
+                    bones))
+            {
+                return false;
+            }
+        }
+
+        if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
+                boneParents,
+                numBones,
+                chain.forearm,
+                forearmTwistDelta,
+                bones) ||
+            !HooksViewmodelAutoGripNormalizeRigidMatrix(
+                bones[chain.hand],
+                currentHandRigid))
+        {
+            return false;
+        }
+
+        if (stretchUpperArmToTarget)
+        {
+            // The forearm solve now reaches the real weapon/controller target with
+            // its authored length. Correct any floating-point residue by moving the
+            // whole forearm branch, never the hand alone, so the lower segment is
+            // not stretched. The remaining hand delta is rotation-only.
+            const Vector currentHandPosition =
+                vr_vm_stabilize::GetOrigin(bones[chain.hand]);
+            const Vector handPositionDelta =
+                targetPosition - currentHandPosition;
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(currentHandPosition) ||
+                !HooksNativeViewmodelHandsOnlyVectorFinite(handPositionDelta))
+            {
+                return false;
+            }
+
+            vr_vm_stabilize::Mat3x4 handWeldTranslation =
+                vr_vm_stabilize::Identity();
+            handWeldTranslation.m[0][3] = handPositionDelta.x;
+            handWeldTranslation.m[1][3] = handPositionDelta.y;
+            handWeldTranslation.m[2][3] = handPositionDelta.z;
+            if (!HooksNativeViewmodelArmIkApplyDeltaToBranch(
+                    boneParents,
+                    numBones,
+                    chain.forearm,
+                    handWeldTranslation,
+                    bones) ||
+                !HooksViewmodelAutoGripNormalizeRigidMatrix(
+                    bones[chain.hand],
+                    currentHandRigid))
+            {
+                return false;
+            }
+
+            const Vector weldedHandPosition =
+                vr_vm_stabilize::GetOrigin(currentHandRigid);
+            desiredHandRigid.m[0][3] = weldedHandPosition.x;
+            desiredHandRigid.m[1][3] = weldedHandPosition.y;
+            desiredHandRigid.m[2][3] = weldedHandPosition.z;
+        }
+        else
+        {
+            // Third-person keeps both authored segment lengths and uses the
+            // analytic reachable endpoint.
+            desiredHandRigid.m[0][3] = solvedHandTarget.x;
+            desiredHandRigid.m[1][3] = solvedHandTarget.y;
+            desiredHandRigid.m[2][3] = solvedHandTarget.z;
+        }
 
         vr_vm_stabilize::Mat3x4 inverseCurrentHand{};
         vr_vm_stabilize::Mat3x4 handDelta{};
@@ -15963,6 +16415,583 @@ namespace
         return HooksNativeViewmodelHandsOnlyVectorFinite(outBendDirection);
     }
 
+    struct HooksNativeViewmodelFirstPersonArmRestCache
+    {
+        VR* owner = nullptr;
+        const uint8_t* studioHdr = nullptr;
+        std::string modelName;
+        uint32_t boneLayoutSignature = 0;
+        int numBones = 0;
+        int side = 0;
+        int upperArm = -1;
+        int forearm = -1;
+        int hand = -1;
+        bool valid = false;
+        vr_vm_stabilize::Mat3x4 canonicalUpperWorld{};
+        std::vector<uint8_t> solveMask;
+        std::vector<uint8_t> localValid;
+        std::vector<vr_vm_stabilize::Mat3x4> restLocalBones;
+
+        void Reset()
+        {
+            owner = nullptr;
+            studioHdr = nullptr;
+            modelName.clear();
+            boneLayoutSignature = 0;
+            numBones = 0;
+            side = 0;
+            upperArm = -1;
+            forearm = -1;
+            hand = -1;
+            valid = false;
+            canonicalUpperWorld = vr_vm_stabilize::Mat3x4{};
+            solveMask.clear();
+            localValid.clear();
+            restLocalBones.clear();
+        }
+    };
+
+    inline HooksNativeViewmodelFirstPersonArmRestCache&
+        HooksNativeViewmodelFirstPersonArmRestCacheInstance(int side)
+    {
+        static HooksNativeViewmodelFirstPersonArmRestCache leftCache;
+        static HooksNativeViewmodelFirstPersonArmRestCache rightCache;
+        return side < 0 ? leftCache : rightCache;
+    }
+
+    inline bool HooksNativeViewmodelArmIkResetFirstPersonBranchToRestPose(
+        VR* vr,
+        void* drawState,
+        int boneIndex,
+        int stride,
+        const std::string& lowerModel,
+        const std::vector<std::string>& boneNames,
+        const std::vector<int>& boneParents,
+        int numBones,
+        const HooksNativeViewmodelArmIkChain& chain,
+        const std::vector<uint8_t>& solveMask,
+        const Vector& shoulderTarget,
+        const Vector& bodyForward,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!vr || !drawState || !bones || chain.side == 0 ||
+            chain.upperArm < 0 || chain.upperArm >= numBones ||
+            chain.forearm < 0 || chain.forearm >= numBones ||
+            chain.hand < 0 || chain.hand >= numBones ||
+            numBones <= 0 || numBones > 512 ||
+            static_cast<int>(boneNames.size()) < numBones ||
+            static_cast<int>(boneParents.size()) < numBones ||
+            static_cast<int>(solveMask.size()) < numBones ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(shoulderTarget) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyForward))
+        {
+            return false;
+        }
+
+        const uint8_t* studioHdr = nullptr;
+        if (!vr_vm_stabilize::TryGetStudioHdrFromDrawState(
+                drawState,
+                studioHdr) ||
+            !studioHdr)
+        {
+            return false;
+        }
+
+        const uint32_t boneLayoutSignature =
+            HooksNativeViewmodelHandsOnlyBuildBoneLayoutSignature(
+                boneNames,
+                boneParents,
+                numBones);
+
+        static std::mutex s_restCacheMutex;
+        std::lock_guard<std::mutex> lock(s_restCacheMutex);
+        HooksNativeViewmodelFirstPersonArmRestCache& cache =
+            HooksNativeViewmodelFirstPersonArmRestCacheInstance(chain.side);
+
+        const bool cacheMatches =
+            cache.valid &&
+            cache.owner == vr &&
+            cache.studioHdr == studioHdr &&
+            cache.modelName == lowerModel &&
+            cache.boneLayoutSignature == boneLayoutSignature &&
+            cache.numBones == numBones &&
+            cache.side == chain.side &&
+            cache.upperArm == chain.upperArm &&
+            cache.forearm == chain.forearm &&
+            cache.hand == chain.hand &&
+            cache.solveMask == solveMask &&
+            static_cast<int>(cache.localValid.size()) == numBones &&
+            static_cast<int>(cache.restLocalBones.size()) == numBones;
+
+        if (!cacheMatches)
+        {
+            cache.Reset();
+            cache.owner = vr;
+            cache.studioHdr = studioHdr;
+            cache.modelName = lowerModel;
+            cache.boneLayoutSignature = boneLayoutSignature;
+            cache.numBones = numBones;
+            cache.side = chain.side;
+            cache.upperArm = chain.upperArm;
+            cache.forearm = chain.forearm;
+            cache.hand = chain.hand;
+            cache.solveMask = solveMask;
+            cache.localValid.assign(static_cast<size_t>(numBones), 0u);
+            cache.restLocalBones.resize(static_cast<size_t>(numBones));
+
+            // Build the upper-arm bind orientation from the complete rest-pose
+            // ancestor chain. No current viewmodel/world-model matrix is sampled,
+            // so HMD-driven body turns and Source animation cannot leave axial
+            // rotation in the first-person upper arm.
+            std::vector<int> ancestorPath;
+            int current = chain.upperArm;
+            for (int guard = 0;
+                guard < numBones && current >= 0 && current < numBones;
+                ++guard)
+            {
+                ancestorPath.push_back(current);
+                const int parent = boneParents[static_cast<size_t>(current)];
+                if (parent < 0 || parent >= numBones || parent == current)
+                    break;
+                current = parent;
+            }
+            if (ancestorPath.empty())
+            {
+                cache.Reset();
+                return false;
+            }
+
+            vr_vm_stabilize::Mat3x4 canonical = vr_vm_stabilize::Identity();
+            for (auto it = ancestorPath.rbegin(); it != ancestorPath.rend(); ++it)
+            {
+                vr_vm_stabilize::Mat3x4 local{};
+                if (!HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
+                        drawState,
+                        boneIndex,
+                        stride,
+                        *it,
+                        local) ||
+                    !HooksNativeViewmodelHandsOnlyMatrixFinite(local))
+                {
+                    cache.Reset();
+                    return false;
+                }
+
+                vr_vm_stabilize::Mat3x4 next{};
+                vr_vm_stabilize::Mul(canonical, local, next);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(next))
+                {
+                    cache.Reset();
+                    return false;
+                }
+                canonical = next;
+            }
+            cache.canonicalUpperWorld = canonical;
+
+            int requiredLocals = 0;
+            int capturedLocals = 0;
+            for (int bone = 0; bone < numBones; ++bone)
+            {
+                if (!solveMask[static_cast<size_t>(bone)] ||
+                    bone == chain.upperArm)
+                {
+                    continue;
+                }
+                ++requiredLocals;
+
+                vr_vm_stabilize::Mat3x4 local{};
+                if (!HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
+                        drawState,
+                        boneIndex,
+                        stride,
+                        bone,
+                        local) ||
+                    !HooksNativeViewmodelHandsOnlyMatrixFinite(local))
+                {
+                    cache.Reset();
+                    return false;
+                }
+                cache.restLocalBones[static_cast<size_t>(bone)] = local;
+                cache.localValid[static_cast<size_t>(bone)] = 1u;
+                ++capturedLocals;
+            }
+
+            cache.valid =
+                requiredLocals > 0 &&
+                capturedLocals == requiredLocals &&
+                HooksNativeViewmodelHandsOnlyMatrixFinite(
+                    cache.canonicalUpperWorld);
+            if (!cache.valid)
+            {
+                cache.Reset();
+                return false;
+            }
+
+            if (vr->m_VrHandsDebugLog)
+            {
+                Game::logMsg(
+                    "[VR][ViewmodelArmIK] cached animation-free %s arm rest branch model=%s bones=%d",
+                    chain.side < 0 ? "left" : "right",
+                    lowerModel.c_str(),
+                    capturedLocals + 1);
+            }
+        }
+
+        Vector horizontalBodyForward(
+            bodyForward.x,
+            bodyForward.y,
+            0.0f);
+        if (!HooksNativeViewmodelArmIkNormalize(
+                horizontalBodyForward,
+                horizontalBodyForward))
+        {
+            return false;
+        }
+
+        const float bodyYawRadians =
+            std::atan2(horizontalBodyForward.y, horizontalBodyForward.x);
+        vr_vm_stabilize::Mat3x4 bodyYawDelta{};
+        if (!std::isfinite(bodyYawRadians) ||
+            !HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+                Vector(0.0f, 0.0f, 0.0f),
+                Vector(0.0f, 0.0f, 1.0f),
+                bodyYawRadians,
+                bodyYawDelta))
+        {
+            return false;
+        }
+
+        // Rotate the bind branch by the same turn-only body yaw used by the
+        // controller world poses. This removes global body/view yaw from the
+        // forearm-roll measurement; only the controller's rotation relative to
+        // the arm can be shared into the upper arm.
+        vr_vm_stabilize::Mat3x4 upperWorld{};
+        vr_vm_stabilize::Mul(
+            bodyYawDelta,
+            cache.canonicalUpperWorld,
+            upperWorld);
+        upperWorld.m[0][3] = shoulderTarget.x;
+        upperWorld.m[1][3] = shoulderTarget.y;
+        upperWorld.m[2][3] = shoulderTarget.z;
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(upperWorld))
+            return false;
+        bones[chain.upperArm] = upperWorld;
+
+        std::vector<uint8_t> resolved(static_cast<size_t>(numBones), 0u);
+        resolved[static_cast<size_t>(chain.upperArm)] = 1u;
+        int expected = 1;
+        int rebuilt = 1;
+        for (int bone = 0; bone < numBones; ++bone)
+        {
+            if (solveMask[static_cast<size_t>(bone)] && bone != chain.upperArm)
+                ++expected;
+        }
+
+        for (int pass = 0; pass < numBones && rebuilt < expected; ++pass)
+        {
+            bool progressed = false;
+            for (int bone = 0; bone < numBones; ++bone)
+            {
+                if (bone == chain.upperArm ||
+                    !solveMask[static_cast<size_t>(bone)] ||
+                    resolved[static_cast<size_t>(bone)])
+                {
+                    continue;
+                }
+
+                const int parent = boneParents[static_cast<size_t>(bone)];
+                if (parent < 0 || parent >= numBones || parent == bone ||
+                    !solveMask[static_cast<size_t>(parent)] ||
+                    !resolved[static_cast<size_t>(parent)] ||
+                    !cache.localValid[static_cast<size_t>(bone)])
+                {
+                    continue;
+                }
+
+                vr_vm_stabilize::Mat3x4 world{};
+                vr_vm_stabilize::Mul(
+                    bones[parent],
+                    cache.restLocalBones[static_cast<size_t>(bone)],
+                    world);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(world))
+                    return false;
+
+                bones[bone] = world;
+                resolved[static_cast<size_t>(bone)] = 1u;
+                ++rebuilt;
+                progressed = true;
+            }
+
+            if (!progressed)
+                break;
+        }
+
+        return rebuilt == expected &&
+            resolved[static_cast<size_t>(chain.forearm)] != 0u &&
+            resolved[static_cast<size_t>(chain.hand)] != 0u;
+    }
+
+    inline bool HooksNativeViewmodelArmIkRestoreAnimatedFingerPose(
+        const std::vector<std::string>& boneNames,
+        const std::vector<int>& boneParents,
+        int numBones,
+        const HooksNativeViewmodelHandsOnlySideInfo& sideInfo,
+        const vr_vm_stabilize::Mat3x4* sourceBones,
+        vr_vm_stabilize::Mat3x4* currentBones)
+    {
+        if (!sourceBones || !currentBones ||
+            (sideInfo.side != -1 && sideInfo.side != 1) ||
+            sideInfo.hand < 0 || sideInfo.hand >= numBones ||
+            numBones <= 0 || numBones > 512 ||
+            static_cast<int>(boneNames.size()) < numBones ||
+            static_cast<int>(boneParents.size()) < numBones)
+        {
+            return false;
+        }
+
+        // Cropped hands do not rebuild a guessed list of finger names: the
+        // complete hand subtree stays in the pose produced by that pipeline.
+        // Do the same after moving the IK palm. Copy every local transform below
+        // the hand, including unnamed palm/finger helpers, so replacement models
+        // cannot leave missed bones in the open bind pose.
+        std::vector<uint8_t> handSubtreeMask(
+            static_cast<size_t>(numBones),
+            0u);
+        int expected = 0;
+        for (int bone = 0; bone < numBones; ++bone)
+        {
+            if (bone == sideInfo.hand ||
+                !HooksNativeViewmodelHandsOnlyIsAncestor(
+                    boneParents,
+                    bone,
+                    sideInfo.hand,
+                    numBones))
+            {
+                continue;
+            }
+
+            const std::string lowerName = vr_vm_stabilize::ToLowerAscii(
+                boneNames[static_cast<size_t>(bone)]);
+            const int namedSide =
+                HooksNativeViewmodelHandsOnlyBoneSide(lowerName);
+            if (namedSide != 0 && namedSide != sideInfo.side)
+                continue;
+
+            handSubtreeMask[static_cast<size_t>(bone)] = 1u;
+            ++expected;
+        }
+
+        if (expected == 0)
+            return true;
+
+        std::vector<uint8_t> localValid(static_cast<size_t>(numBones), 0u);
+        std::vector<vr_vm_stabilize::Mat3x4> sourceLocal(
+            static_cast<size_t>(numBones));
+        for (int bone = 0; bone < numBones; ++bone)
+        {
+            if (!handSubtreeMask[static_cast<size_t>(bone)])
+                continue;
+
+            const int parent = boneParents[static_cast<size_t>(bone)];
+            if (parent < 0 || parent >= numBones || parent == bone)
+                return false;
+
+            vr_vm_stabilize::Mat3x4 parentWorld{};
+            vr_vm_stabilize::Mat3x4 boneWorld{};
+            vr_vm_stabilize::Mat3x4 inverseParent{};
+            vr_vm_stabilize::Mat3x4 local{};
+            if (!vr_vm_stabilize::SafeRead(
+                    sourceBones + parent,
+                    parentWorld) ||
+                !vr_vm_stabilize::SafeRead(
+                    sourceBones + bone,
+                    boneWorld) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(parentWorld) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(boneWorld) ||
+                !vr_vm_stabilize::InvertAffine(
+                    parentWorld,
+                    inverseParent))
+            {
+                return false;
+            }
+
+            vr_vm_stabilize::Mul(inverseParent, boneWorld, local);
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(local))
+                return false;
+            sourceLocal[static_cast<size_t>(bone)] = local;
+            localValid[static_cast<size_t>(bone)] = 1u;
+        }
+
+        std::vector<uint8_t> resolved(static_cast<size_t>(numBones), 0u);
+        int applied = 0;
+        for (int pass = 0; pass < numBones && applied < expected; ++pass)
+        {
+            bool progressed = false;
+            for (int bone = 0; bone < numBones; ++bone)
+            {
+                if (!handSubtreeMask[static_cast<size_t>(bone)] ||
+                    !localValid[static_cast<size_t>(bone)] ||
+                    resolved[static_cast<size_t>(bone)])
+                {
+                    continue;
+                }
+
+                const int parent = boneParents[static_cast<size_t>(bone)];
+                if (handSubtreeMask[static_cast<size_t>(parent)] &&
+                    !resolved[static_cast<size_t>(parent)])
+                {
+                    continue;
+                }
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
+                        currentBones[parent]))
+                {
+                    return false;
+                }
+
+                vr_vm_stabilize::Mat3x4 world{};
+                vr_vm_stabilize::Mul(
+                    currentBones[parent],
+                    sourceLocal[static_cast<size_t>(bone)],
+                    world);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(world))
+                    return false;
+
+                currentBones[bone] = world;
+                resolved[static_cast<size_t>(bone)] = 1u;
+                ++applied;
+                progressed = true;
+            }
+
+            if (!progressed)
+                break;
+        }
+
+        return applied == expected;
+    }
+
+    inline bool HooksNativeViewmodelArmIkApplyCroppedEmptyFingerPose(
+        VR* vr,
+        void* drawState,
+        int boneIndex,
+        int stride,
+        const std::string& lowerModel,
+        const std::vector<std::string>& boneNames,
+        const std::vector<int>& boneParents,
+        int numBones,
+        const HooksNativeViewmodelHandsOnlySideInfo& sideInfo,
+        const vr_vm_stabilize::Mat3x4* sourceBones,
+        vr_vm_stabilize::Mat3x4* currentBones)
+    {
+        if (!vr || !drawState || !sourceBones || !currentBones ||
+            (sideInfo.side != -1 && sideInfo.side != 1) ||
+            sideInfo.hand < 0 || sideInfo.hand >= numBones ||
+            numBones <= 0 || numBones > 512 ||
+            static_cast<int>(boneNames.size()) < numBones ||
+            static_cast<int>(boneParents.size()) < numBones)
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 sourceHand{};
+        vr_vm_stabilize::Mat3x4 solvedHand{};
+        if (!vr_vm_stabilize::SafeRead(
+                sourceBones + sideInfo.hand,
+                sourceHand) ||
+            !vr_vm_stabilize::SafeRead(
+                currentBones + sideInfo.hand,
+                solvedHand) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(sourceHand) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(solvedHand))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 inverseSourceHand{};
+        vr_vm_stabilize::Mat3x4 targetDelta{};
+        vr_vm_stabilize::InvertTR(sourceHand, inverseSourceHand);
+        vr_vm_stabilize::Mul(solvedHand, inverseSourceHand, targetDelta);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(targetDelta))
+            return false;
+
+        // Re-run the cropped-hand empty-state pipeline on a temporary copy.
+        // Its saved/captured frozen pose is the authoritative empty-hand base.
+        // Copy only the complete subtree below the solved IK palm, so the cropped
+        // forearm data cannot overwrite the full-arm solution.
+        static thread_local std::vector<vr_vm_stabilize::Mat3x4> croppedPose;
+        croppedPose.resize(static_cast<size_t>(numBones));
+        for (int bone = 0; bone < numBones; ++bone)
+        {
+            vr_vm_stabilize::Mat3x4 source{};
+            if (!vr_vm_stabilize::SafeRead(sourceBones + bone, source) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(source))
+            {
+                return false;
+            }
+
+            vr_vm_stabilize::Mat3x4 transformed{};
+            vr_vm_stabilize::Mul(targetDelta, source, transformed);
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(transformed))
+                return false;
+            croppedPose[static_cast<size_t>(bone)] = transformed;
+        }
+
+        const bool frozenPoseApplied =
+            HooksNativeViewmodelHandsOnlyApplyFrozenSideHandPose(
+                vr,
+                drawState,
+                boneIndex,
+                stride,
+                lowerModel,
+                boneNames,
+                boneParents,
+                numBones,
+                sideInfo,
+                sourceBones,
+                solvedHand,
+                targetDelta,
+                croppedPose.data(),
+                nullptr);
+
+        if (!frozenPoseApplied)
+        {
+            // During the map-load freeze delay, the arm branch is already in
+            // stable bind locals. Apply curls directly to that frozen fallback;
+            // never restore this frame's Source finger animation for an empty hand.
+            HooksNativeViewmodelHandsOnlyApplyOpenVRFingerPose(
+                vr,
+                drawState,
+                boneIndex,
+                stride,
+                boneNames,
+                boneParents,
+                numBones,
+                sideInfo,
+                sourceBones,
+                currentBones);
+            return true;
+        }
+
+        HooksNativeViewmodelHandsOnlyApplyOpenVRFingerPose(
+            vr,
+            drawState,
+            boneIndex,
+            stride,
+            boneNames,
+            boneParents,
+            numBones,
+            sideInfo,
+            sourceBones,
+            croppedPose.data());
+
+        return HooksNativeViewmodelArmIkRestoreAnimatedFingerPose(
+            boneNames,
+            boneParents,
+            numBones,
+            sideInfo,
+            croppedPose.data(),
+            currentBones);
+    }
+
     struct HooksNativeViewmodelArmIkContinuity
     {
         VR* owner = nullptr;
@@ -15980,8 +17009,12 @@ namespace
         std::chrono::steady_clock::time_point lastSolved{};
         bool latestValid[2]{};
         bool frameValid[2]{};
-        Vector latestLocal[2]{};
-        Vector frameLocal[2]{};
+        Vector latestTurnLocal[2]{};
+        Vector frameTurnLocal[2]{};
+        bool latestTwistValid[2]{};
+        bool frameTwistValid[2]{};
+        float latestTwistRadians[2]{};
+        float frameTwistRadians[2]{};
     };
 
     inline int HooksNativeViewmodelArmIkSideSlot(int side)
@@ -16332,34 +17365,14 @@ namespace
         bool leftShoulderValid = true;
         bool rightShoulderValid = true;
 
-        const HooksFirstPersonBodyEyeSceneState* bodyShoulderState = nullptr;
-        const bool bodyShouldersRequired =
-            HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
-                vr,
-                bodyShoulderState);
-        if (bodyShouldersRequired)
-        {
-            if (!HooksFirstPersonBodyReadViewmodelShoulders(
-                    vr,
-                    bodyShoulderState,
-                    leftShoulder,
-                    leftShoulderValid,
-                    rightShoulder,
-                    rightShoulderValid))
-            {
-                HooksNativeViewmodelArmIkLogOnce(
-                    "body-shoulder-missing|" + lowerModel,
-                    "[VR][ViewmodelArmIK] current first-person body shoulder anchors were not published before the viewmodel draw model=%s",
-                    lowerModel,
-                    nullptr,
-                    nullptr,
-                    nullptr);
-                return false;
-            }
-        }
+        // The first-person viewmodel arm chain is intentionally independent of
+        // the rendered survivor body's animated shoulder bones. Both shoulders
+        // stay in the HMD-local frame above, and each arm is solved only from
+        // that HMD anchor to its tracked hand target. Turning or animating the
+        // body therefore cannot add a second parent rotation to the forearm.
 
-        // User tuning is applied after either the real body shoulders or the
-        // anatomical HMD-relative fallback has been selected. The shared offset
+        // User tuning is applied after the HMD-relative shoulders have been
+        // selected. The shared offset
         // uses body-local X=forward, Y=right, Z=up. Spacing is a total delta,
         // split equally between the two sides along the actual shoulder line.
         const Vector configuredAnchorOffset =
@@ -16404,6 +17417,8 @@ namespace
 
         bool previousValid[2]{};
         Vector previousWorld[2]{};
+        bool previousTwistValid[2]{};
+        float previousTwistRadians[2]{};
         const auto now = std::chrono::steady_clock::now();
         const uint32_t renderFrameSeq =
             vr->m_RenderFrameSeq.load(std::memory_order_acquire) & ~1u;
@@ -16449,7 +17464,12 @@ namespace
                 for (int slot = 0; slot < 2; ++slot)
                 {
                     s_continuity.frameValid[slot] = s_continuity.latestValid[slot];
-                    s_continuity.frameLocal[slot] = s_continuity.latestLocal[slot];
+                    s_continuity.frameTurnLocal[slot] =
+                        s_continuity.latestTurnLocal[slot];
+                    s_continuity.frameTwistValid[slot] =
+                        s_continuity.latestTwistValid[slot];
+                    s_continuity.frameTwistRadians[slot] =
+                        s_continuity.latestTwistRadians[slot];
                 }
             }
             s_continuity.lastEyeIndex = eyeIndex;
@@ -16460,9 +17480,13 @@ namespace
                 previousValid[slot] = s_continuity.frameValid[slot];
                 if (previousValid[slot])
                 {
+                    // Continuity is stored in turn space, not the live HMD/view
+                    // frame. Physical head/body-model yaw therefore cannot rotate
+                    // the elbow plane, while an actual snap/smooth turn rotates
+                    // the complete HMD/controller/arm solution together.
                     previousWorld[slot] =
                         HooksNativeViewmodelArmIkBodyLocalDirectionToWorld(
-                            s_continuity.frameLocal[slot],
+                            s_continuity.frameTurnLocal[slot],
                             bodyForward,
                             bodyRight,
                             bodyUp);
@@ -16470,6 +17494,14 @@ namespace
                         HooksNativeViewmodelArmIkNormalize(
                             previousWorld[slot],
                             previousWorld[slot]);
+                }
+                previousTwistValid[slot] =
+                    s_continuity.frameTwistValid[slot] &&
+                    std::isfinite(s_continuity.frameTwistRadians[slot]);
+                if (previousTwistValid[slot])
+                {
+                    previousTwistRadians[slot] =
+                        s_continuity.frameTwistRadians[slot];
                 }
             }
         }
@@ -16492,6 +17524,8 @@ namespace
 
         bool solvedSide[2]{};
         Vector solvedBendWorld[2]{};
+        bool solvedTwistValid[2]{};
+        float solvedTwistRadians[2]{};
         auto solveSide = [&](
             bool chainValid,
             bool targetValid,
@@ -16523,11 +17557,38 @@ namespace
                     }
                 }
 
+                // Rebuild the complete first-person arm branch from StudioHdr
+                // rest locals before solving. This removes every current Source
+                // shoulder/upper-arm/forearm animation and any viewmodel-root roll.
+                // HMD/controller tracking supplies positions; analytic IK supplies
+                // the arm rotations. Third-person keeps its existing path.
+                if (!HooksNativeViewmodelArmIkResetFirstPersonBranchToRestPose(
+                        vr,
+                        drawState,
+                        boneIndex,
+                        stride,
+                        lowerModel,
+                        boneNames,
+                        boneParents,
+                        numBones,
+                        chain,
+                        solveMask,
+                        shoulder,
+                        bodyForward,
+                        candidate))
+                {
+                    return false;
+                }
+
                 const int slot = HooksNativeViewmodelArmIkSideSlot(chain.side);
                 const Vector* previous = previousValid[slot]
                     ? &previousWorld[slot]
                     : nullptr;
+                const float* previousTwist = previousTwistValid[slot]
+                    ? &previousTwistRadians[slot]
+                    : nullptr;
                 Vector bend{};
+                float twistRadians = 0.0f;
                 if (!HooksNativeViewmodelArmIkApplyArm(
                         boneParents,
                         numBones,
@@ -16540,7 +17601,9 @@ namespace
                         previous,
                         true,
                         candidate,
-                        bend))
+                        bend,
+                        previousTwist,
+                        &twistRadians))
                 {
                     return false;
                 }
@@ -16548,23 +17611,45 @@ namespace
                 const bool emptyHandsPlaceholderActive =
                     vr->m_ManualInventoryEmptyHandsActive.load(
                         std::memory_order_acquire);
-                const bool applyFingerPose =
-                    (chain.side == -1 &&
-                        !vr->IsVrHandsTwoHandedGripPoseActive()) ||
-                    (chain.side == 1 && emptyHandsPlaceholderActive);
-                if (applyFingerPose)
+                const bool leftTwoHandedGrip =
+                    chain.side == -1 &&
+                    vr->IsVrHandsTwoHandedGripPoseActive();
+                const bool useAnimatedFingerPose =
+                    leftTwoHandedGrip ||
+                    (chain.side == 1 && !emptyHandsPlaceholderActive);
+
+                // Match cropped hands instead of treating every state alike:
+                //   * weapon hand and two-handed support hand use this frame's
+                //     native viewmodel finger animation;
+                //   * free left hand and empty right hand use the cropped-hand
+                //     frozen pose, then apply OpenVR curls on that fixed base.
+                if (useAnimatedFingerPose)
                 {
-                    HooksNativeViewmodelHandsOnlyApplyOpenVRFingerPose(
-                        vr,
-                        drawState,
-                        boneIndex,
-                        stride,
-                        boneNames,
-                        boneParents,
-                        numBones,
-                        sideInfo,
-                        sourceBones,
-                        candidate);
+                    if (!HooksNativeViewmodelArmIkRestoreAnimatedFingerPose(
+                            boneNames,
+                            boneParents,
+                            numBones,
+                            sideInfo,
+                            sourceBones,
+                            candidate))
+                    {
+                        return false;
+                    }
+                }
+                else if (!HooksNativeViewmodelArmIkApplyCroppedEmptyFingerPose(
+                             vr,
+                             drawState,
+                             boneIndex,
+                             stride,
+                             lowerModel,
+                             boneNames,
+                             boneParents,
+                             numBones,
+                             sideInfo,
+                             sourceBones,
+                             candidate))
+                {
+                    return false;
                 }
 
                 for (int bone = 0; bone < numBones; ++bone)
@@ -16577,6 +17662,8 @@ namespace
                 }
                 solvedSide[slot] = true;
                 solvedBendWorld[slot] = bend;
+                solvedTwistValid[slot] = std::isfinite(twistRadians);
+                solvedTwistRadians[slot] = twistRadians;
                 return true;
             };
 
@@ -16619,15 +17706,28 @@ namespace
                 {
                     if (!solvedSide[slot])
                         continue;
-                    Vector local = HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
-                        solvedBendWorld[slot],
-                        bodyForward,
-                        bodyRight,
-                        bodyUp);
-                    if (HooksNativeViewmodelArmIkNormalize(local, local))
+                    Vector world = solvedBendWorld[slot];
+                    if (HooksNativeViewmodelArmIkNormalize(world, world))
                     {
-                        s_continuity.latestLocal[slot] = local;
-                        s_continuity.latestValid[slot] = true;
+                        Vector turnLocal =
+                            HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
+                                world,
+                                bodyForward,
+                                bodyRight,
+                                bodyUp);
+                        if (HooksNativeViewmodelArmIkNormalize(
+                                turnLocal,
+                                turnLocal))
+                        {
+                            s_continuity.latestTurnLocal[slot] = turnLocal;
+                            s_continuity.latestValid[slot] = true;
+                        }
+                    }
+                    if (solvedTwistValid[slot])
+                    {
+                        s_continuity.latestTwistRadians[slot] =
+                            solvedTwistRadians[slot];
+                        s_continuity.latestTwistValid[slot] = true;
                     }
                 }
                 s_continuity.lastSolved = now;
@@ -20768,7 +21868,7 @@ if (m_VR->m_IsVREnabled && queueMode == 2 &&
 		if (!m_VR ||
 			(!magazineInteractionCalibrationOverlayActive &&
 			!m_VR->ShouldHideMagazineInteractionNativeClip()))
-		{ 
+		{
             const bool isViewmodelModel = HooksModelNameIsViewmodel(modelName);
             if(isViewmodelModel)
                 DrawCurrentWeaponMagazineBox(

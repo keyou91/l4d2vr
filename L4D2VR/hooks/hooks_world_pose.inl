@@ -34,6 +34,24 @@
         int mappedSegments = 0;
     };
 
+    struct HooksWorldPoseFingerPoseCache
+    {
+        bool valid = false;
+        bool useRestPose = false;
+        const void* poseKey = nullptr;
+        std::array<vr_vm_stabilize::Mat3x4, 15> locals{};
+        std::array<uint8_t, 15> localValid{};
+
+        void Reset()
+        {
+            valid = false;
+            useRestPose = false;
+            poseKey = nullptr;
+            locals = {};
+            localValid = {};
+        }
+    };
+
     struct HooksWorldPoseBoneLayout
     {
         const uint8_t* studioHdr = nullptr;
@@ -87,6 +105,8 @@
         vr_vm_stabilize::Mat3x4 rightGripShotBaselineLocal{};
         Vector rightGripShotAxisHemisphere{};
         Vector rightGripShotImpulseAxis{};
+        HooksWorldPoseFingerPoseCache leftFingerPose{};
+        HooksWorldPoseFingerPoseCache rightFingerPose{};
         bool neckReferenceLocalValid = false;
         bool headReferenceLocalValid = false;
         vr_vm_stabilize::Mat3x4 neckReferenceLocal{};
@@ -4260,6 +4280,146 @@
         float weight,
         vr_vm_stabilize::Mat3x4& outLocal);
 
+    inline bool HooksWorldPoseEnsureAnimationIndependentFingerBase(
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        const HooksWorldPoseFingerLayout& fingers,
+        const vr_vm_stabilize::Mat3x4* sourceBones,
+        bool useRestPose,
+        const void* poseKey,
+        HooksWorldPoseFingerPoseCache& cache)
+    {
+        if (!sourceBones ||
+            arm.hand < 0 || arm.hand >= layout.numBones ||
+            static_cast<int>(layout.parents.size()) < layout.numBones)
+        {
+            return false;
+        }
+
+        if (cache.valid &&
+            cache.useRestPose == useRestPose &&
+            cache.poseKey == poseKey)
+        {
+            return true;
+        }
+
+        cache.Reset();
+        cache.useRestPose = useRestPose;
+        cache.poseKey = poseKey;
+        if (fingers.mappedSegments <= 0)
+        {
+            cache.valid = true;
+            return true;
+        }
+
+        int captured = 0;
+        for (int slot = 0; slot < 15; ++slot)
+        {
+            const int bone = fingers.bones[static_cast<size_t>(slot)];
+            if (bone < 0 || bone >= layout.numBones ||
+                !HooksNativeViewmodelHandsOnlyIsAncestor(
+                    layout.parents,
+                    bone,
+                    arm.hand,
+                    layout.numBones))
+            {
+                continue;
+            }
+
+            vr_vm_stabilize::Mat3x4 local{};
+            bool localReady = false;
+            if (useRestPose)
+            {
+                if (fingers.restLocalValid[static_cast<size_t>(slot)])
+                {
+                    local = fingers.restLocals[static_cast<size_t>(slot)];
+                    localReady =
+                        HooksNativeViewmodelHandsOnlyMatrixFinite(local);
+                }
+            }
+            else
+            {
+                // Equipped hands deliberately capture one authored grip for
+                // the current weapon key. The cache prevents later Source
+                // animation frames from changing any finger local transform.
+                localReady = HooksWorldPoseCaptureBoneLocalTransform(
+                    layout,
+                    sourceBones,
+                    bone,
+                    local);
+            }
+            if (!localReady)
+            {
+                cache.Reset();
+                return false;
+            }
+
+            cache.locals[static_cast<size_t>(slot)] = local;
+            cache.localValid[static_cast<size_t>(slot)] = 1u;
+            ++captured;
+        }
+
+        cache.valid = captured == fingers.mappedSegments;
+        if (!cache.valid)
+            cache.Reset();
+        return cache.valid;
+    }
+
+    inline bool HooksWorldPoseApplyAnimationIndependentFingerBase(
+        const HooksWorldPoseBoneLayout& layout,
+        const HooksWorldPoseArmLayout& arm,
+        const HooksWorldPoseFingerLayout& fingers,
+        const HooksWorldPoseFingerPoseCache& cache,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!bones || !cache.valid ||
+            arm.hand < 0 || arm.hand >= layout.numBones ||
+            static_cast<int>(layout.parents.size()) < layout.numBones)
+        {
+            return false;
+        }
+
+        int expected = 0;
+        for (uint8_t valid : cache.localValid)
+        {
+            if (valid)
+                ++expected;
+        }
+        if (expected <= 0)
+            return true;
+
+        int applied = 0;
+        for (int finger = 0; finger < 5; ++finger)
+        {
+            for (int segment = 0; segment < 3; ++segment)
+            {
+                const int slot = finger * 3 + segment;
+                const int bone = fingers.bones[static_cast<size_t>(slot)];
+                if (bone < 0 || bone >= layout.numBones ||
+                    !cache.localValid[static_cast<size_t>(slot)])
+                {
+                    continue;
+                }
+
+                const int parent = layout.parents[static_cast<size_t>(bone)];
+                if (parent < 0 || parent >= layout.numBones || parent == bone)
+                    continue;
+
+                vr_vm_stabilize::Mat3x4 world{};
+                vr_vm_stabilize::Mul(
+                    bones[parent],
+                    cache.locals[static_cast<size_t>(slot)],
+                    world);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(world))
+                    return false;
+
+                bones[bone] = world;
+                ++applied;
+            }
+        }
+        return applied == expected;
+    }
+
     __declspec(noinline) bool HooksWorldPoseApplyLocalTrackedFingerPose(
         VR* vr,
         const HooksWorldPoseBoneLayout& layout,
@@ -4315,30 +4475,6 @@
             { 1.15f, 1.25f, 0.90f },
         };
 
-        std::array<vr_vm_stabilize::Mat3x4, 15> capturedLocals{};
-        std::array<uint8_t, 15> capturedLocalValid{};
-        for (int slot = 0; slot < 15; ++slot)
-        {
-            const int bone = fingers.bones[static_cast<size_t>(slot)];
-            if (bone < 0 || bone >= layout.numBones ||
-                !HooksNativeViewmodelHandsOnlyIsAncestor(
-                    layout.parents,
-                    bone,
-                    arm.hand,
-                    layout.numBones))
-            {
-                continue;
-            }
-            if (HooksWorldPoseCaptureBoneLocalTransform(
-                    layout,
-                    bones,
-                    bone,
-                    capturedLocals[static_cast<size_t>(slot)]))
-            {
-                capturedLocalValid[static_cast<size_t>(slot)] = 1u;
-            }
-        }
-
         int applied = 0;
         for (int finger = 0; finger < 5; ++finger)
         {
@@ -4348,7 +4484,7 @@
                 const int bone =
                     fingers.bones[static_cast<size_t>(slot)];
                 if (bone < 0 || bone >= layout.numBones ||
-                    !capturedLocalValid[static_cast<size_t>(slot)])
+                    !fingers.restLocalValid[static_cast<size_t>(slot)])
                 {
                     continue;
                 }
@@ -4358,17 +4494,7 @@
                     continue;
 
                 vr_vm_stabilize::Mat3x4 local =
-                    capturedLocals[static_cast<size_t>(slot)];
-                if (fingers.restLocalValid[static_cast<size_t>(slot)])
-                {
-                    local = fingers.restLocals[static_cast<size_t>(slot)];
-                    const auto& captured =
-                        capturedLocals[static_cast<size_t>(slot)];
-                    local.m[0][3] = captured.m[0][3];
-                    local.m[1][3] = captured.m[1][3];
-                    local.m[2][3] = captured.m[2][3];
-                }
-
+                    fingers.restLocals[static_cast<size_t>(slot)];
                 const bool thumbRoot =
                     finger == 0 && segment == 0;
                 if (thumbRoot)
@@ -4384,7 +4510,7 @@
                     const float radians =
                         curls[static_cast<size_t>(finger)] *
                         kMaxCurlRadians[finger][segment] *
-                        strength * direction;
+                        strength * direction * weight;
                     const vr_vm_stabilize::Mat3x4 rotation =
                         HooksNativeViewmodelHandsOnlyMakeLocalAxisRotation(
                             vr->m_NativeViewmodelLeftHandOpenVRCurlAxis,
@@ -4393,17 +4519,6 @@
                     vr_vm_stabilize::Mul(local, rotation, adjusted);
                     local = adjusted;
                 }
-
-                vr_vm_stabilize::Mat3x4 blendedLocal{};
-                if (!HooksWorldPoseBlendLocalTransform(
-                        capturedLocals[static_cast<size_t>(slot)],
-                        local,
-                        weight,
-                        blendedLocal))
-                {
-                    return false;
-                }
-                local = blendedLocal;
 
                 vr_vm_stabilize::Mat3x4 world{};
                 vr_vm_stabilize::Mul(bones[parent], local, world);
@@ -6222,14 +6337,33 @@
                     bones);
             changed = rightArmSolved || changed;
         }
-        // World-model fingers are a final local-pose layer. The off hand is
-        // always free for tracked curls. The weapon hand deliberately keeps
-        // Source's authored grip while an actual item is equipped, then
-        // switches to the same tracked curl path in authoritative empty-hands
-        // state. Rest-local finger rotations prevent weapon animation from
-        // leaking into either tracked hand.
+        // Finger transforms are a final local-pose layer for the local
+        // third-person IK model. Each solved hand receives a stable
+        // rest/captured base first, so it cannot keep sampling Source reload,
+        // fire, shove, or idle finger animation. The free left hand and
+        // authoritative empty right hand then receive live OpenVR curls.
         if (localPlayer && leftArmSolved)
         {
+            const bool leftBaseReady =
+                HooksWorldPoseEnsureAnimationIndependentFingerBase(
+                    *layout,
+                    layout->left,
+                    layout->leftFingers,
+                    sourceBones,
+                    true,
+                    nullptr,
+                    calibration.leftFingerPose);
+            if (!leftBaseReady ||
+                !HooksWorldPoseApplyAnimationIndependentFingerBase(
+                    *layout,
+                    layout->left,
+                    layout->leftFingers,
+                    calibration.leftFingerPose,
+                    bones))
+            {
+                HooksWorldPoseClearWeaponHandState(info.entity_index);
+                return false;
+            }
             changed =
                 HooksWorldPoseTryApplyLocalTrackedFingerPose(
                     vr,
@@ -6239,19 +6373,49 @@
                     trackingWeight,
                     bones) ||
                 changed;
+            changed = true;
         }
-        if (localPlayer && rightArmSolved &&
-            localEmptyHandsPlaceholder)
+        if (localPlayer && rightArmSolved)
         {
-            changed =
-                HooksWorldPoseTryApplyLocalTrackedFingerPose(
-                    vr,
+            const bool rightUsesTrackedRest =
+                localEmptyHandsPlaceholder;
+            const void* rightFingerPoseKey =
+                rightUsesTrackedRest
+                    ? nullptr
+                    : static_cast<const void*>(heldWeaponForGrip);
+            const bool rightBaseReady =
+                HooksWorldPoseEnsureAnimationIndependentFingerBase(
                     *layout,
                     layout->right,
-                    1,
-                    trackingWeight,
-                    bones) ||
-                changed;
+                    layout->rightFingers,
+                    sourceBones,
+                    rightUsesTrackedRest,
+                    rightFingerPoseKey,
+                    calibration.rightFingerPose);
+            if (!rightBaseReady ||
+                !HooksWorldPoseApplyAnimationIndependentFingerBase(
+                    *layout,
+                    layout->right,
+                    layout->rightFingers,
+                    calibration.rightFingerPose,
+                    bones))
+            {
+                HooksWorldPoseClearWeaponHandState(info.entity_index);
+                return false;
+            }
+            if (rightUsesTrackedRest)
+            {
+                changed =
+                    HooksWorldPoseTryApplyLocalTrackedFingerPose(
+                        vr,
+                        *layout,
+                        layout->right,
+                        1,
+                        trackingWeight,
+                        bones) ||
+                    changed;
+            }
+            changed = true;
         }
 
         // Never let a stale controller relation keep driving the separate
