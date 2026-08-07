@@ -984,6 +984,37 @@ public:
 		Pulling,
 		Held,
 	};
+	enum class ObjectPullClientTargetRequestMode : uint8_t
+	{
+		Disabled,
+		Scan,
+		Hold,
+	};
+	struct ObjectPullClientTargetRequest
+	{
+		uint32_t epoch = 1u;
+		ObjectPullClientTargetRequestMode mode =
+			ObjectPullClientTargetRequestMode::Disabled;
+		bool forceBroadScan = false;
+		bool visualsEnabled = true;
+		int heldEntityIndex = 0;
+		Vector start = { 0.0f, 0.0f, 0.0f };
+		Vector forward = { 0.0f, 0.0f, 0.0f };
+	};
+	struct ObjectPullClientTargetSnapshot
+	{
+		uint32_t epoch = 0u;
+		bool valid = false;
+		bool hitAnything = false;
+		int entityIndex = 0;
+		ObjectPullTargetHint targetHint = ObjectPullTargetHint::None;
+		Vector hitPosition = { 0.0f, 0.0f, 0.0f };
+		float distanceMeters = 0.0f;
+		std::uintptr_t entityAddress = 0;
+		std::uintptr_t entityVtable = 0;
+		char className[128]{};
+		char modelName[260]{};
+	};
 	struct ObjectPullUsercmdSnapshot
 	{
 		bool valid = false;
@@ -1012,12 +1043,13 @@ public:
 	bool m_ObjectPullActionDownPrev = false;
 	bool m_ObjectPullRequireActionRelease = false;
 	uint8_t m_ObjectPullCatchActionSuppressMask = 0;
-	C_BaseEntity* m_ObjectPullClientTarget = nullptr;
+	std::mutex m_ObjectPullClientTargetStateMutex;
+	ObjectPullClientTargetRequest m_ObjectPullClientTargetRequest{};
+	ObjectPullClientTargetSnapshot m_ObjectPullClientTargetSnapshot{};
 	int m_ObjectPullClientTargetEntityIndex = 0;
 	int m_ObjectPullWireTargetEntityIndex = 0;
 	ObjectPullTargetHint m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
 	ObjectPullTargetHint m_ObjectPullWireTargetHint = ObjectPullTargetHint::None;
-	void* m_ObjectPullClientTargetVtable = nullptr;
 	Vector m_ObjectPullClientTargetPoint = { 0.0f, 0.0f, 0.0f };
 	Vector m_ObjectPullArmPosition = { 0.0f, 0.0f, 0.0f };
 	Vector m_ObjectPullArmHandRelativeToHmd = { 0.0f, 0.0f, 0.0f };
@@ -3735,6 +3767,11 @@ public:
 	void ProcessMenuInput();
 	void ProcessInput();
 	bool UpdateObjectPullInput(C_BasePlayer* localPlayer, bool gripActionDown);
+	void UpdateObjectPullClientTargetMainThread(C_BasePlayer* localPlayer);
+	bool GetObjectPullNativeHighlightIdentity(
+		int& entityIndex,
+		std::uintptr_t& entityAddress,
+		std::uintptr_t& entityVtable);
 	bool GetObjectPullUsercmdData(int commandNumber, uint8_t& wireCommand, Vector& position, QAngle& angles, bool& overridePose, int& targetEntityIndex, ObjectPullTargetHint& targetHint);
 	void ResetObjectPullInput(bool sendCancel);
 	void SendVirtualKey(WORD virtualKey);

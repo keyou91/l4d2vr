@@ -1,9 +1,9 @@
 namespace
 {
-    // Object Pull input is produced on the render/input path and consumed by
-    // WriteUsercmd on the game/network path. Keep this state translation-unit
-    // local so vr_object_pull.inl remains self-contained and cannot get out of
-    // sync with VR class declarations.
+    // Controller input is produced on the render/input path. Client entity
+    // inspection is requested through a mutex-protected snapshot and performed
+    // by CreateMove on the Source client thread. Wire commands are consumed by
+    // WriteUsercmd on the game/network path.
     static std::atomic<uint32_t> g_ObjectPullWireMailbox{ 0u };
     static std::chrono::steady_clock::time_point g_ObjectPullNextTargetScanAt{};
     static std::chrono::steady_clock::time_point g_ObjectPullNextBroadScanAt{};
@@ -1010,363 +1010,447 @@ namespace
         return true;
     }
 
-    struct ObjectPullNativeGlowOverride
+    struct ObjectPullMainThreadTargetState
     {
-        bool offsetsResolved = false;
-        bool active = false;
-        int glowTypeOffset = -1;
-        int glowRangeOffset = -1;
-        int glowRangeMinOffset = -1;
+        VR* owner = nullptr;
         C_BaseEntity* entity = nullptr;
         void* entityVtable = nullptr;
         int entityIndex = 0;
-        int originalGlowType = 0;
-        int originalGlowRange = 0;
-        int originalGlowRangeMin = 0;
+        VR::ObjectPullTargetHint targetHint =
+            VR::ObjectPullTargetHint::None;
+        Vector hitPosition = { 0.0f, 0.0f, 0.0f };
+        float distanceMeters = 0.0f;
+        char className[128]{};
+        char modelName[260]{};
     };
 
-    static ObjectPullNativeGlowOverride g_ObjectPullNativeGlow{};
+    static ObjectPullMainThreadTargetState g_ObjectPullMainThreadTarget{};
 
-    static void ObjectPullResolveNativeGlowOffsets(VR* vr)
+    static uint32_t ObjectPullAdvanceTargetRequestEpoch(uint32_t epoch)
     {
-        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
-        if (glow.offsetsResolved || !vr || !vr->m_Game)
+        ++epoch;
+        return epoch != 0u ? epoch : 1u;
+    }
+
+    static void ObjectPullClearMainThreadTargetState(VR* vr)
+    {
+        g_ObjectPullMainThreadTarget = {};
+        g_ObjectPullMainThreadTarget.owner = vr;
+    }
+
+    static void ObjectPullPublishClientTargetRequest(
+        VR* vr,
+        VR::ObjectPullClientTargetRequestMode mode,
+        const Vector& start,
+        Vector forward,
+        bool forceBroadScan,
+        int heldEntityIndex)
+    {
+        if (!vr)
             return;
 
-        glow.offsetsResolved = true;
-        static const char* const tableNames[] =
+        if (mode != VR::ObjectPullClientTargetRequestMode::Disabled &&
+            VectorNormalize(forward) <= 0.0001f)
         {
-            "DT_GlowProperty",
-            "DT_BaseEntity",
-            "CBaseEntity",
-            "DT_BaseAnimating",
-            "CBaseAnimating",
-            "DT_BaseCombatWeapon",
-            "CBaseCombatWeapon"
-        };
-        for (const char* tableName : tableNames)
-        {
-            const int typeOffset = vr->m_Game->FindRecvPropOffset(
-                tableName,
-                "m_iGlowType");
-            const int rangeOffset = vr->m_Game->FindRecvPropOffset(
-                tableName,
-                "m_nGlowRange");
-            if (typeOffset < 0 || rangeOffset < 0)
-                continue;
-
-            glow.glowTypeOffset = typeOffset;
-            glow.glowRangeOffset = rangeOffset;
-            glow.glowRangeMinOffset = vr->m_Game->FindRecvPropOffset(
-                tableName,
-                "m_nGlowRangeMin");
-            break;
+            mode = VR::ObjectPullClientTargetRequestMode::Disabled;
+            heldEntityIndex = 0;
+            forceBroadScan = false;
         }
 
-        if (glow.glowTypeOffset < 0 ||
-            glow.glowRangeOffset < 0 ||
-            glow.glowRangeMinOffset < 0)
+        std::lock_guard<std::mutex> lock(
+            vr->m_ObjectPullClientTargetStateMutex);
+        VR::ObjectPullClientTargetRequest& request =
+            vr->m_ObjectPullClientTargetRequest;
+        const bool requestIdentityChanged =
+            request.mode != mode ||
+            (mode == VR::ObjectPullClientTargetRequestMode::Hold &&
+                request.heldEntityIndex != heldEntityIndex);
+        if (requestIdentityChanged)
         {
-            // The checked-in L4D2 netvar dump records m_Glow at 0x278 and
-            // DT_GlowProperty's type/range/rangeMin fields at +4/+8/+C.
-            // These fixed offsets avoid walking cyclic nested RecvTables at
-            // map start. Values are sanity-checked on every new target before
-            // any write occurs.
-            glow.glowTypeOffset = 0x27C;
-            glow.glowRangeOffset = 0x280;
-            glow.glowRangeMinOffset = 0x284;
-        }
+            const VR::ObjectPullClientTargetSnapshot previousSnapshot =
+                vr->m_ObjectPullClientTargetSnapshot;
+            const bool preserveCurrentTarget =
+                previousSnapshot.epoch == request.epoch &&
+                previousSnapshot.valid &&
+                ((request.mode ==
+                        VR::ObjectPullClientTargetRequestMode::Scan &&
+                    mode ==
+                        VR::ObjectPullClientTargetRequestMode::Hold &&
+                    previousSnapshot.entityIndex == heldEntityIndex) ||
+                    (request.mode ==
+                            VR::ObjectPullClientTargetRequestMode::Hold &&
+                        mode ==
+                            VR::ObjectPullClientTargetRequestMode::Scan));
 
-        if (vr->m_ObjectPullDebugLog)
-        {
-            Game::logMsg(
-                "[VR][ObjectPull][client] native glow offsets type=%d range=%d rangeMin=%d",
-                glow.glowTypeOffset,
-                glow.glowRangeOffset,
-                glow.glowRangeMinOffset);
-        }
-    }
-
-    static bool ObjectPullSafeReadNativeGlow(
-        C_BaseEntity* entity,
-        int typeOffset,
-        int rangeOffset,
-        int rangeMinOffset,
-        int& outType,
-        int& outRange,
-        int& outRangeMin)
-    {
-        if (!entity || typeOffset < 0 || rangeOffset < 0)
-            return false;
-#ifdef _MSC_VER
-        __try
-        {
-            const uint8_t* base =
-                reinterpret_cast<const uint8_t*>(entity);
-            outType = *reinterpret_cast<const int*>(base + typeOffset);
-            outRange = *reinterpret_cast<const int*>(base + rangeOffset);
-            outRangeMin = rangeMinOffset >= 0
-                ? *reinterpret_cast<const int*>(base + rangeMinOffset)
-                : 0;
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return false;
-        }
-#else
-        const uint8_t* base =
-            reinterpret_cast<const uint8_t*>(entity);
-        outType = *reinterpret_cast<const int*>(base + typeOffset);
-        outRange = *reinterpret_cast<const int*>(base + rangeOffset);
-        outRangeMin = rangeMinOffset >= 0
-            ? *reinterpret_cast<const int*>(base + rangeMinOffset)
-            : 0;
-        return true;
-#endif
-    }
-
-    static bool ObjectPullSafeWriteNativeGlow(
-        VR* vr,
-        C_BaseEntity* entity,
-        int typeOffset,
-        int rangeOffset,
-        int rangeMinOffset,
-        int glowType,
-        int glowRange,
-        int glowRangeMin)
-    {
-        if (!vr ||
-            !vr->m_Game ||
-            !vr->m_Game->m_Offsets ||
-            !entity ||
-            typeOffset < static_cast<int>(sizeof(void*)) ||
-            rangeOffset < 0 ||
-            !vr->m_Game->m_Offsets->
-                CGlowProperty_SetGlowType_Client.valid)
-        {
-            return false;
-        }
-#ifdef _MSC_VER
-        __try
-        {
-            uint8_t* base = reinterpret_cast<uint8_t*>(entity);
-            *reinterpret_cast<int*>(base + rangeOffset) = glowRange;
-            if (rangeMinOffset >= 0)
+            request.epoch = ObjectPullAdvanceTargetRequestEpoch(
+                request.epoch);
+            request.forceBroadScan = false;
+            if (preserveCurrentTarget)
             {
-                *reinterpret_cast<int*>(base + rangeMinOffset) =
-                    glowRangeMin;
+                vr->m_ObjectPullClientTargetSnapshot = previousSnapshot;
+                vr->m_ObjectPullClientTargetSnapshot.epoch = request.epoch;
             }
+            else
+            {
+                vr->m_ObjectPullClientTargetSnapshot = {};
+                vr->m_ObjectPullClientTargetSnapshot.epoch = request.epoch;
+            }
+        }
 
-            // m_iGlowType sits at +4 in the embedded CGlowProperty. The native
-            // setter registers or unregisters its glow objects before storing
-            // the value, which a raw netvar write cannot do.
-            void* glowProperty = base + typeOffset - sizeof(void*);
-            if (!*reinterpret_cast<void**>(glowProperty))
-                return false;
-            using SetGlowTypeFn = void(__thiscall*)(void*, int);
-            auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
-                vr->m_Game->m_Offsets->
-                    CGlowProperty_SetGlowType_Client.address);
-            setGlowType(glowProperty, glowType);
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+        request.mode = mode;
+        request.visualsEnabled = vr->m_ObjectPullVisualsEnabled;
+        request.heldEntityIndex =
+            mode == VR::ObjectPullClientTargetRequestMode::Hold
+                ? heldEntityIndex
+                : 0;
+        request.start = start;
+        request.forward = forward;
+        if (mode == VR::ObjectPullClientTargetRequestMode::Disabled)
         {
-            return false;
+            request.forceBroadScan = false;
+            vr->m_ObjectPullClientTargetSnapshot = {};
+            vr->m_ObjectPullClientTargetSnapshot.epoch = request.epoch;
         }
-#else
-        uint8_t* base = reinterpret_cast<uint8_t*>(entity);
-        *reinterpret_cast<int*>(base + rangeOffset) = glowRange;
-        if (rangeMinOffset >= 0)
-            *reinterpret_cast<int*>(base + rangeMinOffset) = glowRangeMin;
-        void* glowProperty = base + typeOffset - sizeof(void*);
-        if (!*reinterpret_cast<void**>(glowProperty))
-            return false;
-        using SetGlowTypeFn = void(__thiscall*)(void*, int);
-        auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
-            vr->m_Game->m_Offsets->
-                CGlowProperty_SetGlowType_Client.address);
-        setGlowType(glowProperty, glowType);
-        return true;
-#endif
+        else if (forceBroadScan)
+        {
+            request.forceBroadScan = true;
+        }
     }
 
-    static bool ObjectPullNativeGlowEntityStillValid(
+    static bool ObjectPullCopyClientTargetRequestForMainThread(
         VR* vr,
-        const ObjectPullNativeGlowOverride& glow)
+        VR::ObjectPullClientTargetRequest& out)
     {
-        if (!vr ||
-            !glow.entity ||
-            !glow.entityVtable ||
-            glow.entityIndex <= 0)
+        if (!vr)
+            return false;
+
+        std::lock_guard<std::mutex> lock(
+            vr->m_ObjectPullClientTargetStateMutex);
+        out = vr->m_ObjectPullClientTargetRequest;
+        if (out.forceBroadScan &&
+            vr->m_ObjectPullClientTargetRequest.epoch == out.epoch)
+        {
+            vr->m_ObjectPullClientTargetRequest.forceBroadScan = false;
+        }
+        return true;
+    }
+
+    static bool ObjectPullReadPublishedClientTargetSnapshot(
+        VR* vr,
+        VR::ObjectPullClientTargetSnapshot& out)
+    {
+        out = {};
+        if (!vr)
+            return false;
+
+        std::lock_guard<std::mutex> lock(
+            vr->m_ObjectPullClientTargetStateMutex);
+        const VR::ObjectPullClientTargetRequest& request =
+            vr->m_ObjectPullClientTargetRequest;
+        const VR::ObjectPullClientTargetSnapshot& snapshot =
+            vr->m_ObjectPullClientTargetSnapshot;
+        if (request.mode ==
+                VR::ObjectPullClientTargetRequestMode::Disabled ||
+            snapshot.epoch != request.epoch)
         {
             return false;
         }
+
+        out = snapshot;
+        return true;
+    }
+
+    static bool ObjectPullMainThreadTargetStillValid(
+        VR* vr,
+        ObjectPullMainThreadTargetState& state)
+    {
+        if (!vr ||
+            state.owner != vr ||
+            !state.entity ||
+            !state.entityVtable ||
+            state.entityIndex <= 0)
+        {
+            return false;
+        }
+
         C_BaseEntity* current = ObjectPullSafeGetClientEntity(
             vr,
-            glow.entityIndex);
+            state.entityIndex);
         void* currentVtable = nullptr;
         return
-            current == glow.entity &&
+            current == state.entity &&
             ObjectPullReadClientVtable(current, currentVtable) &&
-            currentVtable == glow.entityVtable;
+            currentVtable == state.entityVtable;
     }
 
-    static void ObjectPullRestoreNativeGlow(VR* vr)
-    {
-        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
-        if (!glow.active)
-            return;
-
-        if (ObjectPullNativeGlowEntityStillValid(vr, glow))
-        {
-            ObjectPullSafeWriteNativeGlow(
-                vr,
-                glow.entity,
-                glow.glowTypeOffset,
-                glow.glowRangeOffset,
-                glow.glowRangeMinOffset,
-                glow.originalGlowType,
-                glow.originalGlowRange,
-                glow.originalGlowRangeMin);
-        }
-
-        glow.active = false;
-        glow.entity = nullptr;
-        glow.entityVtable = nullptr;
-        glow.entityIndex = 0;
-    }
-
-    static void ObjectPullApplyNativeGlow(
+    static void ObjectPullSetMainThreadTarget(
         VR* vr,
-        C_BaseEntity* entity,
-        void* entityVtable,
-        int entityIndex)
+        const ObjectPullClientTraceResult& trace)
     {
-        if (!vr || !vr->m_ObjectPullVisualsEnabled || !entity)
-        {
-            ObjectPullRestoreNativeGlow(vr);
+        ObjectPullMainThreadTargetState& state =
+            g_ObjectPullMainThreadTarget;
+        state = {};
+        state.owner = vr;
+        state.entity = trace.entity;
+        state.entityVtable = trace.vtable;
+        state.entityIndex = trace.entityIndex;
+        state.targetHint = trace.targetHint;
+        state.hitPosition = trace.hitPosition;
+        state.distanceMeters = trace.distanceMeters;
+        ObjectPullCopyClassName(
+            trace.className,
+            state.className,
+            sizeof(state.className));
+        ObjectPullCopyClassName(
+            trace.modelName,
+            state.modelName,
+            sizeof(state.modelName));
+    }
+
+    static void ObjectPullPublishClientTargetSnapshotFromMainThread(
+        VR* vr,
+        const VR::ObjectPullClientTargetRequest& request,
+        const ObjectPullMainThreadTargetState* state,
+        const ObjectPullClientTraceResult* diagnostic)
+    {
+        if (!vr)
             return;
+
+        VR::ObjectPullClientTargetSnapshot snapshot{};
+        snapshot.epoch = request.epoch;
+        if (state &&
+            state->owner == vr &&
+            state->entity &&
+            state->entityVtable &&
+            state->entityIndex > 0)
+        {
+            snapshot.valid = true;
+            snapshot.hitAnything = true;
+            snapshot.entityIndex = state->entityIndex;
+            snapshot.targetHint = state->targetHint;
+            snapshot.hitPosition = state->hitPosition;
+            snapshot.distanceMeters = state->distanceMeters;
+            snapshot.entityAddress = reinterpret_cast<std::uintptr_t>(
+                state->entity);
+            snapshot.entityVtable = reinterpret_cast<std::uintptr_t>(
+                state->entityVtable);
+            ObjectPullCopyClassName(
+                state->className,
+                snapshot.className,
+                sizeof(snapshot.className));
+            ObjectPullCopyClassName(
+                state->modelName,
+                snapshot.modelName,
+                sizeof(snapshot.modelName));
+        }
+        else if (diagnostic)
+        {
+            snapshot.hitAnything = diagnostic->hitAnything;
+            snapshot.entityIndex = std::max(0, diagnostic->entityIndex);
+            snapshot.targetHint = diagnostic->targetHint;
+            snapshot.hitPosition = diagnostic->hitPosition;
+            snapshot.distanceMeters = diagnostic->distanceMeters;
+            ObjectPullCopyClassName(
+                diagnostic->className,
+                snapshot.className,
+                sizeof(snapshot.className));
+            ObjectPullCopyClassName(
+                diagnostic->modelName,
+                snapshot.modelName,
+                sizeof(snapshot.modelName));
         }
 
-        ObjectPullResolveNativeGlowOffsets(vr);
-        ObjectPullNativeGlowOverride& glow = g_ObjectPullNativeGlow;
-        if (glow.glowTypeOffset < 0 || glow.glowRangeOffset < 0)
-            return;
-
-        const bool sameTarget =
-            glow.active &&
-            glow.entity == entity &&
-            glow.entityVtable == entityVtable &&
-            glow.entityIndex == entityIndex;
-        if (!sameTarget)
+        std::lock_guard<std::mutex> lock(
+            vr->m_ObjectPullClientTargetStateMutex);
+        const VR::ObjectPullClientTargetRequest& currentRequest =
+            vr->m_ObjectPullClientTargetRequest;
+        if (currentRequest.epoch != request.epoch ||
+            currentRequest.mode != request.mode ||
+            (request.mode ==
+                    VR::ObjectPullClientTargetRequestMode::Hold &&
+                currentRequest.heldEntityIndex !=
+                    request.heldEntityIndex))
         {
-            ObjectPullRestoreNativeGlow(vr);
+            return;
+        }
+        vr->m_ObjectPullClientTargetSnapshot = snapshot;
+    }
 
-            int originalType = 0;
-            int originalRange = 0;
-            int originalRangeMin = 0;
-            if (!ObjectPullSafeReadNativeGlow(
-                    entity,
-                    glow.glowTypeOffset,
-                    glow.glowRangeOffset,
-                    glow.glowRangeMinOffset,
-                    originalType,
-                    originalRange,
-                    originalRangeMin))
-            {
-                return;
-            }
+}
 
-            const bool originalGlowValuesPlausible =
-                originalType >= 0 &&
-                originalType <= 3 &&
-                originalRange >= 0 &&
-                originalRange <= 100000 &&
-                originalRangeMin >= 0 &&
-                originalRangeMin <= 100000;
-            if (!originalGlowValuesPlausible)
-            {
-                if (vr->m_ObjectPullDebugLog)
-                {
-                    Game::logMsg(
-                        "[VR][ObjectPull][client] native glow refused implausible values entity=%p index=%d type=%d range=%d rangeMin=%d",
-                        entity,
-                        entityIndex,
-                        originalType,
-                        originalRange,
-                        originalRangeMin);
-                }
-                return;
-            }
+void VR::UpdateObjectPullClientTargetMainThread(
+    C_BasePlayer* localPlayer)
+{
+    ObjectPullClientTargetRequest request{};
+    if (!ObjectPullCopyClientTargetRequestForMainThread(
+            this,
+            request))
+    {
+        return;
+    }
 
-            glow.active = true;
-            glow.entity = entity;
-            glow.entityVtable = entityVtable;
-            glow.entityIndex = entityIndex;
-            glow.originalGlowType = originalType;
-            glow.originalGlowRange = originalRange;
-            glow.originalGlowRangeMin = originalRangeMin;
-            if (vr->m_ObjectPullDebugLog)
-            {
-                Game::logMsg(
-                    "[VR][ObjectPull][client] native glow override entity=%p index=%d originalType=%d originalRange=%d originalRangeMin=%d",
-                    entity,
-                    entityIndex,
-                    originalType,
-                    originalRange,
-                    originalRangeMin);
-            }
+    ObjectPullMainThreadTargetState& state =
+        g_ObjectPullMainThreadTarget;
+    if (state.owner != this)
+    {
+        ObjectPullClearMainThreadTargetState(this);
+        g_ObjectPullNextTargetScanAt = {};
+        g_ObjectPullNextBroadScanAt = {};
+    }
+
+    const bool featureAvailable =
+        request.mode != ObjectPullClientTargetRequestMode::Disabled &&
+        localPlayer &&
+        m_Game &&
+        m_Game->m_EngineTrace &&
+        m_Game->m_ClientEntityList;
+    if (!featureAvailable)
+    {
+        ObjectPullClearMainThreadTargetState(this);
+        g_ObjectPullNextTargetScanAt = {};
+        g_ObjectPullNextBroadScanAt = {};
+        ObjectPullPublishClientTargetSnapshotFromMainThread(
+            this,
+            request,
+            nullptr,
+            nullptr);
+        return;
+    }
+
+    Vector forward = request.forward;
+    if (!std::isfinite(request.start.x) ||
+        !std::isfinite(request.start.y) ||
+        !std::isfinite(request.start.z) ||
+        VectorNormalize(forward) <= 0.0001f)
+    {
+        ObjectPullClearMainThreadTargetState(this);
+        ObjectPullPublishClientTargetSnapshotFromMainThread(
+            this,
+            request,
+            nullptr,
+            nullptr);
+        return;
+    }
+
+    bool currentTargetValid =
+        ObjectPullMainThreadTargetStillValid(this, state);
+    if (!currentTargetValid)
+        ObjectPullClearMainThreadTargetState(this);
+
+    if (request.mode == ObjectPullClientTargetRequestMode::Hold)
+    {
+        if (!currentTargetValid ||
+            request.heldEntityIndex <= 0 ||
+            state.entityIndex != request.heldEntityIndex)
+        {
+            ObjectPullClearMainThreadTargetState(this);
         }
 
-        // Glow type 3 is Source's native constant outline. Keep its engine-unit
-        // range identical to the configured controller-ray selection distance.
-        // Only the currently visible target receives this temporary override,
-        // and its original fields are restored when aim leaves or pull launches.
-        const int glowRange = std::max(
-            1,
-            static_cast<int>(
-                std::ceil(
-                    std::max(0.1f, vr->m_ObjectPullMaxDistanceMeters) *
-                    std::max(1.0f, vr->m_VRScale))));
-        const bool glowWriteSucceeded =
-            ObjectPullSafeWriteNativeGlow(
-            vr,
-            entity,
-            glow.glowTypeOffset,
-            glow.glowRangeOffset,
-            glow.glowRangeMinOffset,
-            3,
-            glowRange,
-            0);
-        if (vr->m_ObjectPullDebugLog && !sameTarget)
+        ObjectPullPublishClientTargetSnapshotFromMainThread(
+            this,
+            request,
+            state.entity ? &state : nullptr,
+            nullptr);
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool targetScanDue =
+        request.forceBroadScan ||
+        !state.entity ||
+        g_ObjectPullNextTargetScanAt.time_since_epoch().count() == 0 ||
+        now >= g_ObjectPullNextTargetScanAt;
+    ObjectPullClientTraceResult diagnostic{};
+    const ObjectPullClientTraceResult* diagnosticPtr = nullptr;
+    if (targetScanDue)
+    {
+        g_ObjectPullNextTargetScanAt = now +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<float>(1.0f / 60.0f));
+        const bool broadScanDue =
+            g_ObjectPullNextBroadScanAt.time_since_epoch().count() == 0 ||
+            now >= g_ObjectPullNextBroadScanAt;
+        const bool allowBroadScan =
+            request.forceBroadScan || broadScanDue;
+        if (allowBroadScan)
         {
-            int readbackType = -1;
-            int readbackRange = -1;
-            int readbackRangeMin = -1;
-            const bool readbackSucceeded =
-                glowWriteSucceeded &&
-                ObjectPullSafeReadNativeGlow(
-                    entity,
-                    glow.glowTypeOffset,
-                    glow.glowRangeOffset,
-                    glow.glowRangeMinOffset,
-                    readbackType,
-                    readbackRange,
-                    readbackRangeMin);
-            Game::logMsg(
-                "[VR][ObjectPull][client] native glow applied entity=%p index=%d write=%d read=%d type=%d range=%d rangeMin=%d",
-                entity,
-                entityIndex,
-                glowWriteSucceeded ? 1 : 0,
-                readbackSucceeded ? 1 : 0,
-                readbackType,
-                readbackRange,
-                readbackRangeMin);
+            // The fallback list walk is only needed for pickups that do not
+            // participate in MASK_SHOT_HULL. Ten scans per second keeps those
+            // targets responsive without probing 192 arbitrary entities every
+            // render frame.
+            g_ObjectPullNextBroadScanAt = now +
+                std::chrono::duration_cast<
+                    std::chrono::steady_clock::duration>(
+                    std::chrono::duration<float>(0.10f));
+        }
+
+        diagnostic = ObjectPullTraceClientTarget(
+            this,
+            localPlayer,
+            request.start,
+            forward,
+            allowBroadScan);
+        diagnosticPtr = &diagnostic;
+        if (diagnostic.supported)
+        {
+            ObjectPullSetMainThreadTarget(this, diagnostic);
+            if (!ObjectPullMainThreadTargetStillValid(this, state))
+                ObjectPullClearMainThreadTargetState(this);
+        }
+        else
+        {
+            currentTargetValid =
+                ObjectPullMainThreadTargetStillValid(this, state);
+            if (!currentTargetValid ||
+                !ObjectPullClientTargetStillPointedAt(
+                    this,
+                    localPlayer,
+                    state.entity,
+                    request.start,
+                    forward))
+            {
+                ObjectPullClearMainThreadTargetState(this);
+            }
         }
     }
 
+    ObjectPullPublishClientTargetSnapshotFromMainThread(
+        this,
+        request,
+        state.entity ? &state : nullptr,
+        diagnosticPtr);
+}
+
+bool VR::GetObjectPullNativeHighlightIdentity(
+    int& entityIndex,
+    std::uintptr_t& entityAddress,
+    std::uintptr_t& entityVtable)
+{
+    entityIndex = 0;
+    entityAddress = 0;
+    entityVtable = 0;
+
+    std::lock_guard<std::mutex> lock(
+        m_ObjectPullClientTargetStateMutex);
+    const ObjectPullClientTargetRequest& request =
+        m_ObjectPullClientTargetRequest;
+    const ObjectPullClientTargetSnapshot& snapshot =
+        m_ObjectPullClientTargetSnapshot;
+    if (request.mode == ObjectPullClientTargetRequestMode::Disabled ||
+        !request.visualsEnabled ||
+        snapshot.epoch != request.epoch ||
+        !snapshot.valid ||
+        snapshot.entityIndex <= 0 ||
+        snapshot.entityAddress == 0 ||
+        snapshot.entityVtable == 0)
+    {
+        return false;
+    }
+
+    entityIndex = snapshot.entityIndex;
+    entityAddress = snapshot.entityAddress;
+    entityVtable = snapshot.entityVtable;
+    return true;
 }
 
 static void ObjectPullPublishWireCommand(
@@ -1396,10 +1480,14 @@ static void ObjectPullPublishWireCommand(
 
 void VR::ResetObjectPullInput(bool sendCancel)
 {
-    ObjectPullRestoreNativeGlow(this);
+    ObjectPullPublishClientTargetRequest(
+        this,
+        ObjectPullClientTargetRequestMode::Disabled,
+        {},
+        {},
+        false,
+        0);
     m_ObjectPullPhase = ObjectPullClientPhase::Idle;
-    m_ObjectPullClientTarget = nullptr;
-    m_ObjectPullClientTargetVtable = nullptr;
     m_ObjectPullClientTargetEntityIndex = 0;
     m_ObjectPullWireTargetEntityIndex = 0;
     m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
@@ -1418,8 +1506,6 @@ void VR::ResetObjectPullInput(bool sendCancel)
     m_ObjectPullCatchEnableAt = {};
     m_ObjectPullFlightExpireAt = {};
     m_ObjectPullGestureSampleTime = {};
-    g_ObjectPullNextTargetScanAt = {};
-    g_ObjectPullNextBroadScanAt = {};
     m_ObjectPullLastTargetDistanceMeters = 0.0f;
     m_ObjectPullGesturePeakDistanceMeters = 0.0f;
     m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
@@ -1455,12 +1541,6 @@ bool VR::UpdateObjectPullInput(
     bool gripActionDown)
 {
     const auto now = std::chrono::steady_clock::now();
-    const bool targetScanDue =
-        g_ObjectPullNextTargetScanAt.time_since_epoch().count() == 0 ||
-        now >= g_ObjectPullNextTargetScanAt;
-    const bool broadScanDue =
-        g_ObjectPullNextBroadScanAt.time_since_epoch().count() == 0 ||
-        now >= g_ObjectPullNextBroadScanAt;
     const bool actionJustPressed =
         gripActionDown && !m_ObjectPullActionDownPrev;
     const bool actionJustReleased =
@@ -1503,6 +1583,14 @@ bool VR::UpdateObjectPullInput(
 
     if (!featureAvailable)
     {
+        ObjectPullPublishClientTargetRequest(
+            this,
+            ObjectPullClientTargetRequestMode::Disabled,
+            {},
+            {},
+            false,
+            0);
+
         if (actionJustPressed && m_ObjectPullDebugLog)
         {
             Game::logMsg(
@@ -1519,8 +1607,7 @@ bool VR::UpdateObjectPullInput(
                 m_AdjustingScope ? 1 : 0);
         }
 
-        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle ||
-            g_ObjectPullNativeGlow.active)
+        if (m_ObjectPullPhase != ObjectPullClientPhase::Idle)
         {
             const bool hadServerFlight =
                 m_ObjectPullPhase == ObjectPullClientPhase::Pulling ||
@@ -1542,195 +1629,166 @@ bool VR::UpdateObjectPullInput(
         return false;
     }
 
-    ObjectPullClientTraceResult preview{};
-    if ((m_ObjectPullPhase == ObjectPullClientPhase::Idle ||
-            m_ObjectPullPhase == ObjectPullClientPhase::Targeting) &&
-        (actionJustPressed || targetScanDue))
+    ObjectPullClientTargetSnapshot targetSnapshot{};
+    bool targetSnapshotCurrent = false;
+    if (m_ObjectPullPhase == ObjectPullClientPhase::Idle ||
+        m_ObjectPullPhase == ObjectPullClientPhase::Targeting)
     {
-        g_ObjectPullNextTargetScanAt = now +
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<float>(1.0f / 60.0f));
-        const bool allowBroadScan = actionJustPressed || broadScanDue;
-        if (allowBroadScan)
-        {
-            g_ObjectPullNextBroadScanAt = now +
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<float>(1.0f / 60.0f));
-        }
-        preview = ObjectPullTraceClientTarget(
+        ObjectPullPublishClientTargetRequest(
             this,
-            localPlayer,
+            ObjectPullClientTargetRequestMode::Scan,
             gunHandPosition,
             gunHandForward,
-            allowBroadScan);
-        if (preview.supported)
+            actionJustPressed,
+            0);
+        targetSnapshotCurrent =
+            ObjectPullReadPublishedClientTargetSnapshot(
+                this,
+                targetSnapshot);
+
+        if (targetSnapshotCurrent && targetSnapshot.valid)
         {
             const bool targetChanged =
-                m_ObjectPullClientTarget != preview.entity ||
-                m_ObjectPullClientTargetEntityIndex != preview.entityIndex;
+                m_ObjectPullClientTargetEntityIndex !=
+                    targetSnapshot.entityIndex ||
+                m_ObjectPullClientTargetHint !=
+                    targetSnapshot.targetHint;
             m_ObjectPullPhase = ObjectPullClientPhase::Targeting;
-            m_ObjectPullClientTarget = preview.entity;
-            m_ObjectPullClientTargetVtable = preview.vtable;
-            m_ObjectPullClientTargetEntityIndex = preview.entityIndex;
-            m_ObjectPullClientTargetHint = preview.targetHint;
-            m_ObjectPullClientTargetPoint = preview.hitPosition;
+            m_ObjectPullClientTargetEntityIndex =
+                targetSnapshot.entityIndex;
+            m_ObjectPullClientTargetHint =
+                targetSnapshot.targetHint;
+            m_ObjectPullClientTargetPoint =
+                targetSnapshot.hitPosition;
             m_ObjectPullLastTargetDistanceMeters =
-                (gunHandPosition - preview.hitPosition).Length() /
-                std::max(1.0f, m_VRScale);
-            ObjectPullApplyNativeGlow(
-                this,
-                preview.entity,
-                preview.vtable,
-                preview.entityIndex);
+                targetSnapshot.distanceMeters;
 
             if (targetChanged && m_ObjectPullDebugLog)
             {
                 Game::logMsg(
-                    "[VR][ObjectPull][client] pointed target entity=%p index=%d class=%s model=%s distance=%.2fm assist=%.2fm hand=%s",
-                    preview.entity,
-                    preview.entityIndex,
-                    preview.className[0]
-                        ? preview.className
+                    "[VR][ObjectPull][client] pointed target index=%d class=%s model=%s distance=%.2fm assist=%.2fm hand=%s",
+                    targetSnapshot.entityIndex,
+                    targetSnapshot.className[0]
+                        ? targetSnapshot.className
                         : "<none>",
-                    preview.modelName[0]
-                        ? preview.modelName
+                    targetSnapshot.modelName[0]
+                        ? targetSnapshot.modelName
                         : "<none>",
-                    preview.distanceMeters,
+                    targetSnapshot.distanceMeters,
                     m_ObjectPullTargetAssistRadiusMeters,
                     gunHandPhysicalLeft ? "left" : "right");
             }
         }
         else
         {
-            const bool keepCurrentTarget =
-                m_ObjectPullPhase == ObjectPullClientPhase::Targeting &&
-                ObjectPullClientTargetStillPointedAt(
-                    this,
-                    localPlayer,
-                    m_ObjectPullClientTarget,
-                    gunHandPosition,
-                    gunHandForward);
-            if (!keepCurrentTarget)
-            {
-                ObjectPullRestoreNativeGlow(this);
-                m_ObjectPullPhase = ObjectPullClientPhase::Idle;
-                m_ObjectPullClientTarget = nullptr;
-                m_ObjectPullClientTargetVtable = nullptr;
-                m_ObjectPullClientTargetEntityIndex = 0;
-                m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
-                m_ObjectPullClientTargetPoint = {};
-            }
+            m_ObjectPullPhase = ObjectPullClientPhase::Idle;
+            m_ObjectPullClientTargetEntityIndex = 0;
+            m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+            m_ObjectPullClientTargetPoint = {};
+            m_ObjectPullLastTargetDistanceMeters = 0.0f;
 
             if (actionJustPressed && m_ObjectPullDebugLog)
             {
                 Game::logMsg(
                     "[VR][ObjectPull][client] grip pressed without pointed pull target hit=%d index=%d class=%s model=%s distance=%.2fm min=%.2fm max=%.2fm",
-                    preview.hitAnything ? 1 : 0,
-                    preview.entityIndex,
-                    preview.className[0]
-                        ? preview.className
+                    targetSnapshotCurrent && targetSnapshot.hitAnything ? 1 : 0,
+                    targetSnapshotCurrent
+                        ? targetSnapshot.entityIndex
+                        : 0,
+                    targetSnapshotCurrent && targetSnapshot.className[0]
+                        ? targetSnapshot.className
                         : "<none>",
-                    preview.modelName[0]
-                        ? preview.modelName
+                    targetSnapshotCurrent && targetSnapshot.modelName[0]
+                        ? targetSnapshot.modelName
                         : "<none>",
-                    preview.distanceMeters,
+                    targetSnapshotCurrent
+                        ? targetSnapshot.distanceMeters
+                        : 0.0f,
                     m_ObjectPullMinimumDistanceMeters,
                     m_ObjectPullMaxDistanceMeters);
             }
         }
     }
 
-    if (m_ObjectPullPhase == ObjectPullClientPhase::Targeting)
+    if (m_ObjectPullPhase == ObjectPullClientPhase::Targeting &&
+        actionJustPressed &&
+        !m_ObjectPullRequireActionRelease)
     {
-        void* currentVtable = nullptr;
-        const bool targetValid =
-            ObjectPullReadClientVtable(
-                m_ObjectPullClientTarget,
-                currentVtable) &&
-            currentVtable == m_ObjectPullClientTargetVtable;
-        if (!targetValid)
-        {
-            ObjectPullRestoreNativeGlow(this);
-            m_ObjectPullPhase = ObjectPullClientPhase::Idle;
-            m_ObjectPullClientTarget = nullptr;
-            m_ObjectPullClientTargetVtable = nullptr;
-            m_ObjectPullClientTargetEntityIndex = 0;
-            m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
-            m_ObjectPullClientTargetPoint = {};
-        }
-        else
-        {
-            ObjectPullApplyNativeGlow(
+        // The CreateMove thread owns all client-entity inspection. The update
+        // thread only arms the entity index from its coherent target snapshot.
+        ObjectPullTrackingSample armTracking{};
+        if (ObjectPullReadLiveTrackingSample(
                 this,
-                m_ObjectPullClientTarget,
-                m_ObjectPullClientTargetVtable,
-                m_ObjectPullClientTargetEntityIndex);
-        }
-
-        if (m_ObjectPullPhase == ObjectPullClientPhase::Targeting &&
-            actionJustPressed &&
-            !m_ObjectPullRequireActionRelease)
+                gunHandPhysicalLeft,
+                armTracking))
         {
-            // Pointing alone owns selection and native outline. Grip snapshots
-            // the gesture origin only when the player chooses to pull.
-            ObjectPullTrackingSample armTracking{};
-            if (ObjectPullReadLiveTrackingSample(
-                    this,
-                    gunHandPhysicalLeft,
-                    armTracking))
+            m_ObjectPullPhase = ObjectPullClientPhase::Armed;
+            ObjectPullPublishClientTargetRequest(
+                this,
+                ObjectPullClientTargetRequestMode::Hold,
+                gunHandPosition,
+                gunHandForward,
+                false,
+                m_ObjectPullClientTargetEntityIndex);
+            m_ObjectPullArmPosition = gunHandPosition;
+            m_ObjectPullArmHandRelativeToHmd =
+                armTracking.handRelativeToHmd;
+            m_ObjectPullLastHandRelativeToHmd =
+                m_ObjectPullArmHandRelativeToHmd;
+            m_ObjectPullArmTowardBodyDirection =
+                m_ObjectPullArmHandRelativeToHmd * -1.0f;
+            if (VectorNormalize(
+                    m_ObjectPullArmTowardBodyDirection) <= 0.0001f)
             {
-                m_ObjectPullPhase = ObjectPullClientPhase::Armed;
-                m_ObjectPullArmPosition = gunHandPosition;
-                m_ObjectPullArmHandRelativeToHmd =
-                    armTracking.handRelativeToHmd;
-                m_ObjectPullLastHandRelativeToHmd =
-                    m_ObjectPullArmHandRelativeToHmd;
-                m_ObjectPullArmTowardBodyDirection =
-                    m_ObjectPullArmHandRelativeToHmd * -1.0f;
-                if (VectorNormalize(
-                        m_ObjectPullArmTowardBodyDirection) <= 0.0001f)
-                {
-                    m_ObjectPullArmTowardBodyDirection = {};
-                }
-                m_ObjectPullArmForward = gunHandForward;
-                m_ObjectPullArmAngles = gunHandAngles;
-                m_ObjectPullGestureSampleTime = now;
-                m_ObjectPullGesturePeakDistanceMeters = 0.0f;
-                m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
-                m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
-                m_ObjectPullCancelRepeatUntil = {};
-                TriggerPhysicalHandHapticPulse(
-                    gunHandPhysicalLeft,
-                    0.018f,
-                    75.0f,
-                    0.28f);
-
-                if (m_ObjectPullDebugLog)
-                {
-                    Game::logMsg(
-                        "[VR][ObjectPull][client] grip armed pointed entity=%p index=%d distance=%.2fm hand=%s",
-                        m_ObjectPullClientTarget,
-                        m_ObjectPullClientTargetEntityIndex,
-                        m_ObjectPullLastTargetDistanceMeters,
-                        gunHandPhysicalLeft ? "left" : "right");
-                }
+                m_ObjectPullArmTowardBodyDirection = {};
             }
-            else if (m_ObjectPullDebugLog)
+            m_ObjectPullArmForward = gunHandForward;
+            m_ObjectPullArmAngles = gunHandAngles;
+            m_ObjectPullGestureSampleTime = now;
+            m_ObjectPullGesturePeakDistanceMeters = 0.0f;
+            m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
+            m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
+            m_ObjectPullCancelRepeatUntil = {};
+            TriggerPhysicalHandHapticPulse(
+                gunHandPhysicalLeft,
+                0.018f,
+                75.0f,
+                0.28f);
+
+            if (m_ObjectPullDebugLog)
             {
                 Game::logMsg(
-                    "[VR][ObjectPull][client] grip pressed on pointed target but live tracking pose is unavailable");
+                    "[VR][ObjectPull][client] grip armed pointed index=%d distance=%.2fm hand=%s",
+                    m_ObjectPullClientTargetEntityIndex,
+                    m_ObjectPullLastTargetDistanceMeters,
+                    gunHandPhysicalLeft ? "left" : "right");
             }
+        }
+        else if (m_ObjectPullDebugLog)
+        {
+            Game::logMsg(
+                "[VR][ObjectPull][client] grip pressed on pointed target but live tracking pose is unavailable");
         }
     }
 
     if (m_ObjectPullPhase == ObjectPullClientPhase::Armed)
     {
-        void* currentVtable = nullptr;
+        ObjectPullPublishClientTargetRequest(
+            this,
+            ObjectPullClientTargetRequestMode::Hold,
+            gunHandPosition,
+            gunHandForward,
+            false,
+            m_ObjectPullClientTargetEntityIndex);
+        targetSnapshotCurrent =
+            ObjectPullReadPublishedClientTargetSnapshot(
+                this,
+                targetSnapshot);
         const bool targetValid =
-            ObjectPullReadClientVtable(
-                m_ObjectPullClientTarget,
-                currentVtable) &&
-            currentVtable == m_ObjectPullClientTargetVtable;
+            targetSnapshotCurrent &&
+            targetSnapshot.valid &&
+            targetSnapshot.entityIndex ==
+                m_ObjectPullClientTargetEntityIndex;
 
         if (!targetValid)
         {
@@ -1747,9 +1805,9 @@ bool VR::UpdateObjectPullInput(
         {
             ObjectPullTrackingSample currentTracking{};
             if (!ObjectPullReadLiveTrackingSample(
-                this,
-                gunHandPhysicalLeft,
-                currentTracking))
+                    this,
+                    gunHandPhysicalLeft,
+                    currentTracking))
             {
                 if (actionJustReleased)
                 {
@@ -1762,11 +1820,13 @@ bool VR::UpdateObjectPullInput(
                     m_ObjectPullGestureSampleTime = {};
                     m_ObjectPullGesturePeakDistanceMeters = 0.0f;
                     m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
-                    ObjectPullApplyNativeGlow(
+                    ObjectPullPublishClientTargetRequest(
                         this,
-                        m_ObjectPullClientTarget,
-                        m_ObjectPullClientTargetVtable,
-                        m_ObjectPullClientTargetEntityIndex);
+                        ObjectPullClientTargetRequestMode::Scan,
+                        gunHandPosition,
+                        gunHandForward,
+                        false,
+                        0);
                 }
                 return false;
             }
@@ -1835,13 +1895,20 @@ bool VR::UpdateObjectPullInput(
                 // Begin uses the original pointing pose for server validation;
                 // Continue uses the current pose as a fixed ballistic target.
                 m_ObjectPullPhase = ObjectPullClientPhase::Pulling;
-                m_ObjectPullWireTargetEntityIndex = m_ObjectPullClientTargetEntityIndex;
-                m_ObjectPullWireTargetHint = m_ObjectPullClientTargetHint;
-                ObjectPullRestoreNativeGlow(this);
-                m_ObjectPullClientTarget = nullptr;
-                m_ObjectPullClientTargetVtable = nullptr;
+                m_ObjectPullWireTargetEntityIndex =
+                    m_ObjectPullClientTargetEntityIndex;
+                m_ObjectPullWireTargetHint =
+                    m_ObjectPullClientTargetHint;
+                ObjectPullPublishClientTargetRequest(
+                    this,
+                    ObjectPullClientTargetRequestMode::Disabled,
+                    {},
+                    {},
+                    false,
+                    0);
                 m_ObjectPullClientTargetEntityIndex = 0;
-                m_ObjectPullClientTargetHint = ObjectPullTargetHint::None;
+                m_ObjectPullClientTargetHint =
+                    ObjectPullTargetHint::None;
                 m_ObjectPullClientTargetPoint = {};
                 m_ObjectPullRequireActionRelease = true;
                 m_ObjectPullBeginRepeatUntil = now +
@@ -1860,7 +1927,8 @@ bool VR::UpdateObjectPullInput(
                     std::chrono::duration_cast<
                         std::chrono::steady_clock::duration>(
                         std::chrono::duration<float>(8.00f));
-                m_ObjectPullDesiredWireCommand = kObjectPullWireBegin;
+                m_ObjectPullDesiredWireCommand =
+                    kObjectPullWireBegin;
                 TriggerPhysicalHandHapticPulse(
                     gunHandPhysicalLeft,
                     0.025f,
@@ -1870,7 +1938,7 @@ bool VR::UpdateObjectPullInput(
                 if (m_ObjectPullDebugLog)
                 {
                     Game::logMsg(
-                        "[VR][ObjectPull][client] gesture triggered distance=%.3fm speed=%.2fm/s mode=%s; selection entity and outline cleared",
+                        "[VR][ObjectPull][client] gesture triggered distance=%.3fm speed=%.2fm/s mode=%s; selection index and outline cleared",
                         pullDistanceMeters,
                         pullSpeedMetersPerSecond,
                         fullDistanceGesture ? "distance" : "speed");
@@ -1891,17 +1959,27 @@ bool VR::UpdateObjectPullInput(
                 m_ObjectPullGestureSampleTime = {};
                 m_ObjectPullGesturePeakDistanceMeters = 0.0f;
                 m_ObjectPullGesturePeakSpeedMetersPerSecond = 0.0f;
-                m_ObjectPullDesiredWireCommand = kObjectPullWireNone;
-                ObjectPullApplyNativeGlow(
+                m_ObjectPullDesiredWireCommand =
+                    kObjectPullWireNone;
+                ObjectPullPublishClientTargetRequest(
                     this,
-                    m_ObjectPullClientTarget,
-                    m_ObjectPullClientTargetVtable,
-                    m_ObjectPullClientTargetEntityIndex);
+                    ObjectPullClientTargetRequestMode::Scan,
+                    gunHandPosition,
+                    gunHandForward,
+                    false,
+                    0);
             }
         }
     }
     else if (m_ObjectPullPhase == ObjectPullClientPhase::Pulling)
     {
+        ObjectPullPublishClientTargetRequest(
+            this,
+            ObjectPullClientTargetRequestMode::Disabled,
+            {},
+            {},
+            false,
+            0);
         if (
             m_ObjectPullFlightExpireAt.time_since_epoch().count() != 0 &&
             now > m_ObjectPullFlightExpireAt)
@@ -1951,6 +2029,13 @@ bool VR::UpdateObjectPullInput(
     }
     else if (m_ObjectPullPhase == ObjectPullClientPhase::Held)
     {
+        ObjectPullPublishClientTargetRequest(
+            this,
+            ObjectPullClientTargetRequestMode::Disabled,
+            {},
+            {},
+            false,
+            0);
         if (!holdingCatchActionDown)
         {
             if (m_ObjectPullDebugLog)

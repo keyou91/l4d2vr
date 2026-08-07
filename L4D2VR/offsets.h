@@ -89,14 +89,6 @@ public:
         0,
         true
     };
-    // CGlowProperty::SetGlowType. Directly changing m_iGlowType bypasses
-    // registration with L4D2's native glow-object manager.
-    Offset CGlowProperty_SetGlowType_Client = { "client.dll", 0x109A20,
-        "55 8B EC 53 8B 5D 08 56 57 8B F9 39 5F 04 8D 77 04 74 0D 8B 46 FC 8B 10 8D 4E FC 56 FF D2",
-        0,
-        true
-    };
-
     Offset ServerFireTerrorBullets =     { "server.dll", 0x3C3FC0, "55 8B EC 81 EC ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 8B 45 08 8B 4D 10" };
     Offset ReadUserCmd =                 { "server.dll", 0x205100, "55 8B EC 53 8B 5D 10 56 57 8B 7D 0C 53" };
     Offset ProcessUsercmds =             { "server.dll", 0xEF710, "55 8B EC B8 ? ? ? ? E8 ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 8B 45 0C 8B 55 08" };

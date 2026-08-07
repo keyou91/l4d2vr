@@ -21340,21 +21340,18 @@ static C_BaseEntity* ObjectPullGetClientNativeHighlightTarget(
 {
     if (!game ||
         !vr ||
-        !game->m_ClientEntityList ||
-        !vr->m_ObjectPullVisualsEnabled ||
-        (vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Targeting &&
-            vr->m_ObjectPullPhase != VR::ObjectPullClientPhase::Armed))
+        !game->m_ClientEntityList)
     {
         return nullptr;
     }
 
-    C_BaseEntity* pullTarget = vr->m_ObjectPullClientTarget;
-    const int pullTargetIndex =
-        vr->m_ObjectPullClientTargetEntityIndex;
-    void* expectedVtable =
-        vr->m_ObjectPullClientTargetVtable;
-    if (!pullTarget ||
-        !expectedVtable ||
+    int pullTargetIndex = 0;
+    std::uintptr_t expectedEntityAddress = 0;
+    std::uintptr_t expectedVtableAddress = 0;
+    if (!vr->GetObjectPullNativeHighlightIdentity(
+            pullTargetIndex,
+            expectedEntityAddress,
+            expectedVtableAddress) ||
         pullTargetIndex <= 0 ||
         pullTargetIndex > 2047)
     {
@@ -21367,8 +21364,12 @@ static C_BaseEntity* ObjectPullGetClientNativeHighlightTarget(
         C_BaseEntity* current = static_cast<C_BaseEntity*>(
             game->m_ClientEntityList->GetClientEntity(
                 pullTargetIndex));
-        if (current == pullTarget &&
-            *reinterpret_cast<void**>(current) == expectedVtable)
+        if (current &&
+            reinterpret_cast<std::uintptr_t>(current) ==
+                expectedEntityAddress &&
+            reinterpret_cast<std::uintptr_t>(
+                *reinterpret_cast<void**>(current)) ==
+                expectedVtableAddress)
         {
             return current;
         }
@@ -21380,8 +21381,12 @@ static C_BaseEntity* ObjectPullGetClientNativeHighlightTarget(
     C_BaseEntity* current = static_cast<C_BaseEntity*>(
         game->m_ClientEntityList->GetClientEntity(
             pullTargetIndex));
-    if (current == pullTarget &&
-        *reinterpret_cast<void**>(current) == expectedVtable)
+    if (current &&
+        reinterpret_cast<std::uintptr_t>(current) ==
+            expectedEntityAddress &&
+        reinterpret_cast<std::uintptr_t>(
+            *reinterpret_cast<void**>(current)) ==
+            expectedVtableAddress)
     {
         return current;
     }

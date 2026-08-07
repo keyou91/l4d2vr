@@ -78,6 +78,8 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 						m_Game->GetClientEntity(localIndex));
 				}
 			}
+			if (m_VR)
+				m_VR->UpdateObjectPullClientTargetMainThread(localPlayer);
 			HooksFirstPersonBodyUpdateLocalStateMainThread(localPlayer);
 			HooksWorldPoseEnsureWeaponSetupBonesHookMainThread(
 				m_VR,
