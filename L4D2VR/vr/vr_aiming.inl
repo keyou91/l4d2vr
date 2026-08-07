@@ -2662,6 +2662,10 @@ bool VR::IsEffectiveAttackRangeTarget(const C_BaseEntity* entity) const
     if (!entity || !m_Game)
         return false;
 
+    // EffectiveAttack must never arm, change indicator state, or auto-fire on a Witch.
+    if (IsEffectiveAttackRangeWitchTarget(entity))
+        return false;
+
     const unsigned char* base = reinterpret_cast<const unsigned char*>(entity);
     int team = 0;
     const bool hasTeam = VR_TryReadI32(base, kTeamNumOffset, team);
@@ -3026,7 +3030,10 @@ bool VR::TryFindEffectiveAttackRangeMeleeFanTarget(C_BasePlayer* localPlayer, C_
     const float halfAngleRad = fanAngle * (3.14159265358979323846f / 180.0f) * 0.5f;
     const float minDot = std::cos(halfAngleRad);
 
-    const Vector traceStart = localPlayer->EyePosition();
+    // EffectiveAttackRangeMeleeDistance is measured from the same aim-line origin
+    // used to select the melee fan. Using EyePosition here made the configured range
+    // disagree with the visible controller aim line by the controller/body offset.
+    const Vector traceStart = start;
     C_BaseEntity* mountedUseEnt = GetMountedGunUseEntity(localPlayer);
     IClientEntityList* entityList = m_Game->m_ClientEntityList;
     IHandleEntity* safeMountedUseEnt = VR_GetSafeTraceSkipEntity(entityList, reinterpret_cast<IHandleEntity*>(mountedUseEnt));
@@ -3057,10 +3064,14 @@ bool VR::TryFindEffectiveAttackRangeMeleeFanTarget(C_BasePlayer* localPlayer, C_
             continue;
         targetPos.z += 36.0f;
 
-        Vector toTargetPlanar = targetPos - traceStart;
+        const Vector toTarget = targetPos - traceStart;
+        const float targetDistance = toTarget.Length();
+        if (!std::isfinite(targetDistance) || targetDistance <= 0.1f || targetDistance > maxDistance)
+            continue;
+
+        Vector toTargetPlanar = toTarget;
         toTargetPlanar.z = 0.0f;
-        const float planarDistance = toTargetPlanar.Length();
-        if (!std::isfinite(planarDistance) || planarDistance <= 0.1f || planarDistance > maxDistance)
+        if (toTargetPlanar.IsZero())
             continue;
 
         Vector targetDir = toTargetPlanar;
@@ -3086,19 +3097,159 @@ bool VR::TryFindEffectiveAttackRangeMeleeFanTarget(C_BasePlayer* localPlayer, C_
             continue;
 
         const bool betterCandidate =
-            (planarDistance + 0.01f < bestDistance) ||
-            (std::fabs(planarDistance - bestDistance) <= 0.01f && targetDot > bestDot);
+            (targetDistance + 0.01f < bestDistance) ||
+            (std::fabs(targetDistance - bestDistance) <= 0.01f && targetDot > bestDot);
         if (!betterCandidate)
             continue;
 
         outTarget = candidate;
         outTargetPos = targetPos;
-        outDistance = planarDistance;
-        bestDistance = planarDistance;
+        outDistance = targetDistance;
+        bestDistance = targetDistance;
         bestDot = targetDot;
     }
 
     return outTarget != nullptr;
+}
+
+bool VR::ValidateEffectiveAttackRangeMeleeAutoFire(C_BasePlayer* localPlayer, C_WeaponCSBase* weapon, C_BaseEntity*& outTarget)
+{
+    outTarget = nullptr;
+
+    if (!localPlayer || !weapon || !m_Game || !m_Game->m_EngineTrace || !m_Game->m_ClientEntityList)
+        return false;
+
+    const C_WeaponCSBase::WeaponID weaponId = weapon->GetWeaponID();
+    if (weaponId != C_WeaponCSBase::WeaponID::MELEE && weaponId != C_WeaponCSBase::WeaponID::CHAINSAW)
+        return false;
+
+    const float maxDistance = std::max(1.0f, m_EffectiveAttackRangeMeleeDistance);
+    const bool useMouse = m_MouseModeEnabled;
+    const bool frontViewEyeAim = m_ThirdPersonFrontViewEnabled && m_IsThirdPersonCamera && m_ThirdPersonFrontScopeFromEye;
+    const bool frontViewControllerEyeOrigin = m_ThirdPersonFrontViewEnabled && m_IsThirdPersonCamera && !m_ThirdPersonFrontScopeFromEye;
+
+    Vector eyeDir{ 0.0f, 0.0f, 0.0f };
+    if (useMouse)
+    {
+        GetMouseModeEyeRay(eyeDir);
+    }
+    else if (frontViewEyeAim)
+    {
+        eyeDir = m_HmdForward;
+        if (eyeDir.IsZero())
+        {
+            QAngle eyeAngFallback = m_HmdAngAbs;
+            NormalizeAndClampViewAngles(eyeAngFallback);
+            QAngle::AngleVectors(eyeAngFallback, &eyeDir, nullptr, nullptr);
+        }
+        if (!eyeDir.IsZero())
+            VectorNormalize(eyeDir);
+    }
+
+    Vector direction{};
+    Vector originBase{};
+    Vector autoGripAimOrigin{};
+    Vector autoGripAimDirection{};
+    const bool useAutoGripAimPose =
+        !useMouse &&
+        !frontViewEyeAim &&
+        !frontViewControllerEyeOrigin &&
+        VR_TryGetAutoGripAimLinePose(this, autoGripAimOrigin, autoGripAimDirection);
+
+    if (frontViewEyeAim || frontViewControllerEyeOrigin)
+    {
+        originBase = localPlayer->EyePosition();
+        direction = frontViewEyeAim ? eyeDir : m_RightControllerForward;
+        if (!frontViewEyeAim && m_IsThirdPersonCamera && !m_RightControllerForwardUnforced.IsZero())
+            direction = m_RightControllerForwardUnforced;
+    }
+    else if (useMouse)
+    {
+        const Vector& anchor = IsMouseModeScopeActive() ? m_MouseModeScopedViewmodelAnchorOffset : m_MouseModeViewmodelAnchorOffset;
+        originBase = m_HmdPosAbs
+            + (m_HmdForward * (anchor.x * m_VRScale))
+            + (m_HmdRight * (anchor.y * m_VRScale))
+            + (m_HmdUp * (anchor.z * m_VRScale));
+
+        const float convergeDist = (m_MouseModeAimConvergeDistance > 0.0f) ? m_MouseModeAimConvergeDistance : 8192.0f;
+        Vector target = m_HmdPosAbs + eyeDir * convergeDist;
+        direction = target - originBase;
+    }
+    else
+    {
+        originBase = useAutoGripAimPose ? autoGripAimOrigin : GetRightControllerViewmodelAbsPos();
+        direction = useAutoGripAimPose ? autoGripAimDirection : m_RightControllerForward;
+        if (!useAutoGripAimPose && m_IsThirdPersonCamera && !m_RightControllerForwardUnforced.IsZero())
+            direction = m_RightControllerForwardUnforced;
+    }
+
+    if (direction.IsZero())
+        return false;
+    VectorNormalize(direction);
+
+    if (!useAutoGripAimPose && !frontViewEyeAim && !frontViewControllerEyeOrigin && m_IsThirdPersonCamera)
+    {
+        const Vector camDelta = GetAimRenderCameraDelta();
+        if (camDelta.LengthSqr() > (5.0f * 5.0f))
+            originBase += camDelta;
+    }
+
+    Vector start = useAutoGripAimPose ? originBase : originBase + direction * 2.0f;
+    Vector end = start + direction * maxDistance;
+    if (VR_FormatAimLineSegmentToViewmodelLayer(this, start, end))
+    {
+        Vector formattedDirection = end - start;
+        if (formattedDirection.IsZero())
+            return false;
+        VectorNormalize(formattedDirection);
+        direction = formattedDirection;
+        end = start + direction * maxDistance;
+    }
+
+    C_BaseEntity* mountedUseEnt = GetMountedGunUseEntity(localPlayer);
+    IHandleEntity* safeMountedUseEnt = VR_GetSafeTraceSkipEntity(m_Game->m_ClientEntityList, reinterpret_cast<IHandleEntity*>(mountedUseEnt));
+    IHandleEntity* safeActiveWeapon = VR_GetSafeTraceSkipEntity(m_Game->m_ClientEntityList, reinterpret_cast<IHandleEntity*>(weapon));
+    CTraceFilterSkipThreeEntities filterThree(reinterpret_cast<IHandleEntity*>(localPlayer), safeMountedUseEnt, safeActiveWeapon, 0);
+    CTraceFilter* pFilter = static_cast<CTraceFilter*>(&filterThree);
+
+    // Direct aim remains valid even when FanAngle is zero.
+    CGameTrace directTrace;
+    Ray_t directRay;
+    directRay.Init(start, end);
+    if (VR_SafeTraceRay(m_Game->m_EngineTrace, directRay, STANDARD_TRACE_MASK, pFilter, directTrace))
+    {
+        C_BaseEntity* directTarget = reinterpret_cast<C_BaseEntity*>(directTrace.m_pEnt);
+        if (directTarget && directTarget != localPlayer &&
+            directTrace.fraction > 0.0f && directTrace.fraction < 1.0f &&
+            !directTrace.startsolid && !directTrace.allsolid &&
+            IsEffectiveAttackRangeTarget(directTarget))
+        {
+            const float directDistance = (directTrace.endpos - start).Length();
+            if (std::isfinite(directDistance) && directDistance <= maxDistance)
+            {
+                outTarget = directTarget;
+                return true;
+            }
+        }
+    }
+
+    Vector fanTargetPos{};
+    float fanDistance = 0.0f;
+    if (TryFindEffectiveAttackRangeMeleeFanTarget(
+        localPlayer,
+        weapon,
+        start,
+        end,
+        maxDistance,
+        outTarget,
+        fanTargetPos,
+        fanDistance))
+    {
+        return true;
+    }
+
+    outTarget = nullptr;
+    return false;
 }
 
 void VR::UpdateAimLineEffectiveAttackRange(C_BasePlayer* localPlayer, C_WeaponCSBase* weapon, C_BaseEntity* hitEntity, const Vector& start, const Vector& end, const Vector& hitPos, bool hasAimHit)
@@ -3142,6 +3293,14 @@ void VR::UpdateAimLineEffectiveAttackRange(C_BasePlayer* localPlayer, C_WeaponCS
         return;
     }
 
+    // Do not let HoldSeconds keep a previous effective target alive while the current
+    // aim ray is on a Witch. This applies to both firearm and melee paths.
+    if (hasAimHit && hitEntity && IsEffectiveAttackRangeWitchTarget(hitEntity))
+    {
+        clearImmediate();
+        return;
+    }
+
     const C_WeaponCSBase::WeaponID weaponId = weapon->GetWeaponID();
     if (weaponId == C_WeaponCSBase::MELEE || weaponId == C_WeaponCSBase::CHAINSAW)
     {
@@ -3174,10 +3333,20 @@ void VR::UpdateAimLineEffectiveAttackRange(C_BasePlayer* localPlayer, C_WeaponCS
             }
         }
 
-        if (!meleeActive)
-            m_AimLineEffectiveAttackRangeTargetIsWitch = false;
-
-        updateHeldState(meleeActive);
+        // Melee range/fan is an immediate geometric condition. Do not apply the
+        // firearm hold timer here: keeping a previous melee hit alive for HoldSeconds
+        // lets CreateMove keep auto-attacking after the aim line has already left the
+        // configured distance/fan.
+        if (meleeActive)
+        {
+            m_AimLineEffectiveAttackRangeActive = true;
+            m_AimLineEffectiveAttackRangeHoldUntil = {};
+            m_AimLineEffectiveAttackRangeCacheValid = false;
+        }
+        else
+        {
+            clearImmediate();
+        }
         return;
     }
 
@@ -4360,6 +4529,12 @@ void VR::UpdateSpecialInfectedPreWarningState()
     m_SpecialInfectedAutoAimCooldownEnd = {};
 }
 
+bool VR::BuildSpecialInfectedAutoEvadeShoveSolution(C_BasePlayer* /*localPlayer*/, Vector& outAimTarget, bool& outCanShoveNow)
+{
+    outAimTarget = {};
+    outCanShoveNow = false;
+    return false;
+}
 void VR::StartSpecialInfectedWarningAction() {}
 void VR::UpdateSpecialInfectedWarningAction() {}
 void VR::ResetSpecialInfectedWarningAction()
@@ -4368,6 +4543,13 @@ void VR::ResetSpecialInfectedWarningAction()
     m_SpecialInfectedWarningJumpCmdOwned = false;
     m_SpecialInfectedWarningActionStep = SpecialInfectedWarningActionStep::None;
     m_SpecialInfectedWarningNextActionTime = {};
+    m_SpecialInfectedWarningActionDeadline = {};
+    m_SpecialInfectedWarningShoveCommandIssued = false;
+    m_SpecialInfectedWarningBashedStartBaselineValid = false;
+    m_SpecialInfectedWarningBashedStartBaseline = 0.0f;
+    m_SpecialInfectedWarningTargetEntityIndex = -1;
+    m_SpecialInfectedWarningTargetType = SpecialInfectedType::None;
+    m_SpecialInfectedWarningTargetActive = false;
     m_SuppressPlayerInput = false;
 }
 

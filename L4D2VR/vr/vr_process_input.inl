@@ -1378,8 +1378,7 @@ void VR::ProcessInput()
 
     bool effectiveRangeAutoFireOwnsPrimary = false;
     if (m_EffectiveAttackRangeAutoFireEnabled
-        && m_AimLineEffectiveAttackRangeActive
-        && !m_AimLineEffectiveAttackRangeTargetIsWitch
+        && m_EffectiveAttackRangeAutoFireActive
         && !m_SuppressPlayerInput
         && !m_AdjustingViewmodel
         && !m_AdjustingScope

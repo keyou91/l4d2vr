@@ -139,6 +139,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 		localUseButtonDownForAutoActions ||
 		m_VR->m_UseCmdOwned ||
 		IsPlayerDoingUseOrReviveAction(localPlayerForAutoActions);
+	bool specialInfectedAutoEvadeShoveThisTick = false;
 
 	if (m_VR && m_VR->m_TeleportVisualScoutActive)
 	{
@@ -251,8 +252,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 		bool effectiveRangeAutoFireEligible = false;
 		if (m_VR->m_EffectiveAttackRangeAutoFireEnabled
-			&& m_VR->m_AimLineEffectiveAttackRangeActive
-			&& !m_VR->m_AimLineEffectiveAttackRangeTargetIsWitch
+			&& m_VR->m_SpecialInfectedWarningActionStep == VR::SpecialInfectedWarningActionStep::None
 			&& !m_VR->m_SuppressPlayerInput
 			&& !m_VR->m_AdjustingViewmodel
 			&& !m_VR->m_AdjustingScope
@@ -274,10 +274,40 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 					(weaponId == C_WeaponCSBase::WeaponID::FRAG_AMMO) ||
 					(weaponId == C_WeaponCSBase::WeaponID::UPGRADE_ITEM);
 				const bool canAutoFire = (lifeState == 0) && (observerMode == 0) && !isHoldToUseWeaponId;
-				if (canAutoFire)
+
+				bool effectiveRangeGeometryValid = m_VR->m_AimLineEffectiveAttackRangeActive;
+				bool effectiveRangeTargetIsWitch = m_VR->m_AimLineEffectiveAttackRangeTargetIsWitch;
+				uintptr_t targetTag = m_VR->m_AimLineEffectiveAttackRangeTarget;
+				const bool isMeleeRangeWeapon =
+					weaponId == C_WeaponCSBase::WeaponID::MELEE ||
+					weaponId == C_WeaponCSBase::WeaponID::CHAINSAW;
+
+				if (canAutoFire && activeWeapon && isMeleeRangeWeapon)
+				{
+					// Melee does not trust or require the render-thread effective-range state. Re-check
+					// melee distance + fan on the CreateMove thread immediately before we
+					// synthesize IN_ATTACK, so queued rendering or HoldSeconds can never
+					// turn a stale green aim line into a long-range melee attack.
+					C_BaseEntity* validatedMeleeTarget = nullptr;
+					effectiveRangeGeometryValid = m_VR->ValidateEffectiveAttackRangeMeleeAutoFire(
+						lp,
+						activeWeapon,
+						validatedMeleeTarget);
+					if (effectiveRangeGeometryValid && validatedMeleeTarget)
+					{
+						targetTag = reinterpret_cast<uintptr_t>(validatedMeleeTarget);
+						effectiveRangeTargetIsWitch = m_VR->IsEffectiveAttackRangeWitchTarget(validatedMeleeTarget);
+					}
+					else
+					{
+						targetTag = 0;
+						effectiveRangeTargetIsWitch = false;
+					}
+				}
+
+				if (canAutoFire && effectiveRangeGeometryValid && !effectiveRangeTargetIsWitch)
 				{
 					effectiveRangeAutoFireEligible = true;
-					const uintptr_t targetTag = m_VR->m_AimLineEffectiveAttackRangeTarget;
 					const uintptr_t weaponTag = reinterpret_cast<uintptr_t>(activeWeapon);
 					const auto now = std::chrono::steady_clock::now();
 
@@ -300,7 +330,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 						s_effectiveRangeAutoFireRandomState ^= s_effectiveRangeAutoFireRandomState << 5;
 
 						constexpr int kMinReactionDelayMs = 13;
-						constexpr int kReactionDelayRangeMs = 25; // Inclusive 50..100 ms.
+						constexpr int kReactionDelayRangeMs = 25; // Inclusive 13..37 ms.
 						const int reactionDelayMs = kMinReactionDelayMs
 							+ static_cast<int>(s_effectiveRangeAutoFireRandomState % kReactionDelayRangeMs);
 						s_effectiveRangeAutoFireAt = now + std::chrono::milliseconds(reactionDelayMs);
@@ -972,45 +1002,73 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 		}
 
-		// SpecialInfectedAutoEvade: the shove must use the same server-facing viewangles as the target lock.
-		// The visual aim-line path already forces m_RightControllerForward while pre-warning is active;
-		// this block locks CUserCmd too, so +attack2 is resolved toward the same infected target.
+		// SpecialInfectedAutoEvade: keep tracking the live entity, but only spend the
+		// shove when its live collision box enters the real server shove volume.
 		if (m_VR->m_SpecialInfectedWarningActionEnabled
 			&& m_VR->m_SpecialInfectedWarningActionStep != VR::SpecialInfectedWarningActionStep::None
-			&& m_VR->m_SpecialInfectedWarningTargetActive
 			&& !m_VR->m_AdjustingViewmodel
 			&& !m_VR->m_AdjustingScope
 			&& !suppressAutoActionsForUseOrRevive)
 		{
-			Vector aimOrigin = (m_VR->GetViewOriginLeft() + m_VR->GetViewOriginRight()) * 0.5f;
-			if (aimOrigin.IsZero())
-				aimOrigin = m_VR->m_HmdPosAbs;
-
-			Vector dir = m_VR->m_SpecialInfectedWarningTarget - aimOrigin;
-			if (VectorLength(dir) > 0.001f)
+			Vector shoveAimTarget{};
+			bool canShoveNow = false;
+			if (!m_VR->BuildSpecialInfectedAutoEvadeShoveSolution(
+				localPlayerForAutoActions,
+				shoveAimTarget,
+				canShoveNow))
 			{
-				VectorNormalize(dir);
-				QAngle lockAngles;
-				QAngle::VectorAngles(dir, lockAngles);
-				NormalizeAndClampViewAngles(lockAngles);
+				m_VR->ResetSpecialInfectedWarningAction();
+			}
+			else
+			{
+				Vector aimOrigin{};
+				if (localPlayerForAutoActions)
+					aimOrigin = localPlayerForAutoActions->EyePosition();
+				if (aimOrigin.IsZero())
+					aimOrigin = m_VR->m_HmdPosAbs;
 
-				QAngle oldYawOnly(0.f, cmd->viewangles.y, 0.f);
-				Vector oldForward, oldRight, oldUp;
-				QAngle::AngleVectors(oldYawOnly, &oldForward, &oldRight, &oldUp);
-				Vector worldMove = oldForward * cmd->forwardmove + oldRight * cmd->sidemove;
+				Vector dir = shoveAimTarget - aimOrigin;
+				if (VectorLength(dir) > 0.001f)
+				{
+					VectorNormalize(dir);
+					QAngle lockAngles;
+					QAngle::VectorAngles(dir, lockAngles);
+					NormalizeAndClampViewAngles(lockAngles);
 
-				cmd->viewangles = lockAngles;
+					QAngle oldYawOnly(0.f, cmd->viewangles.y, 0.f);
+					Vector oldForward, oldRight, oldUp;
+					QAngle::AngleVectors(oldYawOnly, &oldForward, &oldRight, &oldUp);
+					Vector worldMove = oldForward * cmd->forwardmove + oldRight * cmd->sidemove;
 
-				QAngle newYawOnly(0.f, cmd->viewangles.y, 0.f);
-				Vector newForward, newRight, newUp;
-				QAngle::AngleVectors(newYawOnly, &newForward, &newRight, &newUp);
-				cmd->forwardmove = DotProduct(worldMove, newForward);
-				cmd->sidemove = DotProduct(worldMove, newRight);
+					cmd->viewangles = lockAngles;
 
-				constexpr int kIN_ATTACK = (1 << 0);
-				constexpr int kIN_ATTACK2 = (1 << 11);
-				cmd->buttons &= ~kIN_ATTACK;
-				cmd->buttons |= kIN_ATTACK2;
+					QAngle newYawOnly(0.f, cmd->viewangles.y, 0.f);
+					Vector newForward, newRight, newUp;
+					QAngle::AngleVectors(newYawOnly, &newForward, &newRight, &newUp);
+					cmd->forwardmove = DotProduct(worldMove, newForward);
+					cmd->sidemove = DotProduct(worldMove, newRight);
+
+					if (canShoveNow)
+					{
+						const auto shoveNow = std::chrono::steady_clock::now();
+
+						// Source weapon processing tests the current IN_ATTACK2 state while
+						// m_flNextSecondaryAttack is cooling down. Hold the bit on every valid
+						// command until m_bashedStart confirms the shove instead of leaving
+						// gaps where an airborne Hunter/Jockey can cross the shove volume.
+						if (!m_VR->m_SpecialInfectedWarningShoveCommandIssued)
+						{
+							const auto minimumRetryDeadline = shoveNow +
+								std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+									std::chrono::duration<float>(2.0f));
+							if (m_VR->m_SpecialInfectedWarningActionDeadline < minimumRetryDeadline)
+								m_VR->m_SpecialInfectedWarningActionDeadline = minimumRetryDeadline;
+							m_VR->m_SpecialInfectedWarningShoveCommandIssued = true;
+						}
+
+						specialInfectedAutoEvadeShoveThisTick = true;
+					}
+				}
 			}
 		}
 
@@ -1566,6 +1624,18 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 		if ((cmd->buttons & kMagazineInteractionInAttack) != 0 && (s_lastButtons & kMagazineInteractionInAttack) == 0)
 			m_VR->PlayMagazineInteractionBlockedFireEmptySound();
 		cmd->buttons &= ~(kMagazineInteractionInAttack | kMagazineInteractionInReload);
+	}
+
+	// Auto-repeat, EffectiveAttack and fast-melee run after the initial AutoEvade block
+	// and can re-add IN_ATTACK. Keep the validated AutoEvade shove hold at final priority.
+	if (specialInfectedAutoEvadeShoveThisTick)
+	{
+		constexpr int kIN_ATTACK = (1 << 0);
+		constexpr int kIN_ATTACK2 = (1 << 11);
+		cmd->buttons &= ~kIN_ATTACK;
+		cmd->buttons |= kIN_ATTACK2;
+		m_VR->m_EffectiveAttackRangeAutoFireActive = false;
+		resetEffectiveRangeAutoFireDelay();
 	}
 
 	{
