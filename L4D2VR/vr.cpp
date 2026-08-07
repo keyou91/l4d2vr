@@ -539,6 +539,15 @@ void VR::UpdateHudLiftGestureState(bool inGame)
         return;
     }
 
+    // HudAlwaysHidden only disables the automatic off-hand lift gesture.
+    // Explicit ShowHUD input and focused VGUI (pause/menu/cursor) remain available.
+    if (m_HudAlwaysHidden)
+    {
+        stopLiftHudCapture(true);
+        m_HudToggleState = false;
+        return;
+    }
+
     vr::TrackedDeviceIndex_t leftControllerIndex =
         m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
     vr::TrackedDeviceIndex_t rightControllerIndex =

@@ -2836,8 +2836,10 @@ void VR::ParseConfigFile()
     m_TopHudCurvature = std::clamp(getFloat("TopHudCurvature", m_TopHudCurvature), 0.0f, 1.0f);
     m_HudFollowHmdMovement = getBool("HudFollowHmdMovement", m_HudFollowHmdMovement);
     m_HudAlwaysVisible = getBool("HudAlwaysVisible", m_HudAlwaysVisible);
+    m_HudAlwaysHidden = getBool("HudAlwaysHidden", m_HudAlwaysHidden);
     m_HudToggleState = m_HudAlwaysVisible ||
-        m_HudLiftGestureActive.load(std::memory_order_acquire) != 0;
+        (!m_HudAlwaysHidden &&
+            m_HudLiftGestureActive.load(std::memory_order_acquire) != 0);
 
     // Hand HUD background opacity (0..1)
     m_LeftWristHudBgAlpha = std::clamp(getFloat("LeftWristHudBgAlpha", m_LeftWristHudBgAlpha), 0.0f, 1.0f);

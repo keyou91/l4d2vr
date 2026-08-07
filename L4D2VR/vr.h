@@ -2027,9 +2027,11 @@ public:
 	float m_TopHudCurvature = 0.2f;
 	bool m_HudFollowHmdMovement = false;
 	bool m_HudAlwaysVisible = false;
+	// Legacy config key name: this disables only the automatic off-hand lift HUD gesture.
+	bool m_HudAlwaysHidden = false;
 	bool m_HudToggleState = false;
-	// Runtime HUD requests used by HudAlwaysVisible=false. ShowHUD is a hold action;
-	// the off-hand lift gesture is suppressed while that hand is gripping a two-handed weapon.
+	// ShowHUD is an explicit hold request. The automatic off-hand lift request can be
+	// disabled by HudAlwaysHidden and is also suppressed while gripping a two-handed weapon.
 	std::atomic<uint32_t> m_HudShowActionHeld{ 0 };
 	std::atomic<uint32_t> m_HudLiftGestureActive{ 0 };
 	std::chrono::steady_clock::time_point m_HudLiftGestureVisibleUntil{};

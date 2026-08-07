@@ -118,6 +118,7 @@ cmd=exec cam.cfg
 HudDistance=1.3
 HudSize=1.3
 HudAlwaysVisible=false
+HudAlwaysHidden=false
 FixedHudYOffset=0.25
 FixedHudDistanceOffset=0.25
 ControllerSmoothing=0.0
