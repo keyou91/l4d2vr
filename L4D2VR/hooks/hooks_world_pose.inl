@@ -96,10 +96,8 @@
         std::uint64_t rightGripShotImpulseTickMs = 0u;
         bool hmdReferenceLocalPositionValid = false;
         bool hmdReferenceBodyYawValid = false;
-        bool nativeHeadReferenceLocalPositionValid = false;
         float hmdReferenceBodyYaw = 0.0f;
         Vector hmdReferenceLocalPosition{};
-        Vector nativeHeadReferenceLocalPosition{};
         vr_vm_stabilize::Mat3x4 hmdToHead{};
         Vector leftBendBodyLocal{};
         Vector rightBendBodyLocal{};
@@ -4285,33 +4283,6 @@
             bones);
     }
 
-    inline bool HooksWorldPoseTranslateBranch(
-        const HooksWorldPoseBoneLayout& layout,
-        int rootBone,
-        Vector translation,
-        float maxDistance,
-        vr_vm_stabilize::Mat3x4* bones)
-    {
-        if (!HooksNativeViewmodelHandsOnlyVectorFinite(translation))
-            return false;
-        const float distance = translation.Length();
-        if (!std::isfinite(distance) || distance <= 0.001f)
-            return false;
-        if (maxDistance > 0.0f && distance > maxDistance)
-            translation *= maxDistance / distance;
-
-        vr_vm_stabilize::Mat3x4 delta =
-            vr_vm_stabilize::Identity();
-        delta.m[0][3] = translation.x;
-        delta.m[1][3] = translation.y;
-        delta.m[2][3] = translation.z;
-        return HooksWorldPoseApplyDeltaToBranch(
-            layout,
-            rootBone,
-            delta,
-            bones);
-    }
-
     inline bool HooksWorldPoseCaptureBoneLocalTransform(
         const HooksWorldPoseBoneLayout& layout,
         const vr_vm_stabilize::Mat3x4* sourceBones,
@@ -6245,15 +6216,7 @@
         QAngle sourceEyeAngles{};
         bool sourceEyeAnglesValid = false;
         Vector rawHmdLocalDelta(0.0f, 0.0f, 0.0f);
-        Vector nativeHeadLocalDelta(0.0f, 0.0f, 0.0f);
-        Vector nativeHeadCompensation(0.0f, 0.0f, 0.0f);
-        Vector appliedHmdLocalDelta(0.0f, 0.0f, 0.0f);
-        Vector appliedHmdWorldDelta(0.0f, 0.0f, 0.0f);
-        bool playerDucking = false;
-        HooksFirstPersonBodyReadCrouchedSafe(
-            reinterpret_cast<C_BasePlayer*>(
-                const_cast<C_BaseEntity*>(entity)),
-            &playerDucking);
+        Vector bodyLeanLocalMeters(0.0f, 0.0f, 0.0f);
 
         // The outer blend weight provides the normal fade back to Source for
         // stale tracking and suppressed player states.
@@ -6274,13 +6237,16 @@
             std::isfinite(pose.hmd.angles.y);
         if (instantLocalTrackedBodyYaw)
         {
-            // Match the local rendered torso to the same world yaw already
-            // used by the tracked head and hands. This intentionally includes
-            // physical HMD yaw as well as snap/smooth-turn body yaw.
-            targetVisualBodyYaw =
+            // Use the same local tracked-body yaw as the first-person body.
+            // Snap/smooth turning rotates the torso immediately, while physical
+            // HMD yaw stays head-only inside the configured comfort cone.
+            const float headWorldYaw =
                 HooksWorldPoseWrapAngle(
                     pose.bodyYaw +
                     pose.hmd.angles.y);
+            targetVisualBodyYaw = HooksTrackedBodyResolveVisualYaw(
+                vr,
+                headWorldYaw);
         }
         float visualBodyYaw = sourceBodyYaw;
         float appliedBodyYaw = sourceBodyYaw;
@@ -6303,6 +6269,16 @@
                 trackingWeight,
                 bones,
                 appliedBodyYaw);
+
+        Vector bodyForward{};
+        Vector bodyRight{};
+        Vector bodyUp{};
+        QAngle::AngleVectors(
+            QAngle(0.0f, appliedBodyYaw, 0.0f),
+            &bodyForward,
+            &bodyRight,
+            &bodyUp);
+
         C_BaseCombatWeapon* heldWeaponForGrip = nullptr;
         void* heldWeaponRenderableForGrip = nullptr;
         const bool localEmptyHandsPlaceholder =
@@ -6419,15 +6395,6 @@
                 calibration.hmdToHead,
                 headTarget);
 
-            const Vector sourceNativeHead =
-                vr_vm_stabilize::GetOrigin(
-                    sourceBones[layout->head]);
-            Vector sourceNativeHeadLocal{};
-            const bool sourceNativeHeadLocalValid =
-                HooksWorldPoseWorldPositionToBodyLocal(
-                    sourceNativeHead,
-                    info,
-                    sourceNativeHeadLocal);
             if (!calibration.hmdReferenceLocalPositionValid)
             {
                 calibration.hmdReferenceLocalPosition =
@@ -6439,23 +6406,12 @@
                     calibration.hmdReferenceBodyYawValid = true;
                 }
             }
-            // Never learn a standing model-head reference from a crouched
-            // frame. If a map first draws while crouched, defer this one
-            // reference until the survivor next stands up.
-            if (!calibration.nativeHeadReferenceLocalPositionValid &&
-                sourceNativeHeadLocalValid &&
-                !playerDucking)
-            {
-                calibration.nativeHeadReferenceLocalPosition =
-                    sourceNativeHeadLocal;
-                calibration.nativeHeadReferenceLocalPositionValid = true;
-            }
 
-            // Source's current head already contains crouch, jump, locomotion
-            // and breathing.  Layer only a tightly bounded room-scale HMD
-            // displacement over that native head.  In particular, never make
-            // the head an absolute child of player origin: that would apply a
-            // second crouch displacement and stretch the neck.
+            // Convert physical HMD translation into the current visible body's
+            // planar frame. Player origin motion is already removed by the pose
+            // packet, so 1:1 room movement naturally leaves only the residual
+            // offset inside the lean envelope. No chest/head translation is
+            // applied here; the offset drives an upper-chest rotation below.
             Vector hmdReferenceFramePosition =
                 pose.hmd.position;
             if (pose.bodyYawValid &&
@@ -6493,102 +6449,30 @@
                 hmdReferenceFramePosition -
                 calibration.hmdReferenceLocalPosition;
 
-            appliedHmdLocalDelta =
-                rawHmdLocalDelta;
-            if (sourceNativeHeadLocalValid &&
-                calibration.nativeHeadReferenceLocalPositionValid)
-            {
-                nativeHeadLocalDelta =
-                    sourceNativeHeadLocal -
-                    calibration.nativeHeadReferenceLocalPosition;
-
-                // Do not subtract ordinary head/neck animation in X/Y or
-                // small vertical breathing/bob: applying that inverse motion
-                // to the whole upper chest would cancel native animation.
-                // Only remove a clear, same-direction gross vertical motion
-                // that both the tracker and Source already applied (crouch,
-                // stand-up or jump).
-                constexpr float kGrossVerticalMotion = 3.0f;
-                if (std::fabs(rawHmdLocalDelta.z) >
-                        kGrossVerticalMotion &&
-                    std::fabs(nativeHeadLocalDelta.z) >
-                        kGrossVerticalMotion &&
-                    rawHmdLocalDelta.z *
-                        nativeHeadLocalDelta.z >
-                            0.0f)
-                {
-                    nativeHeadCompensation.z =
-                        std::copysign(
-                            std::min(
-                                std::fabs(rawHmdLocalDelta.z),
-                                std::fabs(nativeHeadLocalDelta.z)),
-                            rawHmdLocalDelta.z);
-                }
-                appliedHmdLocalDelta -=
-                    nativeHeadCompensation;
-            }
-
-            // Room-scale leaning is only a subtle upper-body layer. Never let
-            // physical HMD height translate the torso vertically; crouch and
-            // jump height remain owned by Source's body animation. Horizontal
-            // lean is deliberately reduced to one third of tracked travel.
-            constexpr float kUpperBodyHorizontalTrackingGain =
-                1.0f / 3.0f;
-            appliedHmdLocalDelta.x *=
-                kUpperBodyHorizontalTrackingGain;
-            appliedHmdLocalDelta.y *=
-                kUpperBodyHorizontalTrackingGain;
-            appliedHmdLocalDelta.z = 0.0f;
-            const float horizontalLength =
-                std::sqrt(
-                    appliedHmdLocalDelta.x *
-                        appliedHmdLocalDelta.x +
-                    appliedHmdLocalDelta.y *
-                        appliedHmdLocalDelta.y);
-            // Saturate continuously at the anatomical limit. Do not rebase
-            // the reference while the user remains outside it: rebasing makes
-            // the torso snap to zero and repeatedly oscillate at the boundary.
-            constexpr float kMaximumHmdHorizontalOffset = 1.0f;
-            if (std::isfinite(horizontalLength) &&
-                horizontalLength >
-                    kMaximumHmdHorizontalOffset)
-            {
-                const float scale =
-                    kMaximumHmdHorizontalOffset /
-                    horizontalLength;
-                appliedHmdLocalDelta.x *= scale;
-                appliedHmdLocalDelta.y *= scale;
-            }
-            appliedHmdLocalDelta.z = 0.0f;
-
-            Vector bodyForwardForHead{};
-            Vector bodyRightForHead{};
-            Vector bodyUpForHead{};
             const float hmdDeltaFrameYaw =
                 calibration.hmdReferenceBodyYawValid
                     ? calibration.hmdReferenceBodyYaw
                     : HooksWorldPoseWrapAngle(info.angles.y);
+            Vector referenceForward{};
+            Vector referenceRight{};
+            Vector referenceUp{};
             QAngle::AngleVectors(
-                QAngle(
-                    0.0f,
-                    hmdDeltaFrameYaw,
-                    0.0f),
-                &bodyForwardForHead,
-                &bodyRightForHead,
-                &bodyUpForHead);
-            const Vector nativeHead =
-                vr_vm_stabilize::GetOrigin(
-                    bones[layout->head]);
-            appliedHmdWorldDelta =
-                bodyForwardForHead * appliedHmdLocalDelta.x +
-                bodyRightForHead * appliedHmdLocalDelta.y +
-                bodyUpForHead * appliedHmdLocalDelta.z;
-            const Vector constrainedHead =
-                nativeHead +
-                appliedHmdWorldDelta;
-            headTarget.m[0][3] = constrainedHead.x;
-            headTarget.m[1][3] = constrainedHead.y;
-            headTarget.m[2][3] = constrainedHead.z;
+                QAngle(0.0f, hmdDeltaFrameYaw, 0.0f),
+                &referenceForward,
+                &referenceRight,
+                &referenceUp);
+            const Vector rawHmdPlanarWorld =
+                referenceForward * rawHmdLocalDelta.x +
+                referenceRight * rawHmdLocalDelta.y;
+            const float unitsPerMeter =
+                (std::isfinite(vr->m_VRScale) &&
+                 std::fabs(vr->m_VRScale) > 0.001f)
+                    ? std::fabs(vr->m_VRScale)
+                    : 43.2f;
+            bodyLeanLocalMeters = Vector(
+                DotProduct(rawHmdPlanarWorld, bodyForward) / unitsPerMeter,
+                DotProduct(rawHmdPlanarWorld, bodyRight) / unitsPerMeter,
+                0.0f);
         }
 
         vr_vm_stabilize::Mat3x4 leftStableFallbackHand{};
@@ -6683,37 +6567,47 @@
             HooksNativeViewmodelHandsOnlyMatrixFinite(
                 headTarget))
         {
-            // Move the upper-body chain as one rigid branch. Rotating chest
-            // and neck independently toward a nearby HMD target preserves
-            // mathematical bone lengths, but heavily weighted custom meshes
-            // can still render that bend as a long rubber neck. A bounded
-            // shared translation keeps chest->neck->head spacing unchanged.
-            int hmdTranslationRoot = -1;
+            // Physical HMD X/Y drives a bounded upper-chest tilt instead of
+            // translating the whole upper body. With 1:1 room movement enabled,
+            // player-origin motion consumes only the displacement beyond the same
+            // lean radius; without 1:1, this simply saturates at the configured
+            // maximum lean and never moves the player/body origin.
+            int bodyLeanRoot = -1;
             if (layout->upperChest >= 0 &&
                 layout->upperChest < layout->numBones &&
                 layout->upperChest != layout->head)
             {
-                hmdTranslationRoot =
-                    layout->upperChest;
+                bodyLeanRoot = layout->upperChest;
             }
             else if (layout->neck >= 0 &&
                 layout->neck < layout->numBones &&
                 layout->neck != layout->head)
             {
-                hmdTranslationRoot =
-                    layout->neck;
+                bodyLeanRoot = layout->neck;
             }
-            if (hmdTranslationRoot >= 0)
+            if (bodyLeanRoot >= 0)
             {
-                changed =
-                    HooksWorldPoseTranslateBranch(
-                        *layout,
-                        hmdTranslationRoot,
-                        appliedHmdWorldDelta *
-                            trackingWeight,
-                        4.0f,
-                        bones) ||
-                    changed;
+                const Vector leanPivot =
+                    vr_vm_stabilize::GetOrigin(bones[bodyLeanRoot]);
+                vr_vm_stabilize::Mat3x4 leanDelta{};
+                if (HooksTrackedBodyBuildLeanDelta(
+                        vr,
+                        leanPivot,
+                        bodyForward,
+                        bodyRight,
+                        bodyUp,
+                        bodyLeanLocalMeters,
+                        trackingWeight,
+                        leanDelta))
+                {
+                    changed =
+                        HooksWorldPoseApplyDeltaToBranch(
+                            *layout,
+                            bodyLeanRoot,
+                            leanDelta,
+                            bones) ||
+                        changed;
+                }
             }
 
             // Filter Source's neck/head idle channels before applying HMD
@@ -6755,18 +6649,6 @@
                     bones) ||
                 changed;
         }
-
-        Vector bodyForward{};
-        Vector bodyRight{};
-        Vector bodyUp{};
-        QAngle::AngleVectors(
-            QAngle(
-                0.0f,
-                appliedBodyYaw,
-                0.0f),
-            &bodyForward,
-            &bodyRight,
-            &bodyUp);
 
         // Solve both sides from the exact same post-body/head pose. Publishing
         // only the cached side mask makes the result independent of solve order.
@@ -7173,19 +7055,13 @@
                     headAnglesValid ? finalHeadAngles.y : 0.0f,
                     headAnglesValid ? finalHeadAngles.z : 0.0f);
                 Game::logMsg(
-                    "[VR][WorldPose] IK offsets raw=(%.1f %.1f %.1f) native=(%.1f %.1f %.1f) comp=(%.1f %.1f %.1f) applied=(%.1f %.1f %.1f) neck=%.2f->%.2f",
+                    "[VR][WorldPose] IK offsets rawLocal=(%.1f %.1f %.1f) leanM=(%.3f %.3f) leanMaxM=%.3f neck=%.2f->%.2f",
                     rawHmdLocalDelta.x,
                     rawHmdLocalDelta.y,
                     rawHmdLocalDelta.z,
-                    nativeHeadLocalDelta.x,
-                    nativeHeadLocalDelta.y,
-                    nativeHeadLocalDelta.z,
-                    nativeHeadCompensation.x,
-                    nativeHeadCompensation.y,
-                    nativeHeadCompensation.z,
-                    appliedHmdLocalDelta.x,
-                    appliedHmdLocalDelta.y,
-                    appliedHmdLocalDelta.z,
+                    bodyLeanLocalMeters.x,
+                    bodyLeanLocalMeters.y,
+                    vr->m_BodyLeanMaxOffsetMeters,
                     nativeNeckLength,
                     finalNeckLength);
                 Game::logMsg(

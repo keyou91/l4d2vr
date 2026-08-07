@@ -1572,10 +1572,15 @@ public:
 	float m_WorldModelVRPoseInterpolationMs = 50.0f;
 	float m_WorldModelVRPoseStaleAfterMs = 250.0f;
 	float m_WorldModelVRPoseBlendSeconds = 0.15f;
-	// Keep the rendered lower body at its previous yaw while the server-facing
-	// aim yaw remains inside this comfort cone. Shooting still uses the exact
-	// controller/HMD viewangles.
-	float m_WorldModelVRPoseBodyYawDeadzoneDeg = 35.0f;
+	// Local first- and third-person visual torso yaw comfort cone. Physical HMD
+	// yaw inside this angle moves only the head; beyond it the torso follows the
+	// excess. Thumbstick/mouse body turns remain immediate.
+	float m_WorldModelVRPoseBodyYawDeadzoneDeg = 60.0f;
+	// Shared planar HMD lean envelope. Inside this radius the visible body stays
+	// planted and the upper chest tilts toward the tracked head. When 1:1 room
+	// movement is enabled, only displacement beyond this radius becomes locomotion.
+	float m_BodyLeanMaxOffsetMeters = 0.20f;
+	float m_BodyLeanMaxAngleDeg = 15.0f;
 	// Visual-only catch-up speed after the aim yaw exits the comfort cone.
 	float m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond = 180.0f;
 	struct HiddenMaterialNameRule
@@ -1595,9 +1600,9 @@ public:
 	uint32_t m_PlayerModelMaterialsSnapshotPublishSeq = 0;
 	// Visible upper-arm length retained below each shoulder before the rest is collapsed.
 	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
-	// HMD-yaw-local meters: X=forward, Y=right, Z=up.
+	// Body-yaw-local meters: X=forward, Y=right, Z=up.
 	Vector m_FirstPersonBodyAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
-	// HMD-yaw-local pitch/yaw/roll applied around the anchored head position.
+	// Body-yaw-local pitch/yaw/roll applied around the anchored head position.
 	Vector m_FirstPersonBodyAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	// Camera position relative to the body anchor. Positive X places the camera farther forward.
 	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.08f, 0.0f, 0.0f };
@@ -1612,7 +1617,7 @@ public:
 	bool m_NativeViewmodelHandsOnly = false;
 	// true keeps the existing wrist clip; false draws the complete native viewmodel arms with analytic IK.
 	bool m_NativeViewmodelArmCroppingEnabled = true;
-	// Full-arm IK shoulder-root tuning in the HMD yaw frame. X=forward,
+	// Full-arm IK shoulder-root tuning in the body yaw frame. X=forward,
 	// Y=right, Z=up. Applied after reading the first-person body shoulders.
 	Vector m_NativeViewmodelArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	// Total extra distance between the two shoulder roots. Positive widens and
@@ -2471,6 +2476,8 @@ public:
 	float m_Roomscale1To1CrouchEnterMeters = 0.25f;
 	float m_Roomscale1To1CrouchExitMeters = 0.18f;
 
+	// Corrected HMD-space position of the physical body center used by 1:1
+	// movement. It advances only by HMD displacement beyond BodyLeanMaxOffsetMeters.
 	Vector m_Roomscale1To1PrevCorrectedAbs = {};
 	bool m_Roomscale1To1PrevValid = false;
 	Vector m_Roomscale1To1LastEngineEye = {};

@@ -77,6 +77,7 @@ void* __fastcall Hooks::dFirstPersonBodyRenderableGetModel(void* ecx, void* edx)
 	std::uint16_t modelIndex = 0;
 	int effects = kEffectNoDraw;
 	std::uint8_t lifeState = 2;
+	bool incapacitated = false;
 	__try
 	{
 		const std::uint8_t* const playerBytes =
@@ -85,13 +86,16 @@ void* __fastcall Hooks::dFirstPersonBodyRenderableGetModel(void* ecx, void* edx)
 			playerBytes + kModelIndexOffset);
 		effects = *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
 		lifeState = *(playerBytes + kLifeStateOffset);
+		incapacitated = *(playerBytes + 0x1EA9) != 0;
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
 		return originalModel;
 	}
 
-	if ((effects & kEffectNoDraw) != 0 || lifeState != 0 || modelIndex == 0)
+	const bool anchorLifeStateValid =
+		lifeState == 0 || (incapacitated && lifeState == 1);
+	if ((effects & kEffectNoDraw) != 0 || !anchorLifeStateValid || modelIndex == 0)
 		return originalModel;
 
 	void* indexedModel = nullptr;
@@ -1063,11 +1067,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			if (s1 == s2 && !(s2 & 1u))
 			{
 				firstPersonBodyQueuedPlayerSnapshotValid = true;
+				const bool firstPersonBodyQueuedLifeStateValid =
+					vp.tpLifeState == 0 ||
+					(vp.tpIncap && vp.tpLifeState == 1);
 				firstPersonBodyQueuedPlayerEligible =
 					vp.hasLocalPlayer &&
 					!vp.hasViewEntityOverride &&
 					!vp.tpDead &&
-					vp.tpLifeState == 0 &&
+					firstPersonBodyQueuedLifeStateValid &&
 					vp.tpObserverMode == 0 &&
 					!vp.tpObserver &&
 					!vp.tpWantsThirdPerson &&
@@ -2469,10 +2476,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	// Death first-person locks and in-eye observer modes deliberately make
 	// renderThirdPerson false, so life/observer/view-entity checks must remain
 	// independent. Fail closed on every detached or transitional camera.
+	const bool firstPersonBodyLifeStateValid =
+		tpStateDbg.lifeState == 0 ||
+		(tpStateDbg.incap && tpStateDbg.lifeState == 1);
 	const bool firstPersonBodyPlayerEligible =
 		(queueMode == 0)
 		? (localPlayerValid &&
-			tpStateDbg.lifeState == 0 &&
+			firstPersonBodyLifeStateValid &&
 			!tpStateDbg.dead &&
 			tpStateDbg.observerMode == 0 &&
 			!hasViewEntityOverride &&
@@ -3130,7 +3140,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					const CViewSetup& view,
 					const Vector& centerEyePosition,
 					int eyeIndex,
-					bool actualFirstPerson)
+					bool actualFirstPerson,
+					bool renderBody)
 				{
 					previousOverride = InterlockedExchange(
 						&g_FirstPersonBodyEyeSceneActive, 0);
@@ -3162,7 +3173,11 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					state->eyeIndex = eyeIndex;
 					state->sceneSerial = g_FirstPersonBodySceneSerial.fetch_add(
 						1, std::memory_order_acq_rel);
+					// Keep the scene/bone pipeline active while incapacitated. Only the
+					// final body color draw is disabled; shoulder anchors are still built
+					// and published for the separate first-person arm IK.
 					state->bodyActive = true;
+					state->renderBody = renderBody;
 					state->playerGeneration =
 						g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire);
 					C_BasePlayer* const localPlayer =
@@ -3219,7 +3234,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					eyeView,
 					sharedCenterOrigin,
 					eyeIndex,
-					firstPersonBodyActualFirstPerson);
+					firstPersonBodyActualFirstPerson,
+					!playerIncap);
 				callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
 			}
 

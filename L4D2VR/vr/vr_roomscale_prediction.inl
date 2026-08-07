@@ -1055,26 +1055,67 @@ void VR::ApplyRoomscale1To1Move(CUserCmd* cmd, float inputSampleTime, bool contr
         return;
     }
 
-    Vector deltaM = cur - m_Roomscale1To1PrevCorrectedAbs;
-    deltaM.z = 0.0f;
-    m_Roomscale1To1PrevCorrectedAbs = cur;
+    // Keep a persistent physical body-center reference instead of consuming
+    // every HMD sample as locomotion. The configured lean radius is retained
+    // around that center; only planar displacement beyond it becomes 1:1 move.
+    Vector offsetM = cur - m_Roomscale1To1PrevCorrectedAbs;
+    offsetM.z = 0.0f;
+    const float offsetLenM = std::sqrt(
+        offsetM.x * offsetM.x + offsetM.y * offsetM.y);
+    if (!std::isfinite(offsetLenM))
+    {
+        resetReference();
+        return;
+    }
 
-    const float lenM = std::sqrt((deltaM.x * deltaM.x) + (deltaM.y * deltaM.y));
-    const float noiseDeadzoneM = std::clamp(m_Roomscale1To1MinApplyMeters, 0.0f, 0.005f);
-    if (lenM <= noiseDeadzoneM)
+    const float leanRadiusM = std::clamp(
+        m_BodyLeanMaxOffsetMeters,
+        0.0f,
+        0.75f);
+    Vector retainedLeanM{};
+    if (leanRadiusM > 0.000001f && offsetLenM > 0.000001f)
+    {
+        retainedLeanM = offsetM;
+        if (offsetLenM > leanRadiusM)
+            retainedLeanM *= leanRadiusM / offsetLenM;
+    }
+
+    Vector deltaM = offsetM - retainedLeanM;
+    deltaM.z = 0.0f;
+    float lenM = std::sqrt(
+        deltaM.x * deltaM.x + deltaM.y * deltaM.y);
+    const float noiseDeadzoneM = std::clamp(
+        m_Roomscale1To1MinApplyMeters,
+        0.0f,
+        0.005f);
+    if (!std::isfinite(lenM) || lenM <= noiseDeadzoneM)
         return;
 
-    const float movementScale = std::clamp(m_Roomscale1To1MovementScale, 0.0f, 4.0f);
+    const float movementScale = std::clamp(
+        m_Roomscale1To1MovementScale,
+        0.0f,
+        4.0f);
+    if (movementScale <= 0.0001f)
+        return;
 
     const float maxStepM = std::max(0.0f, m_Roomscale1To1MaxStepMeters);
     if (maxStepM > 0.0f && lenM > maxStepM)
     {
-        const float s = maxStepM / lenM;
-        deltaM.x *= s;
-        deltaM.y *= s;
+        const float stepScale = maxStepM / lenM;
+        deltaM.x *= stepScale;
+        deltaM.y *= stepScale;
+        lenM = maxStepM;
     }
 
-    const Vector gameDeltaM(deltaM.x * movementScale, deltaM.y * movementScale, 0.0f);
+    // Move the physical body-center reference by exactly the accepted excess.
+    // This leaves the HMD residual at the lean radius instead of repeatedly
+    // triggering movement while the user remains leaned at the boundary.
+    m_Roomscale1To1PrevCorrectedAbs += deltaM;
+
+    const Vector gameDeltaM(
+        deltaM.x * movementScale,
+        deltaM.y * movementScale,
+        0.0f);
 
     // The physical HMD pose has already moved the camera by deltaM. When the configured
     // roomscale multiplier is not 1.0, immediately rebase the visual camera by the
@@ -1101,18 +1142,17 @@ void VR::ApplyRoomscale1To1Move(CUserCmd* cmd, float inputSampleTime, bool contr
 
         if (m_Roomscale1To1DebugLog && !ShouldThrottle(m_Roomscale1To1DebugLastEncode, m_Roomscale1To1DebugLogHz))
         {
-            Game::logMsg("[VR][1to1][servermove-queue] cmd=%d tick=%d scale=%.3f hmdM=(%.3f %.3f) gameM=(%.3f %.3f) world=(%.1f %.1f)",
+            Game::logMsg("[VR][1to1][servermove-queue] cmd=%d tick=%d scale=%.3f leanRadius=%.3f offsetM=(%.3f %.3f) excessM=(%.3f %.3f) gameM=(%.3f %.3f) world=(%.1f %.1f)",
                 cmd->command_number, cmd->tick_count,
                 movementScale,
+                leanRadiusM,
+                offsetM.x, offsetM.y,
                 deltaM.x, deltaM.y,
                 gameDeltaM.x, gameDeltaM.y,
                 serverWorldDelta.x, serverWorldDelta.y);
         }
         return;
     }
-
-    if (movementScale <= 0.0001f)
-        return;
 
     float dt = inputSampleTime;
     if (dt <= 0.0001f)

@@ -76,7 +76,12 @@ namespace
         Vector centerEyePosition{ 0.0f, 0.0f, 0.0f };
         float forwardMovementFraction = 0.0f;
         bool crouched = false;
+        // bodyActive keeps the first-person body skeleton/anchor pipeline alive.
+        // renderBody only controls whether the body itself reaches the color target.
+        // Incapacitation must keep bodyActive true so viewmodel arm IK can continue
+        // consuming the body's shoulder anchors while the torso is hidden.
         bool bodyActive = false;
+        bool renderBody = true;
         std::uint64_t playerGeneration = 0;
         std::uint64_t sceneSerial = 0;
         int eyeIndex = 0;
@@ -169,6 +174,7 @@ namespace
     {
         int effects = 0x20;
         std::uint8_t lifeState = 2;
+        bool incapacitated = false;
         std::uint16_t modelIndex = 0;
         int team = 1;
         int observerMode = 0;
@@ -199,6 +205,7 @@ namespace
             constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
             constexpr std::ptrdiff_t kTeamOffset = 0xE4;
             constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
+            constexpr std::ptrdiff_t kIncapacitatedOffset = 0x1EA9;
             constexpr std::ptrdiff_t kViewEntityOffset = 0x142C;
             constexpr std::ptrdiff_t kObserverModeOffset = 0x1450;
             constexpr std::ptrdiff_t kObserverTargetOffset = 0x1454;
@@ -211,6 +218,8 @@ namespace
             outState->team =
                 *reinterpret_cast<const int*>(playerBytes + kTeamOffset);
             outState->lifeState = *(playerBytes + kLifeStateOffset);
+            outState->incapacitated =
+                *(playerBytes + kIncapacitatedOffset) != 0;
             outState->viewEntity =
                 *reinterpret_cast<const int*>(playerBytes + kViewEntityOffset);
             outState->observerMode =
@@ -557,14 +566,17 @@ namespace
         }
 
         constexpr int kEffectNoDraw = 0x20;
-        const bool playerDrawableAndAlive =
+        const bool anchorLifeStateValid =
+            localState.lifeState == 0 ||
+            (localState.incapacitated && localState.lifeState == 1);
+        const bool playerDrawableForBodyAnchor =
             (localState.effects & kEffectNoDraw) == 0 &&
-            localState.lifeState == 0 &&
+            anchorLifeStateValid &&
             localState.modelIndex != 0 &&
             localState.team > 1 &&
             localState.observerMode == 0 &&
             !HooksFirstPersonBodyHandleValid(localState.viewEntity);
-        if (!playerDrawableAndAlive)
+        if (!playerDrawableForBodyAnchor)
         {
             deactivate(true);
             return;

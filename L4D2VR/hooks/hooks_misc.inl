@@ -15249,6 +15249,81 @@ namespace
         return outLeftValid || outRightValid;
     }
 
+    inline float HooksTrackedBodyWrapYaw(float yaw)
+    {
+        if (!std::isfinite(yaw))
+            return 0.0f;
+        yaw -= 360.0f * std::floor((yaw + 180.0f) / 360.0f);
+        return yaw;
+    }
+
+    // Resolve the local player's rendered torso yaw independently from HMD yaw.
+    // Thumbstick/mouse turning rotates the body immediately through RotationOffset,
+    // while physical head yaw gets a comfort cone. Inside the cone the torso stays
+    // fixed; beyond it the torso follows only enough to keep the head at the edge.
+    // This is shared by first-person body anchoring and local third-person IK.
+    inline float HooksTrackedBodyResolveVisualYaw(
+        const VR* vr,
+        float headWorldYaw)
+    {
+        headWorldYaw = HooksTrackedBodyWrapYaw(headWorldYaw);
+        if (!vr)
+            return headWorldYaw;
+
+        float turnYaw =
+            vr->m_RenderRotationOffset.load(std::memory_order_acquire);
+        if (!std::isfinite(turnYaw))
+            turnYaw = vr->m_RotationOffset;
+        if (!std::isfinite(turnYaw))
+            return headWorldYaw;
+        turnYaw = HooksTrackedBodyWrapYaw(turnYaw);
+
+        const float deadzone = std::clamp(
+            vr->m_WorldModelVRPoseBodyYawDeadzoneDeg,
+            0.0f,
+            90.0f);
+        const float headRelativeYaw = HooksTrackedBodyWrapYaw(
+            headWorldYaw - turnYaw);
+        if (std::fabs(headRelativeYaw) <= deadzone)
+            return turnYaw;
+
+        return HooksTrackedBodyWrapYaw(
+            headWorldYaw - std::copysign(deadzone, headRelativeYaw));
+    }
+
+    inline Vector HooksTrackedBodyClampPlanarLeanMeters(
+        const VR* vr,
+        const Vector& localOffsetMeters,
+        float* outFraction = nullptr)
+    {
+        if (outFraction)
+            *outFraction = 0.0f;
+        if (!vr ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(localOffsetMeters))
+        {
+            return Vector{};
+        }
+
+        Vector planar(localOffsetMeters.x, localOffsetMeters.y, 0.0f);
+        const float length = std::sqrt(
+            planar.x * planar.x + planar.y * planar.y);
+        const float maxOffset = std::clamp(
+            vr->m_BodyLeanMaxOffsetMeters,
+            0.0f,
+            0.75f);
+        if (!std::isfinite(length) || length <= 0.000001f ||
+            maxOffset <= 0.000001f)
+        {
+            return Vector{};
+        }
+
+        if (length > maxOffset)
+            planar *= maxOffset / length;
+        if (outFraction)
+            *outFraction = std::clamp(length / maxOffset, 0.0f, 1.0f);
+        return planar;
+    }
+
     // Shared analytic two-bone IK for native first-person viewmodel arms and
     // survivor world-model arms. The caller supplies the final shoulder and
     // owns branch isolation, temporal continuity and result publication.
@@ -15619,6 +15694,61 @@ namespace
         return HooksNativeViewmodelHandsOnlyMatrixFinite(outDelta);
     }
 
+    inline bool HooksTrackedBodyBuildLeanDelta(
+        const VR* vr,
+        const Vector& pivot,
+        const Vector& bodyForward,
+        const Vector& bodyRight,
+        const Vector& bodyUp,
+        const Vector& localOffsetMeters,
+        float weight,
+        vr_vm_stabilize::Mat3x4& outDelta)
+    {
+        outDelta = vr_vm_stabilize::Identity();
+        if (!vr ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(pivot) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyForward) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyRight) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyUp))
+        {
+            return false;
+        }
+
+        float leanFraction = 0.0f;
+        const Vector clampedLocal = HooksTrackedBodyClampPlanarLeanMeters(
+            vr,
+            localOffsetMeters,
+            &leanFraction);
+        const float maxAngleDeg = std::clamp(
+            vr->m_BodyLeanMaxAngleDeg,
+            0.0f,
+            35.0f);
+        weight = std::clamp(weight, 0.0f, 1.0f);
+        if (leanFraction <= 0.000001f ||
+            maxAngleDeg <= 0.000001f ||
+            weight <= 0.000001f)
+        {
+            return false;
+        }
+
+        const Vector leanDirectionWorld =
+            bodyForward * clampedLocal.x +
+            bodyRight * clampedLocal.y;
+        Vector leanAxis = CrossProduct(bodyUp, leanDirectionWorld);
+        if (!HooksNativeViewmodelArmIkNormalize(leanAxis, leanAxis))
+            return false;
+
+        constexpr float kDegToRad =
+            3.14159265358979323846f / 180.0f;
+        const float radians =
+            maxAngleDeg * kDegToRad * leanFraction * weight;
+        return HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+            pivot,
+            leanAxis,
+            radians,
+            outDelta);
+    }
+
     inline bool HooksNativeViewmodelArmIkBuildForearmTwistDelta(
         const Vector& elbow,
         const Vector& forearmDirection,
@@ -15878,34 +16008,52 @@ namespace
         Vector& outBodyRight,
         Vector& outBodyUp)
     {
-        Vector viewForward{};
-        Vector viewRight{};
-        Vector viewUp{};
+        Vector ignoredViewForward{};
+        Vector ignoredViewRight{};
+        Vector ignoredViewUp{};
         if (!HooksNativeViewmodelHandsOnlyResolveViewFrame(
             vr,
             outViewOrigin,
-            viewForward,
-            viewRight,
-            viewUp))
+            ignoredViewForward,
+            ignoredViewRight,
+            ignoredViewUp) ||
+            !vr)
         {
             return false;
         }
 
-        // Shoulder roots are positioned in the current horizontal HMD frame.
-        // This keeps the left/right shoulder line centred on the headset even
-        // when the player starts the map facing a non-zero world yaw or turns
-        // physically. Only the HMD position/yaw is used here; pitch and roll do
-        // not tilt the torso.
+        // ViewOrigin still supplies the tracked head position for the no-body
+        // fallback, but horizontal arm orientation must never consume HMD yaw.
+        // Use only the artificial body-turn frame here. When the first-person
+        // survivor body is active, its published shoulder line replaces this
+        // fallback before the analytic solve.
+        float bodyYawDeg =
+            vr->m_RenderRotationOffset.load(std::memory_order_acquire);
+        if (!std::isfinite(bodyYawDeg))
+            bodyYawDeg = vr->m_RotationOffset;
+        if (!std::isfinite(bodyYawDeg))
+            return false;
+        bodyYawDeg = HooksTrackedBodyWrapYaw(bodyYawDeg);
+
+        Vector turnForward{};
+        Vector turnRight{};
+        Vector turnUp{};
+        QAngle::AngleVectors(
+            QAngle(0.0f, bodyYawDeg, 0.0f),
+            &turnForward,
+            &turnRight,
+            &turnUp);
+
         outBodyUp = Vector(0.0f, 0.0f, 1.0f);
         if (!HooksNativeViewmodelArmIkNormalize(
-            viewForward - outBodyUp * DotProduct(viewForward, outBodyUp),
+            turnForward - outBodyUp * DotProduct(turnForward, outBodyUp),
             outBodyForward))
         {
             return false;
         }
 
         Vector horizontalRight =
-            viewRight - outBodyUp * DotProduct(viewRight, outBodyUp);
+            turnRight - outBodyUp * DotProduct(turnRight, outBodyUp);
         horizontalRight -=
             outBodyForward * DotProduct(horizontalRight, outBodyForward);
         if (!HooksNativeViewmodelArmIkNormalize(horizontalRight, outBodyRight))
@@ -15927,9 +16075,8 @@ namespace
             return false;
 
         // Continuity and the animation-free bind branch stay in the artificial
-        // snap/smooth-turn frame. Keeping this separate from the HMD shoulder
-        // frame prevents physical head yaw from being accumulated as upper-arm
-        // axial twist, while shoulder positions still remain HMD-aligned.
+        // snap/smooth-turn frame. Physical HMD yaw is intentionally absent from
+        // this frame so turning only the head cannot accumulate upper-arm twist.
         float turnYawDeg =
             vr->m_RenderRotationOffset.load(std::memory_order_acquire);
         if (!std::isfinite(turnYawDeg))
@@ -16802,10 +16949,10 @@ namespace
             return false;
         }
 
-        // Rotate the bind branch by the same turn-only body yaw used by the
-        // controller world poses. This removes global body/view yaw from the
-        // forearm-roll measurement; only the controller's rotation relative to
-        // the arm can be shared into the upper arm.
+        // Rotate the bind branch by the selected arm-root yaw. With the
+        // first-person body active this is the anchored torso yaw; otherwise it
+        // is the independent turn frame. This keeps global view yaw out of the
+        // forearm-roll measurement.
         vr_vm_stabilize::Mat3x4 upperWorld{};
         vr_vm_stabilize::Mul(
             bodyYawDelta,
@@ -17524,15 +17671,78 @@ namespace
         bool leftShoulderValid = true;
         bool rightShoulderValid = true;
 
-        // The first-person viewmodel arm chain is independent of the rendered
-        // survivor body's animated shoulder bones. Both roots are rebuilt from
-        // the current horizontal HMD frame, then each arm is solved only from
-        // that HMD-relative shoulder to its tracked hand target.
+        // When the first-person survivor body is being rendered, use its actual
+        // anchored upper-arm roots as the IK shoulders. This keeps the separate
+        // native viewmodel arm skeleton centred on the torso instead of rebuilding
+        // shoulders around the HMD. The shoulder line also defines the body yaw
+        // basis used by the analytic solve, so head-only yaw cannot rotate the arms
+        // away from the chest.
+        const HooksFirstPersonBodyEyeSceneState* firstPersonBodyState = nullptr;
+        Vector publishedLeftShoulder{};
+        Vector publishedRightShoulder{};
+        bool publishedLeftValid = false;
+        bool publishedRightValid = false;
+        const bool havePublishedBodyShoulders =
+            HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
+                vr,
+                firstPersonBodyState) &&
+            HooksFirstPersonBodyReadViewmodelShoulders(
+                vr,
+                firstPersonBodyState,
+                publishedLeftShoulder,
+                publishedLeftValid,
+                publishedRightShoulder,
+                publishedRightValid);
+        if (havePublishedBodyShoulders)
+        {
+            if (publishedLeftValid)
+                leftShoulder = publishedLeftShoulder;
+            if (publishedRightValid)
+                rightShoulder = publishedRightShoulder;
 
-        // User tuning is applied after the HMD-relative shoulders have been
-        // selected. The shared offset
-        // uses body-local X=forward, Y=right, Z=up. Spacing is a total delta,
-        // split equally between the two sides along the actual shoulder line.
+            if (publishedLeftValid && publishedRightValid)
+            {
+                Vector measuredBodyRight = rightShoulder - leftShoulder;
+                // Full-arm IK keeps a yaw-only torso basis. Shoulder pitch/roll
+                // from optional body-anchor tuning must not make the analytic
+                // forward/right frame non-orthogonal to world up.
+                measuredBodyRight.z = 0.0f;
+                if (HooksNativeViewmodelArmIkNormalize(
+                        measuredBodyRight,
+                        measuredBodyRight))
+                {
+                    if (DotProduct(measuredBodyRight, bodyRight) < 0.0f)
+                        measuredBodyRight *= -1.0f;
+
+                    Vector measuredBodyForward = CrossProduct(
+                        bodyUp,
+                        measuredBodyRight);
+                    if (HooksNativeViewmodelArmIkNormalize(
+                            measuredBodyForward,
+                            measuredBodyForward))
+                    {
+                        bodyRight = measuredBodyRight;
+                        bodyForward = measuredBodyForward;
+                    }
+                }
+            }
+        }
+
+        Vector armFrameForward = turnForward;
+        Vector armFrameRight = turnRight;
+        Vector armFrameUp = turnUp;
+        if (havePublishedBodyShoulders &&
+            publishedLeftValid && publishedRightValid)
+        {
+            armFrameForward = bodyForward;
+            armFrameRight = bodyRight;
+            armFrameUp = bodyUp;
+        }
+
+        // User tuning is applied after the body-aligned shoulders have been
+        // selected. The shared offset uses body-local X=forward, Y=right, Z=up.
+        // Spacing is a total delta, split equally between both sides along the
+        // actual shoulder line.
         const Vector configuredAnchorOffset =
             vr->m_NativeViewmodelArmAnchorOffsetMeters;
         const Vector anchorOffsetWorld =
@@ -17603,9 +17813,9 @@ namespace
             targetTurnLocal[slot] =
                 HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                     targetRelative,
-                    turnForward,
-                    turnRight,
-                    turnUp);
+                    armFrameForward,
+                    armFrameRight,
+                    armFrameUp);
             targetTurnLocalValid[slot] =
                 HooksNativeViewmodelHandsOnlyVectorFinite(
                     targetTurnLocal[slot]);
@@ -17677,16 +17887,16 @@ namespace
                 previousValid[slot] = s_continuity.frameValid[slot];
                 if (previousValid[slot])
                 {
-                    // Continuity is stored in the artificial turn frame, not
-                    // the live HMD shoulder frame. Physical head yaw can move the
-                    // shoulder roots around the HMD without directly winding the
-                    // previous elbow direction or upper-arm twist.
+                    // Continuity uses the same frame as the shoulder roots. With
+                    // the first-person body active this is the anchored torso frame;
+                    // otherwise it remains the artificial turn frame. Head-only yaw
+                    // therefore cannot wind elbow direction or upper-arm twist.
                     previousWorld[slot] =
                         HooksNativeViewmodelArmIkBodyLocalDirectionToWorld(
                             s_continuity.frameTurnLocal[slot],
-                            turnForward,
-                            turnRight,
-                            turnUp);
+                            armFrameForward,
+                            armFrameRight,
+                            armFrameUp);
                     previousValid[slot] =
                         HooksNativeViewmodelArmIkNormalize(
                             previousWorld[slot],
@@ -17797,7 +18007,7 @@ namespace
                     chain,
                     solveMask,
                     shoulder,
-                    turnForward,
+                    armFrameForward,
                     candidate))
                 {
                     return false;
@@ -17944,9 +18154,9 @@ namespace
                         Vector turnLocal =
                             HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                                 world,
-                                turnForward,
-                                turnRight,
-                                turnUp);
+                                armFrameForward,
+                                armFrameRight,
+                                armFrameUp);
                         if (HooksNativeViewmodelArmIkNormalize(
                             turnLocal,
                             turnLocal))
@@ -19534,6 +19744,7 @@ namespace
         int numBones = 0;
         int headBone = -1;
         int neckBone = -1;
+        int upperChestBone = -1;
         int leftClavicleBone = -1;
         int rightClavicleBone = -1;
         int leftUpperArmBone = -1;
@@ -19607,6 +19818,44 @@ namespace
                 layout.neckBone = parent;
             else
                 layout.neckBone = layout.headBone;
+        }
+
+        HooksFirstPersonBodyFindBone(
+            boneNames,
+            {
+                "bip01_spine4", "spine4",
+                "bip01_spine3", "spine3",
+                "bip01_spine2", "spine2",
+            },
+            layout.upperChestBone);
+        if (layout.neckBone >= 0 &&
+            (layout.upperChestBone < 0 ||
+             !HooksNativeViewmodelHandsOnlyIsAncestor(
+                layout.boneParents,
+                layout.neckBone,
+                layout.upperChestBone,
+                layout.numBones)))
+        {
+            int current =
+                layout.boneParents[static_cast<size_t>(layout.neckBone)];
+            layout.upperChestBone = -1;
+            for (int guard = 0;
+                 guard < layout.numBones &&
+                 current >= 0 &&
+                 current < layout.numBones;
+                 ++guard)
+            {
+                const std::string lowerName =
+                    vr_vm_stabilize::ToLowerAscii(
+                        boneNames[static_cast<size_t>(current)]);
+                if (lowerName.find("spine") != std::string::npos ||
+                    lowerName.find("chest") != std::string::npos)
+                {
+                    layout.upperChestBone = current;
+                    break;
+                }
+                current = layout.boneParents[static_cast<size_t>(current)];
+            }
         }
 
         const std::vector<const char*> clavicleNeedles = {
@@ -19734,10 +19983,11 @@ namespace
         if (layout.valid)
         {
             Game::logMsg(
-                "[VR][FirstPersonBody] bone layout ready bones=%d head=%d neck=%d leftClavicle=%d rightClavicle=%d leftUpperArm=%d rightUpperArm=%d leftForearm=%d rightForearm=%d hiddenHead=%d hiddenLeftForearm=%d hiddenRightForearm=%d frozenLeftShoulder=%d frozenRightShoulder=%d",
+                "[VR][FirstPersonBody] bone layout ready bones=%d head=%d neck=%d upperChest=%d leftClavicle=%d rightClavicle=%d leftUpperArm=%d rightUpperArm=%d leftForearm=%d rightForearm=%d hiddenHead=%d hiddenLeftForearm=%d hiddenRightForearm=%d frozenLeftShoulder=%d frozenRightShoulder=%d",
                 layout.numBones,
                 layout.headBone,
                 layout.neckBone,
+                layout.upperChestBone,
                 layout.leftClavicleBone,
                 layout.rightClavicleBone,
                 layout.leftUpperArmBone,
@@ -19969,7 +20219,12 @@ namespace
             return false;
         }
 
-        QAngle anchorYaw(0.0f, bodyState->view.angles.y, 0.0f);
+        const float visualBodyYaw = HooksTrackedBodyResolveVisualYaw(
+            vr,
+            bodyState->view.angles.y);
+        if (!std::isfinite(visualBodyYaw))
+            return false;
+        QAngle anchorYaw(0.0f, visualBodyYaw, 0.0f);
         Vector forward{};
         Vector right{};
         Vector up{};
@@ -20003,7 +20258,28 @@ namespace
             ? vr->m_FirstPersonBodyCrouchCameraCompensationMeters
             : 0.0f;
 
-        Vector desiredHeadPosition = bodyState->centerEyePosition;
+        // Reserve the clamped physical HMD planar offset for upper-body lean.
+        // Subtracting it from the tracked eye center keeps the body anchor fixed
+        // while the user moves inside the lean envelope. Beyond the envelope,
+        // only the excess displacement translates the visible first-person body.
+        const Vector hmdPlanarWorld(
+            vr->m_SetupOriginToHMD.x,
+            vr->m_SetupOriginToHMD.y,
+            0.0f);
+        const Vector rawBodyLeanLocalMeters(
+            DotProduct(hmdPlanarWorld, forward) / unitsPerMeter,
+            DotProduct(hmdPlanarWorld, right) / unitsPerMeter,
+            0.0f);
+        const Vector bodyLeanLocalMeters =
+            HooksTrackedBodyClampPlanarLeanMeters(
+                vr,
+                rawBodyLeanLocalMeters);
+        const Vector retainedLeanWorld =
+            forward * (bodyLeanLocalMeters.x * unitsPerMeter) +
+            right * (bodyLeanLocalMeters.y * unitsPerMeter);
+
+        Vector desiredHeadPosition =
+            bodyState->centerEyePosition - retainedLeanWorld;
         // Camera offset is expressed relative to the body. Positive X means the
         // camera sits farther forward, so the static model anchor moves backward.
         desiredHeadPosition -= forward * (cameraOffsetMeters.x * unitsPerMeter);
@@ -20040,10 +20316,10 @@ namespace
 
         // The native first-person body draw bypasses hooks_world_pose.inl, so its
         // source bones still face the player's delayed render yaw. Rotate the whole
-        // body from that source yaw to the current VR eye yaw around the anchored
-        // head. This is the first-person equivalent of the instant local visual-body
-        // yaw already used by third-person world-model IK. The configured
-        // pitch/yaw/roll remains an additional HMD-yaw-local adjustment.
+        // body to the shared tracked-body yaw around the anchored head. Physical HMD
+        // yaw stays independent inside the configured comfort cone; thumbstick/mouse
+        // turning still rotates the torso immediately. The configured pitch/yaw/roll
+        // remains an additional body-local adjustment.
         const QAngle sourceAnchorAngles(
             0.0f,
             modelInfo.angles.y,
@@ -20075,6 +20351,33 @@ namespace
             anchorRotationDelta,
             anchoredBones,
             s_layout.numBones);
+
+        int bodyLeanRoot = s_layout.upperChestBone;
+        if (bodyLeanRoot < 0 || bodyLeanRoot >= s_layout.numBones)
+            bodyLeanRoot = s_layout.neckBone;
+        if (bodyLeanRoot >= 0 && bodyLeanRoot < s_layout.numBones)
+        {
+            const Vector leanPivot =
+                vr_vm_stabilize::GetOrigin(anchoredBones[bodyLeanRoot]);
+            vr_vm_stabilize::Mat3x4 leanDelta{};
+            if (HooksTrackedBodyBuildLeanDelta(
+                    vr,
+                    leanPivot,
+                    forward,
+                    right,
+                    up,
+                    bodyLeanLocalMeters,
+                    1.0f,
+                    leanDelta))
+            {
+                HooksNativeViewmodelArmIkApplyDeltaToBranch(
+                    s_layout.boneParents,
+                    s_layout.numBones,
+                    bodyLeanRoot,
+                    leanDelta,
+                    anchoredBones);
+            }
+        }
 
         auto collapseOriginForRoot = [&](int rootBone) -> Vector
             {
@@ -21271,6 +21574,23 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
                         info.entity_index,
                         state,
                         pCustomBoneToWorld);
+                }
+                return;
+            }
+
+            // Anchored body bones are intentionally built even when the torso is
+            // hidden (for example while incapacitated). The build above publishes
+            // the left/right body shoulder anchors consumed by full-arm viewmodel
+            // IK. Hiding the body must therefore happen only after that publication.
+            if (!firstPersonBodyState->renderBody)
+            {
+                static std::atomic<bool> s_loggedBodyHiddenButAnchorsAlive{ false };
+                if (!s_loggedBodyHiddenButAnchorsAlive.exchange(
+                    true, std::memory_order_acq_rel))
+                {
+                    Game::logMsg(
+                        "[VR][FirstPersonBody] body color hidden while shoulder-anchor skeleton remains active entity=%d",
+                        info.entity_index);
                 }
                 return;
             }

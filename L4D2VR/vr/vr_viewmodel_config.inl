@@ -1353,6 +1353,18 @@ void VR::ParseConfigFile()
             m_WorldModelVRPoseBodyYawDeadzoneDeg),
         0.0f,
         90.0f);
+    m_BodyLeanMaxOffsetMeters = std::clamp(
+        getFloat(
+            "BodyLeanMaxOffsetMeters",
+            m_BodyLeanMaxOffsetMeters),
+        0.0f,
+        0.75f);
+    m_BodyLeanMaxAngleDeg = std::clamp(
+        getFloat(
+            "BodyLeanMaxAngleDeg",
+            m_BodyLeanMaxAngleDeg),
+        0.0f,
+        35.0f);
     m_WorldModelVRPoseBodyYawTurnSpeedDegPerSecond = std::clamp(
         getFloat(
             "WorldModelVRPoseBodyYawTurnSpeedDegPerSecond",
