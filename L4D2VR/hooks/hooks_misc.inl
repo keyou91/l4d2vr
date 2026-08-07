@@ -16024,8 +16024,11 @@ namespace
         vr_vm_stabilize::Mat3x4* bones,
         Vector& outBendDirection,
         const float* previousTwistRadians = nullptr,
-        float* outTwistRadians = nullptr)
+        float* outTwistRadians = nullptr,
+        bool stabilizeNonStretchingArm = false)
     {
+        const bool stabilizeArmState =
+            stretchUpperArmToTarget || stabilizeNonStretchingArm;
         if (outTwistRadians)
             *outTwistRadians = 0.0f;
         if (!bones || chain.side == 0 || chain.upperArm < 0 ||
@@ -16133,7 +16136,7 @@ namespace
         // the anatomical pole whenever that pole is well-defined.
         Vector sanitizedPreviousBend{};
         const Vector* previousBendForSolve = previousBendDirection;
-        if (stretchUpperArmToTarget && previousBendDirection)
+        if (stabilizeArmState && previousBendDirection)
         {
             Vector targetDirection{};
             Vector previousProjected{};
@@ -16219,11 +16222,13 @@ namespace
         Vector solvedHandBeforeForearm =
             vr_vm_stabilize::GetOrigin(bones[chain.hand]);
 
-        if (!stretchUpperArmToTarget)
+        if (!stabilizeArmState)
         {
-            // Keep the existing world-model correction. First-person starts from
-            // a cached bind branch; applying this correction near a straight arm
-            // amplified tiny plane-normal errors into visible upper-arm vibration.
+            // Legacy animation-seeded arms may still need a secondary plane
+            // correction. Stable first-person and third-person rest-chain solves
+            // deliberately skip it: near full extension both plane normals become
+            // ill-conditioned, so tracker noise can flip their sign every frame and
+            // make the upper arm oscillate violently.
             Vector currentPlaneNormal = CrossProduct(
                 solvedElbow - shoulder,
                 solvedHandBeforeForearm - solvedElbow);
@@ -16344,24 +16349,35 @@ namespace
         // accumulator could gain an extra 2*pi turn when a stock fire/melee
         // animation crossed the +/-pi boundary. Once wound up, a returned hand
         // pose was mapped to the same extra revolution and the upper arm stayed
-        // twisted until first-person IK was disabled.
+        // twisted until the arm continuity state was reset.
         const float principalTwistBounded =
             HooksNativeViewmodelArmIkWrapRadians(principalTwistRadians);
         if (!std::isfinite(principalTwistBounded))
             return false;
 
         float stabilizedUpperTwistRadians = principalTwistBounded;
-        if (stretchUpperArmToTarget && previousTwistRadians &&
+        if (stabilizeArmState && previousTwistRadians &&
             std::isfinite(*previousTwistRadians))
         {
             // The palm and forearm still use the exact current hand rotation.
             // Only the cosmetic upper-arm share is filtered, and its state is
             // always wrapped back to [-pi, pi]. A very large animation jump is
             // re-seeded immediately instead of being dragged through stale twist.
-            constexpr float kUpperTwistDeadbandRadians = 0.0035f;
-            constexpr float kUpperTwistMaximumStepRadians = 0.35f;
-            constexpr float kUpperTwistFollow = 0.5f;
-            constexpr float kUpperTwistReseedRadians = 2.09439510239f;
+            // Third-person world models still inherit small torso/root motion
+            // and are viewed at a distance, so visible upper-arm roll must be
+            // substantially calmer than the exact first-person wrist solve.
+            // The forearm/palm continue to use the current controller rotation;
+            // only the cosmetic upper-arm share uses this stronger low-pass.
+            const float kUpperTwistDeadbandRadians =
+                stabilizeNonStretchingArm ? 0.0100f : 0.0035f;
+            const float kUpperTwistMaximumStepRadians =
+                stabilizeNonStretchingArm ? 0.1200f : 0.3500f;
+            const float kUpperTwistFollow =
+                stabilizeNonStretchingArm ? 0.18f : 0.50f;
+            const float kUpperTwistReseedRadians =
+                stabilizeNonStretchingArm
+                    ? 2.61799387799f
+                    : 2.09439510239f;
             const float previousBounded =
                 HooksNativeViewmodelArmIkWrapRadians(*previousTwistRadians);
             float delta = HooksNativeViewmodelArmIkWrapRadians(
@@ -16391,7 +16407,7 @@ namespace
         if (outTwistRadians)
             *outTwistRadians = stabilizedUpperTwistRadians;
 
-        if (stretchUpperArmToTarget &&
+        if (stabilizeArmState &&
             std::fabs(stabilizedUpperTwistRadians) > 0.000001f)
         {
             // There are no dedicated twist bones. Keep the full roll on the
@@ -16401,7 +16417,8 @@ namespace
             // twist. Fade the share near a straight elbow, where the bend plane
             // is underdetermined and any upper-arm roll is visually unstable.
             constexpr float kPi = 3.14159265358979323846f;
-            constexpr float kFirstPersonUpperArmTwistShare = 0.5f;
+            const float kUpperArmTwistShare =
+                stabilizeNonStretchingArm ? 0.40f : 0.50f;
             constexpr float kMaximumUpperArmTwist = kPi * 0.5f;
 
             Vector normalizedUpper{};
@@ -16419,16 +16436,27 @@ namespace
                     normalizedLower).Length();
                 if (std::isfinite(bendSine))
                 {
+                    const float bendStart =
+                        stabilizeNonStretchingArm ? 0.08f : 0.03f;
+                    const float bendEnd =
+                        stabilizeNonStretchingArm ? 0.35f : 0.25f;
                     elbowBendWeight = std::clamp(
-                        (bendSine - 0.03f) / 0.22f,
+                        (bendSine - bendStart) /
+                            (bendEnd - bendStart),
                         0.0f,
                         1.0f);
+                    // Smoothstep prevents tiny tracking noise around the
+                    // straight-arm threshold from switching upper-arm roll on
+                    // and off from one frame to the next.
+                    elbowBendWeight =
+                        elbowBendWeight * elbowBendWeight *
+                        (3.0f - 2.0f * elbowBendWeight);
                 }
             }
 
             const float upperArmTwistRadians = std::clamp(
                 stabilizedUpperTwistRadians *
-                kFirstPersonUpperArmTwistShare * elbowBendWeight,
+                kUpperArmTwistShare * elbowBendWeight,
                 -kMaximumUpperArmTwist,
                 kMaximumUpperArmTwist);
 
@@ -17755,7 +17783,8 @@ namespace
                 // rest locals before solving. This removes every current Source
                 // shoulder/upper-arm/forearm animation and any viewmodel-root roll.
                 // HMD/controller tracking supplies positions; analytic IK supplies
-                // the arm rotations. Third-person keeps its existing path.
+                // the arm rotations. Third-person rebuilds its own world-model
+                // rest chain in hooks_world_pose.inl.
                 if (!HooksNativeViewmodelArmIkResetFirstPersonBranchToRestPose(
                     vr,
                     drawState,
