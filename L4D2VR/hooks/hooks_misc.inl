@@ -17658,6 +17658,47 @@ namespace
             return false;
         }
 
+        // The no-body fallback stays on the artificial turn frame. When the
+        // first-person survivor body is active, replace that frame with the
+        // deadzone-resolved torso yaw. Raw physical HMD yaw is never consumed
+        // directly by the arm IK.
+        Vector armFrameForward = turnForward;
+        Vector armFrameRight = turnRight;
+        Vector armFrameUp = turnUp;
+        const HooksFirstPersonBodyEyeSceneState* firstPersonBodyState = nullptr;
+        const bool haveFirstPersonBodyFrame =
+            HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
+                vr,
+                firstPersonBodyState);
+        if (haveFirstPersonBodyFrame && firstPersonBodyState)
+        {
+            const float visualBodyYaw = HooksTrackedBodyResolveVisualYaw(
+                vr,
+                firstPersonBodyState->view.angles.y);
+            if (std::isfinite(visualBodyYaw))
+            {
+                Vector torsoForward{};
+                Vector torsoRight{};
+                Vector torsoUp{};
+                QAngle::AngleVectors(
+                    QAngle(0.0f, visualBodyYaw, 0.0f),
+                    &torsoForward,
+                    &torsoRight,
+                    &torsoUp);
+                if (HooksNativeViewmodelHandsOnlyVectorFinite(torsoForward) &&
+                    HooksNativeViewmodelHandsOnlyVectorFinite(torsoRight) &&
+                    HooksNativeViewmodelHandsOnlyVectorFinite(torsoUp))
+                {
+                    bodyForward = torsoForward;
+                    bodyRight = torsoRight;
+                    bodyUp = torsoUp;
+                    armFrameForward = torsoForward;
+                    armFrameRight = torsoRight;
+                    armFrameUp = torsoUp;
+                }
+            }
+        }
+
         const float sourceUnitsPerMeter =
             std::isfinite(vr->m_VRScale) && vr->m_VRScale > 1.0f
             ? vr->m_VRScale
@@ -17671,21 +17712,17 @@ namespace
         bool leftShoulderValid = true;
         bool rightShoulderValid = true;
 
-        // When the first-person survivor body is being rendered, use its actual
-        // anchored upper-arm roots as the IK shoulders. This keeps the separate
-        // native viewmodel arm skeleton centred on the torso instead of rebuilding
-        // shoulders around the HMD. The shoulder line also defines the body yaw
-        // basis used by the analytic solve, so head-only yaw cannot rotate the arms
-        // away from the chest.
-        const HooksFirstPersonBodyEyeSceneState* firstPersonBodyState = nullptr;
+        // When the first-person survivor body is being rendered, use the
+        // animation-free rest-pose shoulder positions published by its body-anchor
+        // pipeline. They keep the separate native viewmodel arm skeleton centred
+        // on the torso without importing survivor animation. Their orientation
+        // follows only the deadzone-resolved torso frame.
         Vector publishedLeftShoulder{};
         Vector publishedRightShoulder{};
         bool publishedLeftValid = false;
         bool publishedRightValid = false;
         const bool havePublishedBodyShoulders =
-            HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
-                vr,
-                firstPersonBodyState) &&
+            haveFirstPersonBodyFrame &&
             HooksFirstPersonBodyReadViewmodelShoulders(
                 vr,
                 firstPersonBodyState,
@@ -17693,50 +17730,24 @@ namespace
                 publishedLeftValid,
                 publishedRightShoulder,
                 publishedRightValid);
-        if (havePublishedBodyShoulders)
+        if (havePublishedBodyShoulders && publishedLeftValid && publishedRightValid)
         {
-            if (publishedLeftValid)
-                leftShoulder = publishedLeftShoulder;
-            if (publishedRightValid)
-                rightShoulder = publishedRightShoulder;
-
-            if (publishedLeftValid && publishedRightValid)
+            // The survivor bind pose is not guaranteed to be perfectly mirrored.
+            // Import only its body-centred shoulder midpoint, then rebuild a
+            // symmetric left/right pair in the resolved torso frame. This keeps
+            // the arm roots attached to the torso without inheriting model-side
+            // forward/back asymmetry, native animation, or raw physical HMD yaw.
+            const Vector publishedCenter =
+                (publishedLeftShoulder + publishedRightShoulder) * 0.5f;
+            if (HooksNativeViewmodelHandsOnlyVectorFinite(publishedCenter))
             {
-                Vector measuredBodyRight = rightShoulder - leftShoulder;
-                // Full-arm IK keeps a yaw-only torso basis. Shoulder pitch/roll
-                // from optional body-anchor tuning must not make the analytic
-                // forward/right frame non-orthogonal to world up.
-                measuredBodyRight.z = 0.0f;
-                if (HooksNativeViewmodelArmIkNormalize(
-                        measuredBodyRight,
-                        measuredBodyRight))
-                {
-                    if (DotProduct(measuredBodyRight, bodyRight) < 0.0f)
-                        measuredBodyRight *= -1.0f;
-
-                    Vector measuredBodyForward = CrossProduct(
-                        bodyUp,
-                        measuredBodyRight);
-                    if (HooksNativeViewmodelArmIkNormalize(
-                            measuredBodyForward,
-                            measuredBodyForward))
-                    {
-                        bodyRight = measuredBodyRight;
-                        bodyForward = measuredBodyForward;
-                    }
-                }
+                const float symmetricShoulderHalfWidth =
+                    0.18f * sourceUnitsPerMeter;
+                leftShoulder =
+                    publishedCenter - armFrameRight * symmetricShoulderHalfWidth;
+                rightShoulder =
+                    publishedCenter + armFrameRight * symmetricShoulderHalfWidth;
             }
-        }
-
-        Vector armFrameForward = turnForward;
-        Vector armFrameRight = turnRight;
-        Vector armFrameUp = turnUp;
-        if (havePublishedBodyShoulders &&
-            publishedLeftValid && publishedRightValid)
-        {
-            armFrameForward = bodyForward;
-            armFrameRight = bodyRight;
-            armFrameUp = bodyUp;
         }
 
         // User tuning is applied after the body-aligned shoulders have been
@@ -17746,27 +17757,17 @@ namespace
         const Vector configuredAnchorOffset =
             vr->m_NativeViewmodelArmAnchorOffsetMeters;
         const Vector anchorOffsetWorld =
-            bodyForward * (configuredAnchorOffset.x * sourceUnitsPerMeter) +
-            bodyRight * (configuredAnchorOffset.y * sourceUnitsPerMeter) +
-            bodyUp * (configuredAnchorOffset.z * sourceUnitsPerMeter);
+            armFrameForward * (configuredAnchorOffset.x * sourceUnitsPerMeter) +
+            armFrameRight * (configuredAnchorOffset.y * sourceUnitsPerMeter) +
+            armFrameUp * (configuredAnchorOffset.z * sourceUnitsPerMeter);
         if (leftShoulderValid)
             leftShoulder += anchorOffsetWorld;
         if (rightShoulderValid)
             rightShoulder += anchorOffsetWorld;
 
-        Vector shoulderRightAxis = bodyRight;
-        if (leftShoulderValid && rightShoulderValid)
-        {
-            Vector measuredShoulderRight{};
-            if (HooksNativeViewmodelArmIkNormalize(
-                rightShoulder - leftShoulder,
-                measuredShoulderRight))
-            {
-                if (DotProduct(measuredShoulderRight, bodyRight) < 0.0f)
-                    measuredShoulderRight *= -1.0f;
-                shoulderRightAxis = measuredShoulderRight;
-            }
-        }
+        // Spacing tuning uses the same resolved torso frame as the shoulder
+        // roots. It never re-reads animated survivor shoulder orientation.
+        const Vector shoulderRightAxis = armFrameRight;
         const float spacingHalfDelta =
             std::clamp(
                 vr->m_NativeViewmodelArmShoulderSpacingOffsetMeters,
@@ -19741,7 +19742,13 @@ namespace
         bool attempted = false;
         bool valid = false;
         bool frozenPoseCaptured = false;
+        bool animationFreeArmAnchorsCaptured = false;
+        bool animationFreeUpperChestValid = false;
+        bool animationFreeLeftShoulderValid = false;
+        bool animationFreeRightShoulderValid = false;
         int numBones = 0;
+        int boneIndex = 0;
+        int boneStride = 0;
         int headBone = -1;
         int neckBone = -1;
         int upperChestBone = -1;
@@ -19751,6 +19758,9 @@ namespace
         int rightUpperArmBone = -1;
         int leftForearmBone = -1;
         int rightForearmBone = -1;
+        Vector animationFreeUpperChestFromHead{};
+        Vector animationFreeLeftShoulderFromHead{};
+        Vector animationFreeRightShoulderFromHead{};
         std::vector<int> boneParents;
         std::vector<uint8_t> hideHeadMask;
         std::vector<uint8_t> hideLeftArmMask;
@@ -19798,6 +19808,8 @@ namespace
         {
             return false;
         }
+        layout.boneIndex = boneIndex;
+        layout.boneStride = stride;
 
         const std::vector<const char*> headSuffixes = {
             "bip01_head1", "bip01_head", "head1", "head",
@@ -20001,6 +20013,130 @@ namespace
                 frozenRightArmBones);
         }
         return layout.valid;
+    }
+
+    inline bool HooksFirstPersonBodyCaptureAnimationFreeArmAnchors(
+        void* drawState,
+        HooksFirstPersonBodyBoneLayout& layout)
+    {
+        if (layout.animationFreeArmAnchorsCaptured)
+        {
+            return layout.animationFreeLeftShoulderValid ||
+                layout.animationFreeRightShoulderValid;
+        }
+        if (!drawState || layout.numBones <= 0 || layout.numBones > 128 ||
+            layout.boneIndex <= 0 || layout.boneStride <= 0 ||
+            layout.headBone < 0 || layout.headBone >= layout.numBones ||
+            static_cast<int>(layout.boneParents.size()) < layout.numBones)
+        {
+            return false;
+        }
+
+        std::vector<vr_vm_stabilize::Mat3x4> restLocal;
+        std::vector<vr_vm_stabilize::Mat3x4> restWorld;
+        std::vector<uint8_t> resolved;
+        try
+        {
+            restLocal.resize(static_cast<size_t>(layout.numBones));
+            restWorld.resize(static_cast<size_t>(layout.numBones));
+            resolved.assign(static_cast<size_t>(layout.numBones), 0u);
+        }
+        catch (...)
+        {
+            return false;
+        }
+
+        for (int bone = 0; bone < layout.numBones; ++bone)
+        {
+            if (!HooksNativeViewmodelHandsOnlyReadBoneRestLocalTransform(
+                    drawState,
+                    layout.boneIndex,
+                    layout.boneStride,
+                    bone,
+                    restLocal[static_cast<size_t>(bone)]) ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(
+                    restLocal[static_cast<size_t>(bone)]))
+            {
+                return false;
+            }
+        }
+
+        int rebuilt = 0;
+        for (int pass = 0; pass < layout.numBones && rebuilt < layout.numBones; ++pass)
+        {
+            bool progressed = false;
+            for (int bone = 0; bone < layout.numBones; ++bone)
+            {
+                const size_t index = static_cast<size_t>(bone);
+                if (resolved[index])
+                    continue;
+
+                const int parent = layout.boneParents[index];
+                if (parent < 0 || parent >= layout.numBones || parent == bone)
+                {
+                    restWorld[index] = restLocal[index];
+                }
+                else
+                {
+                    if (!resolved[static_cast<size_t>(parent)])
+                        continue;
+                    vr_vm_stabilize::Mul(
+                        restWorld[static_cast<size_t>(parent)],
+                        restLocal[index],
+                        restWorld[index]);
+                }
+
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(restWorld[index]))
+                    return false;
+                resolved[index] = 1u;
+                ++rebuilt;
+                progressed = true;
+            }
+            if (!progressed)
+                break;
+        }
+
+        if (!resolved[static_cast<size_t>(layout.headBone)])
+            return false;
+        const Vector restHead = vr_vm_stabilize::GetOrigin(
+            restWorld[static_cast<size_t>(layout.headBone)]);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(restHead))
+            return false;
+
+        auto captureOffset = [&](int bone, Vector& outOffset, bool& outValid)
+            {
+                outOffset = Vector{};
+                outValid = false;
+                if (bone < 0 || bone >= layout.numBones ||
+                    !resolved[static_cast<size_t>(bone)])
+                {
+                    return;
+                }
+                const Vector restOrigin = vr_vm_stabilize::GetOrigin(
+                    restWorld[static_cast<size_t>(bone)]);
+                if (!HooksNativeViewmodelHandsOnlyVectorFinite(restOrigin))
+                    return;
+                outOffset = restOrigin - restHead;
+                outValid = HooksNativeViewmodelHandsOnlyVectorFinite(outOffset);
+            };
+
+        captureOffset(
+            layout.upperChestBone,
+            layout.animationFreeUpperChestFromHead,
+            layout.animationFreeUpperChestValid);
+        captureOffset(
+            layout.leftUpperArmBone,
+            layout.animationFreeLeftShoulderFromHead,
+            layout.animationFreeLeftShoulderValid);
+        captureOffset(
+            layout.rightUpperArmBone,
+            layout.animationFreeRightShoulderFromHead,
+            layout.animationFreeRightShoulderValid);
+
+        layout.animationFreeArmAnchorsCaptured =
+            layout.animationFreeLeftShoulderValid ||
+            layout.animationFreeRightShoulderValid;
+        return layout.animationFreeArmAnchorsCaptured;
     }
 
     inline bool HooksFirstPersonBodyCaptureFrozenLocalPose(
@@ -20300,6 +20436,199 @@ namespace
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(desiredHeadPosition))
             return false;
 
+        // Viewmodel arm shoulders use the survivor model's StudioHdr rest pose,
+        // transformed by the same positional body anchor and the deadzone-resolved
+        // torso yaw. No current survivor animation matrix is sampled here. Raw
+        // physical HMD yaw is never used directly; HMD translation can still drive
+        // the shared upper-body lean.
+        Vector animationFreeLeftArmShoulder{};
+        Vector animationFreeRightArmShoulder{};
+        bool animationFreeLeftArmShoulderValid = false;
+        bool animationFreeRightArmShoulderValid = false;
+        if (HooksFirstPersonBodyCaptureAnimationFreeArmAnchors(
+                drawState,
+                s_layout))
+        {
+            // Keep the arm roots on the same torso frame as the visible
+            // first-person body. This yaw is already filtered by
+            // WorldModelVRPoseBodyYawDeadzoneDeg, so physical HMD yaw inside
+            // the comfort cone never reaches the arm IK. Once the torso itself
+            // follows excess head yaw, the arm roots follow that torso motion.
+            const float armYaw = visualBodyYaw;
+            if (std::isfinite(armYaw))
+            {
+                Vector armForward{};
+                Vector armRight{};
+                Vector armUp{};
+                QAngle::AngleVectors(
+                    QAngle(0.0f, armYaw, 0.0f),
+                    &armForward,
+                    &armRight,
+                    &armUp);
+
+                if (HooksNativeViewmodelHandsOnlyVectorFinite(armForward) &&
+                    HooksNativeViewmodelHandsOnlyVectorFinite(armRight) &&
+                    HooksNativeViewmodelHandsOnlyVectorFinite(armUp))
+                {
+                    const Vector rawArmLeanLocalMeters(
+                        DotProduct(hmdPlanarWorld, armForward) / unitsPerMeter,
+                        DotProduct(hmdPlanarWorld, armRight) / unitsPerMeter,
+                        0.0f);
+                    const Vector armLeanLocalMeters =
+                        HooksTrackedBodyClampPlanarLeanMeters(
+                            vr,
+                            rawArmLeanLocalMeters);
+                    const Vector retainedArmLeanWorld =
+                        armForward * (armLeanLocalMeters.x * unitsPerMeter) +
+                        armRight * (armLeanLocalMeters.y * unitsPerMeter);
+
+                    Vector armDesiredHeadPosition =
+                        bodyState->centerEyePosition - retainedArmLeanWorld;
+                    armDesiredHeadPosition -= armForward *
+                        (cameraOffsetMeters.x * unitsPerMeter);
+                    armDesiredHeadPosition += armForward *
+                        (movementCameraOffsetMeters * unitsPerMeter);
+                    armDesiredHeadPosition += armForward *
+                        (crouchCameraOffsetMeters * unitsPerMeter);
+                    armDesiredHeadPosition -= armRight *
+                        (cameraOffsetMeters.y * unitsPerMeter);
+                    armDesiredHeadPosition -= armUp *
+                        (cameraOffsetMeters.z * unitsPerMeter);
+                    armDesiredHeadPosition += armForward *
+                        (bodyOffsetMeters.x * unitsPerMeter);
+                    armDesiredHeadPosition += armRight *
+                        (bodyOffsetMeters.y * unitsPerMeter);
+                    armDesiredHeadPosition += armUp *
+                        (bodyOffsetMeters.z * unitsPerMeter);
+
+                    const QAngle armAnchorAngles(
+                        anchorRotationOffsetDeg.x,
+                        HooksTrackedBodyWrapYaw(
+                            armYaw + anchorRotationOffsetDeg.y),
+                        anchorRotationOffsetDeg.z);
+                    vr_vm_stabilize::Mat3x4 armAnchorTransform{};
+                    vr_vm_stabilize::BuildFromOrgAngles(
+                        armDesiredHeadPosition,
+                        armAnchorAngles,
+                        armAnchorTransform);
+                    if (HooksNativeViewmodelHandsOnlyVectorFinite(
+                            armDesiredHeadPosition) &&
+                        HooksNativeViewmodelHandsOnlyMatrixFinite(
+                            armAnchorTransform))
+                    {
+                        if (s_layout.animationFreeLeftShoulderValid)
+                        {
+                            animationFreeLeftArmShoulder = HooksTransformPoint(
+                                armAnchorTransform,
+                                s_layout.animationFreeLeftShoulderFromHead);
+                            animationFreeLeftArmShoulderValid =
+                                HooksNativeViewmodelHandsOnlyVectorFinite(
+                                    animationFreeLeftArmShoulder);
+                        }
+                        if (s_layout.animationFreeRightShoulderValid)
+                        {
+                            animationFreeRightArmShoulder = HooksTransformPoint(
+                                armAnchorTransform,
+                                s_layout.animationFreeRightShoulderFromHead);
+                            animationFreeRightArmShoulderValid =
+                                HooksNativeViewmodelHandsOnlyVectorFinite(
+                                    animationFreeRightArmShoulder);
+                        }
+
+                        Vector animationFreeUpperChestWorld{};
+                        const bool animationFreeUpperChestWorldValid =
+                            s_layout.animationFreeUpperChestValid &&
+                            HooksNativeViewmodelHandsOnlyVectorFinite(
+                                animationFreeUpperChestWorld = HooksTransformPoint(
+                                    armAnchorTransform,
+                                    s_layout.animationFreeUpperChestFromHead));
+
+                        if (animationFreeUpperChestWorldValid &&
+                            animationFreeLeftArmShoulderValid &&
+                            animationFreeRightArmShoulderValid)
+                        {
+                            // Replacement survivor rigs are not required to keep
+                            // the left/right upper-arm bind origins mirrored. Using
+                            // their raw midpoint can therefore shift the complete
+                            // viewmodel arm pair sideways even though the final
+                            // shoulder spacing is symmetric. Keep only the raw
+                            // shoulder midpoint's forward/up placement and force its
+                            // lateral coordinate onto the upper-chest centreline.
+                            // This makes the arm pair stay centred on the visible
+                            // torso without importing any body animation or HMD yaw.
+                            Vector shoulderCenter =
+                                (animationFreeLeftArmShoulder +
+                                    animationFreeRightArmShoulder) * 0.5f;
+                            const Vector chestToShoulderCenter =
+                                shoulderCenter - animationFreeUpperChestWorld;
+                            shoulderCenter -= armRight * DotProduct(
+                                chestToShoulderCenter,
+                                armRight);
+
+                            if (HooksNativeViewmodelHandsOnlyVectorFinite(
+                                    shoulderCenter))
+                            {
+                                const float symmetricHalfWidth =
+                                    0.18f * unitsPerMeter;
+                                animationFreeLeftArmShoulder =
+                                    shoulderCenter -
+                                    armRight * symmetricHalfWidth;
+                                animationFreeRightArmShoulder =
+                                    shoulderCenter +
+                                    armRight * symmetricHalfWidth;
+                                animationFreeLeftArmShoulderValid =
+                                    HooksNativeViewmodelHandsOnlyVectorFinite(
+                                        animationFreeLeftArmShoulder);
+                                animationFreeRightArmShoulderValid =
+                                    HooksNativeViewmodelHandsOnlyVectorFinite(
+                                        animationFreeRightArmShoulder);
+                            }
+                        }
+
+                        if (animationFreeUpperChestWorldValid &&
+                            (animationFreeLeftArmShoulderValid ||
+                                animationFreeRightArmShoulderValid))
+                        {
+                            const Vector armLeanPivot =
+                                animationFreeUpperChestWorld;
+                            vr_vm_stabilize::Mat3x4 armLeanDelta{};
+                            if (HooksTrackedBodyBuildLeanDelta(
+                                    vr,
+                                    armLeanPivot,
+                                    armForward,
+                                    armRight,
+                                    armUp,
+                                    armLeanLocalMeters,
+                                    1.0f,
+                                    armLeanDelta))
+                            {
+                                if (animationFreeLeftArmShoulderValid)
+                                {
+                                    animationFreeLeftArmShoulder =
+                                        HooksTransformPoint(
+                                            armLeanDelta,
+                                            animationFreeLeftArmShoulder);
+                                    animationFreeLeftArmShoulderValid =
+                                        HooksNativeViewmodelHandsOnlyVectorFinite(
+                                            animationFreeLeftArmShoulder);
+                                }
+                                if (animationFreeRightArmShoulderValid)
+                                {
+                                    animationFreeRightArmShoulder =
+                                        HooksTransformPoint(
+                                            armLeanDelta,
+                                            animationFreeRightArmShoulder);
+                                    animationFreeRightArmShoulderValid =
+                                        HooksNativeViewmodelHandsOnlyVectorFinite(
+                                            animationFreeRightArmShoulder);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         const Vector currentHeadPosition = vr_vm_stabilize::GetOrigin(frozenHead);
         const Vector translation = desiredHeadPosition - currentHeadPosition;
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(translation))
@@ -20539,27 +20868,16 @@ namespace
             }
         }
 
-        Vector leftBodyShoulder{};
-        Vector rightBodyShoulder{};
-        const bool leftBodyShoulderValid =
-            s_layout.leftUpperArmBone >= 0 &&
-            s_layout.leftUpperArmBone < s_layout.numBones &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(
-                leftBodyShoulder = vr_vm_stabilize::GetOrigin(
-                    anchoredBones[s_layout.leftUpperArmBone]));
-        const bool rightBodyShoulderValid =
-            s_layout.rightUpperArmBone >= 0 &&
-            s_layout.rightUpperArmBone < s_layout.numBones &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(
-                rightBodyShoulder = vr_vm_stabilize::GetOrigin(
-                    anchoredBones[s_layout.rightUpperArmBone]));
+        // Publish only the animation-free rest-pose shoulder anchors. The visible
+        // survivor body may continue playing locomotion/fire/reload animation, but
+        // none of those matrices are allowed to seed the first-person arm IK.
         HooksFirstPersonBodyPublishViewmodelShoulders(
             vr,
             bodyState,
-            leftBodyShoulder,
-            leftBodyShoulderValid,
-            rightBodyShoulder,
-            rightBodyShoulderValid);
+            animationFreeLeftArmShoulder,
+            animationFreeLeftArmShoulderValid,
+            animationFreeRightArmShoulder,
+            animationFreeRightArmShoulderValid);
 
         outBones = anchoredBones;
         return true;
