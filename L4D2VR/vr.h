@@ -2713,10 +2713,6 @@ public:
 	static constexpr int kVelocityXOffset = 0x100; // DT_BasePlayer::m_vecVelocity[0]
 	static constexpr int kVelocityYOffset = 0x104; // DT_BasePlayer::m_vecVelocity[1]
 	static constexpr int kVelocityZOffset = 0x108; // DT_BasePlayer::m_vecVelocity[2]
-	static constexpr int kCreateTimeOffset = 0x158; // DT_BaseEntity::m_flCreateTime
-	static constexpr int kCollisionMinsOffset = 0x224; // DT_BaseEntity::m_Collision.m_vecMins
-	static constexpr int kCollisionMaxsOffset = 0x230; // DT_BaseEntity::m_Collision.m_vecMaxs
-	static constexpr int kSpecialInfectedBashedStartOffset = 0x27FC; // DT_TerrorPlayer::m_bashedStart
 	static constexpr int kOnGroundFlag = 0x1; // FL_ONGROUND
 
 	// Common netvars (from offsets.txt) used by hand HUD overlays
@@ -3272,8 +3268,7 @@ public:
 	bool m_SpecialInfectedIntentSenseHudEnabled = true;
 	bool m_SpecialInfectedIntentSenseHapticsEnabled = true;
 	bool m_SpecialInfectedIntentSenseUseLookFallback = true;
-	// If false, keep front/front-left/front-right threats in the HUD but suppress their haptic warning pulse,
-	// except selected high-priority intent threats.
+	// If false, suppress front/front-left/front-right alerts except selected high-priority intent threats.
 	bool m_SpecialInfectedIntentSenseWarnFront = false;
 	float m_SpecialInfectedIntentSenseDistance = 1200.0f;
 	float m_SpecialInfectedIntentSenseLookDot = 0.88f;
@@ -3370,8 +3365,6 @@ public:
 	std::chrono::steady_clock::time_point m_LastSpecialInfectedPreWarningTargetUpdateTime{};
 	Vector m_SpecialInfectedWarningTarget = { 0.0f, 0.0f, 0.0f };
 	bool m_SpecialInfectedWarningTargetActive = false;
-	int m_SpecialInfectedWarningTargetEntityIndex = -1;
-	SpecialInfectedType m_SpecialInfectedWarningTargetType = SpecialInfectedType::None;
 	bool m_SuppressPlayerInput = false;
 	enum class SpecialInfectedWarningActionStep
 	{
@@ -3385,10 +3378,6 @@ public:
 	bool m_SpecialInfectedWarningAttack2CmdOwned = false;
 	bool m_SpecialInfectedWarningJumpCmdOwned = false;
 	std::chrono::steady_clock::time_point m_SpecialInfectedWarningNextActionTime{};
-	std::chrono::steady_clock::time_point m_SpecialInfectedWarningActionDeadline{};
-	bool m_SpecialInfectedWarningShoveCommandIssued = false;
-	bool m_SpecialInfectedWarningBashedStartBaselineValid = false;
-	float m_SpecialInfectedWarningBashedStartBaseline = 0.0f;
 	bool m_ItemModelLabelEnabled = false;
 	bool m_ItemModelLabelShowWeapons = true;
 	bool m_ItemModelLabelShowThrowables = true;
@@ -4094,7 +4083,6 @@ public:
 	void ClearTeleportVisualScout();
 	void OnPredictionRunCommand(CUserCmd* cmd);
 	void OnPrimaryAttackServerDecision(CUserCmd* cmd, bool fromSecondaryPrediction);
-	bool BuildSpecialInfectedAutoEvadeShoveSolution(C_BasePlayer* localPlayer, Vector& outAimTarget, bool& outCanShoveNow);
 	void StartSpecialInfectedWarningAction();
 	void UpdateSpecialInfectedWarningAction();
 	void ResetSpecialInfectedWarningAction();
@@ -4109,7 +4097,6 @@ public:
 	float GetEffectiveAttackRangeHitPointTolerance(const Vector& start, const Vector& centerHitPos, float spreadDegrees, float maxRange) const;
 	bool DoesEffectiveAttackRangeSpreadConeHitTarget(C_BasePlayer* localPlayer, C_WeaponCSBase* weapon, C_BaseEntity* hitEntity, const Vector& start, const Vector& end, const Vector& centerHitPos, float spreadDegrees, float maxRange) const;
 	bool TryFindEffectiveAttackRangeMeleeFanTarget(C_BasePlayer* localPlayer, C_WeaponCSBase* weapon, const Vector& start, const Vector& end, float maxDistance, C_BaseEntity*& outTarget, Vector& outTargetPos, float& outDistance) const;
-	bool ValidateEffectiveAttackRangeMeleeAutoFire(C_BasePlayer* localPlayer, C_WeaponCSBase* weapon, C_BaseEntity*& outTarget);
 	void FinishFrame();
 	void ConfigureExplicitTiming();
 };
