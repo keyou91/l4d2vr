@@ -1649,9 +1649,14 @@ public:
 	bool m_NativeViewmodelHandsOnly = false;
 	// true keeps the existing wrist clip; false draws the complete native viewmodel arms with analytic IK.
 	bool m_NativeViewmodelArmCroppingEnabled = true;
-	// Full-arm IK shoulder-root tuning in the body yaw frame. X=forward,
-	// Y=right, Z=up. Applied after reading the first-person body shoulders.
-	Vector m_NativeViewmodelArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
+	// Full-arm IK shoulder-root tuning in the body yaw frame. Position uses
+	// X=forward, Y=right, Z=up. Rotation uses pitch,yaw,roll in degrees.
+	// Left and right are independent and are applied after reading the
+	// first-person body shoulders.
+	Vector m_NativeViewmodelLeftArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
+	Vector m_NativeViewmodelRightArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
+	Vector m_NativeViewmodelLeftArmAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
+	Vector m_NativeViewmodelRightArmAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	// Total extra distance between the two shoulder roots. Positive widens and
 	// negative narrows; half is applied to each side.
 	float m_NativeViewmodelArmShoulderSpacingOffsetMeters = 0.0f;

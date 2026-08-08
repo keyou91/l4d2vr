@@ -15694,6 +15694,72 @@ namespace
         return HooksNativeViewmodelHandsOnlyMatrixFinite(outDelta);
     }
 
+    inline bool HooksNativeViewmodelArmIkBuildAnchorRotation(
+        const Vector& baseForward,
+        const Vector& baseRight,
+        const Vector& baseUp,
+        const Vector& rotationOffsetDeg,
+        Vector& outForward,
+        Vector& outRight,
+        Vector& outUp,
+        vr_vm_stabilize::Mat3x4& outRotationDelta)
+    {
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(baseForward) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(baseRight) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(baseUp) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(rotationOffsetDeg) ||
+            !HooksNativeViewmodelArmIkNormalize(baseForward, outForward) ||
+            !HooksNativeViewmodelArmIkNormalize(baseRight, outRight) ||
+            !HooksNativeViewmodelArmIkNormalize(baseUp, outUp))
+        {
+            return false;
+        }
+
+        outRotationDelta = vr_vm_stabilize::Identity();
+        auto applyRotation = [&](Vector axis, float degrees) -> bool
+            {
+                if (std::fabs(degrees) <= 0.0001f)
+                    return true;
+
+                vr_vm_stabilize::Mat3x4 rotation{};
+                if (!HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+                    Vector(0.0f, 0.0f, 0.0f),
+                    axis,
+                    DEG2RAD(degrees),
+                    rotation))
+                {
+                    return false;
+                }
+
+                vr_vm_stabilize::Mat3x4 combined{};
+                vr_vm_stabilize::Mul(rotation, outRotationDelta, combined);
+                if (!HooksNativeViewmodelHandsOnlyMatrixFinite(combined))
+                    return false;
+                outRotationDelta = combined;
+
+                outForward = HooksTransformVector(rotation, outForward);
+                outRight = HooksTransformVector(rotation, outRight);
+                outUp = HooksTransformVector(rotation, outUp);
+                return
+                    HooksNativeViewmodelArmIkNormalize(outForward, outForward) &&
+                    HooksNativeViewmodelArmIkNormalize(outRight, outRight) &&
+                    HooksNativeViewmodelArmIkNormalize(outUp, outUp);
+            };
+
+        // Match Source-style pitch/yaw/roll semantics in the current torso frame:
+        // yaw turns around local up, pitch turns around local right (positive
+        // Source pitch looks downward, hence the sign), and roll turns around
+        // the already-rotated local forward axis.
+        if (!applyRotation(outUp, rotationOffsetDeg.y) ||
+            !applyRotation(outRight, -rotationOffsetDeg.x) ||
+            !applyRotation(outForward, rotationOffsetDeg.z))
+        {
+            return false;
+        }
+
+        return HooksNativeViewmodelHandsOnlyMatrixFinite(outRotationDelta);
+    }
+
     inline bool HooksTrackedBodyBuildLeanDelta(
         const VR* vr,
         const Vector& pivot,
@@ -16172,7 +16238,8 @@ namespace
         Vector& outBendDirection,
         const float* previousTwistRadians = nullptr,
         float* outTwistRadians = nullptr,
-        bool stabilizeNonStretchingArm = false)
+        bool stabilizeNonStretchingArm = false,
+        float sharedUpperArmStretchScale = 1.0f)
     {
         const bool stabilizeArmState =
             stretchUpperArmToTarget || stabilizeNonStretchingArm;
@@ -16235,6 +16302,12 @@ namespace
         float solveUpperLength = upperLength;
         if (stretchUpperArmToTarget)
         {
+            if (std::isfinite(sharedUpperArmStretchScale) &&
+                sharedUpperArmStretchScale > 1.0f)
+            {
+                solveUpperLength *= sharedUpperArmStretchScale;
+            }
+
             const float targetDistance = (targetPosition - shoulder).Length();
             if (!std::isfinite(targetDistance) || targetDistance < 0.01f)
                 return false;
@@ -16510,21 +16583,13 @@ namespace
             // Only the cosmetic upper-arm share is filtered, and its state is
             // always wrapped back to [-pi, pi]. A very large animation jump is
             // re-seeded immediately instead of being dragged through stale twist.
-            // Third-person world models still inherit small torso/root motion
-            // and are viewed at a distance, so visible upper-arm roll must be
-            // substantially calmer than the exact first-person wrist solve.
-            // The forearm/palm continue to use the current controller rotation;
-            // only the cosmetic upper-arm share uses this stronger low-pass.
-            const float kUpperTwistDeadbandRadians =
-                stabilizeNonStretchingArm ? 0.0100f : 0.0035f;
-            const float kUpperTwistMaximumStepRadians =
-                stabilizeNonStretchingArm ? 0.1200f : 0.3500f;
-            const float kUpperTwistFollow =
-                stabilizeNonStretchingArm ? 0.18f : 0.50f;
-            const float kUpperTwistReseedRadians =
-                stabilizeNonStretchingArm
-                    ? 2.61799387799f
-                    : 2.09439510239f;
+            // Keep these constants shared by first- and third-person arms. Using
+            // a slower world-model filter made its upper arm visibly lag the same
+            // controller roll, concentrating transient twist at the elbow.
+            constexpr float kUpperTwistDeadbandRadians = 0.0035f;
+            constexpr float kUpperTwistMaximumStepRadians = 0.3500f;
+            constexpr float kUpperTwistFollow = 0.50f;
+            constexpr float kUpperTwistReseedRadians = 2.09439510239f;
             const float previousBounded =
                 HooksNativeViewmodelArmIkWrapRadians(*previousTwistRadians);
             float delta = HooksNativeViewmodelArmIkWrapRadians(
@@ -16561,12 +16626,16 @@ namespace
             // forearm so the palm reaches the tracked orientation, and rotate
             // only the upper-arm absolute matrix by a visual share of the stable
             // roll. Child positions stay solved while elbow skinning shares the
-            // twist. Fade the share near a straight elbow, where the bend plane
-            // is underdetermined and any upper-arm roll is visually unstable.
+            // twist. First- and third-person must use exactly the same share: a
+            // smaller world-model share produces a different elbow crease for the
+            // same tracked palm. Preserve most of the share near full extension
+            // as well; dropping it to zero leaves the entire roll discontinuity at
+            // the elbow precisely when that joint has the least geometry to hide
+            // the deformation.
             constexpr float kPi = 3.14159265358979323846f;
-            const float kUpperArmTwistShare =
-                stabilizeNonStretchingArm ? 0.40f : 0.50f;
-            constexpr float kMaximumUpperArmTwist = kPi * 0.5f;
+            constexpr float kUpperArmTwistShare = 0.75f;
+            constexpr float kStraightArmTwistWeight = 0.80f;
+            constexpr float kMaximumUpperArmTwist = kPi * 0.75f;
 
             Vector normalizedUpper{};
             Vector normalizedLower{};
@@ -16583,10 +16652,8 @@ namespace
                     normalizedLower).Length();
                 if (std::isfinite(bendSine))
                 {
-                    const float bendStart =
-                        stabilizeNonStretchingArm ? 0.08f : 0.03f;
-                    const float bendEnd =
-                        stabilizeNonStretchingArm ? 0.35f : 0.25f;
+                    constexpr float bendStart = 0.03f;
+                    constexpr float bendEnd = 0.25f;
                     elbowBendWeight = std::clamp(
                         (bendSine - bendStart) /
                             (bendEnd - bendStart),
@@ -16598,6 +16665,10 @@ namespace
                     elbowBendWeight =
                         elbowBendWeight * elbowBendWeight *
                         (3.0f - 2.0f * elbowBendWeight);
+                    elbowBendWeight =
+                        kStraightArmTwistWeight +
+                        (1.0f - kStraightArmTwistWeight) *
+                            elbowBendWeight;
                 }
             }
 
@@ -16760,6 +16831,7 @@ namespace
         const std::vector<uint8_t>& solveMask,
         const Vector& shoulderTarget,
         const Vector& bodyForward,
+        const vr_vm_stabilize::Mat3x4& anchorRotationDelta,
         vr_vm_stabilize::Mat3x4* bones)
     {
         if (!vr || !drawState || !bones || chain.side == 0 ||
@@ -16771,7 +16843,8 @@ namespace
             static_cast<int>(boneParents.size()) < numBones ||
             static_cast<int>(solveMask.size()) < numBones ||
             !HooksNativeViewmodelHandsOnlyVectorFinite(shoulderTarget) ||
-            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyForward))
+            !HooksNativeViewmodelHandsOnlyVectorFinite(bodyForward) ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(anchorRotationDelta))
         {
             return false;
         }
@@ -16949,13 +17022,21 @@ namespace
             return false;
         }
 
-        // Rotate the bind branch by the selected arm-root yaw. With the
-        // first-person body active this is the anchored torso yaw; otherwise it
-        // is the independent turn frame. This keeps global view yaw out of the
-        // forearm-roll measurement.
+        // Rotate the bind branch by the selected torso yaw, then apply the
+        // per-side arm-anchor pitch/yaw/roll adjustment. The additional rotation
+        // is built in the torso-local frame and never changes the controller hand
+        // target; it changes only the shoulder-root frame used by full-arm IK.
+        vr_vm_stabilize::Mat3x4 armRootDelta{};
+        vr_vm_stabilize::Mul(
+            anchorRotationDelta,
+            bodyYawDelta,
+            armRootDelta);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(armRootDelta))
+            return false;
+
         vr_vm_stabilize::Mat3x4 upperWorld{};
         vr_vm_stabilize::Mul(
-            bodyYawDelta,
+            armRootDelta,
             cache.canonicalUpperWorld,
             upperWorld);
         upperWorld.m[0][3] = shoulderTarget.x;
@@ -17309,6 +17390,7 @@ namespace
         bool frameTargetUsesNativeAnimation[2]{};
         Vector latestTargetTurnLocal[2]{};
         Vector frameTargetTurnLocal[2]{};
+        Vector anchorRotationOffsetDeg[2]{};
     };
 
     inline int HooksNativeViewmodelArmIkSideSlot(int side)
@@ -17751,19 +17833,31 @@ namespace
         }
 
         // User tuning is applied after the body-aligned shoulders have been
-        // selected. The shared offset uses body-local X=forward, Y=right, Z=up.
-        // Spacing is a total delta, split equally between both sides along the
-        // actual shoulder line.
-        const Vector configuredAnchorOffset =
-            vr->m_NativeViewmodelArmAnchorOffsetMeters;
-        const Vector anchorOffsetWorld =
-            armFrameForward * (configuredAnchorOffset.x * sourceUnitsPerMeter) +
-            armFrameRight * (configuredAnchorOffset.y * sourceUnitsPerMeter) +
-            armFrameUp * (configuredAnchorOffset.z * sourceUnitsPerMeter);
+        // selected. Position offsets are independent per side and use the
+        // unrotated torso frame: X=forward, Y=right, Z=up. Rotating an arm anchor
+        // therefore never moves its shoulder position as a side effect.
+        const Vector configuredAnchorOffsetMeters[2] = {
+            vr->m_NativeViewmodelLeftArmAnchorOffsetMeters,
+            vr->m_NativeViewmodelRightArmAnchorOffsetMeters,
+        };
+        const Vector leftAnchorOffsetWorld =
+            armFrameForward *
+                (configuredAnchorOffsetMeters[0].x * sourceUnitsPerMeter) +
+            armFrameRight *
+                (configuredAnchorOffsetMeters[0].y * sourceUnitsPerMeter) +
+            armFrameUp *
+                (configuredAnchorOffsetMeters[0].z * sourceUnitsPerMeter);
+        const Vector rightAnchorOffsetWorld =
+            armFrameForward *
+                (configuredAnchorOffsetMeters[1].x * sourceUnitsPerMeter) +
+            armFrameRight *
+                (configuredAnchorOffsetMeters[1].y * sourceUnitsPerMeter) +
+            armFrameUp *
+                (configuredAnchorOffsetMeters[1].z * sourceUnitsPerMeter);
         if (leftShoulderValid)
-            leftShoulder += anchorOffsetWorld;
+            leftShoulder += leftAnchorOffsetWorld;
         if (rightShoulderValid)
-            rightShoulder += anchorOffsetWorld;
+            rightShoulder += rightAnchorOffsetWorld;
 
         // Spacing tuning uses the same resolved torso frame as the shoulder
         // roots. It never re-reads animated survivor shoulder orientation.
@@ -17778,6 +17872,142 @@ namespace
             leftShoulder -= shoulderRightAxis * spacingHalfDelta;
         if (rightShoulderValid)
             rightShoulder += shoulderRightAxis * spacingHalfDelta;
+
+        // Each arm gets its own shoulder-root orientation. These frames drive the
+        // analytic IK pole/twist reference and the animation-free rest branch,
+        // while the hand target itself remains controller/weapon anchored.
+        const Vector configuredAnchorRotationOffsetDeg[2] = {
+            vr->m_NativeViewmodelLeftArmAnchorRotationOffsetDeg,
+            vr->m_NativeViewmodelRightArmAnchorRotationOffsetDeg,
+        };
+        Vector armSolveForward[2]{};
+        Vector armSolveRight[2]{};
+        Vector armSolveUp[2]{};
+        vr_vm_stabilize::Mat3x4 armAnchorRotationDelta[2]{};
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            if (!HooksNativeViewmodelArmIkBuildAnchorRotation(
+                armFrameForward,
+                armFrameRight,
+                armFrameUp,
+                configuredAnchorRotationOffsetDeg[slot],
+                armSolveForward[slot],
+                armSolveRight[slot],
+                armSolveUp[slot],
+                armAnchorRotationDelta[slot]))
+            {
+                return false;
+            }
+        }
+
+        // The two native viewmodel arms belong to one body and must not acquire
+        // different upper-arm lengths merely because one tracked hand is farther
+        // from its shoulder.  Older code grew each upper arm independently until
+        // its palm could be welded to the controller/weapon target.  That made the
+        // farther side visibly project out of the torso even though the shoulder
+        // roots above were perfectly mirrored.  Resolve the largest required
+        // proportional extension once, then apply that same anthropometric scale
+        // to both sides.  Each elbow can still bend independently to its own hand.
+        float armUpperLength[2] = { 0.0f, 0.0f };
+        float armLowerLength[2] = { 0.0f, 0.0f };
+        float armTargetDistance[2] = { 0.0f, 0.0f };
+        float armRequiredStretchScale[2] = { 1.0f, 1.0f };
+        bool armGeometryValid[2] = { false, false };
+        float sharedUpperArmStretchScale = 1.0f;
+        auto accumulateRequiredStretch = [&] (
+            int slot,
+            bool chainValid,
+            bool targetValid,
+            const HooksNativeViewmodelArmIkChain& chain,
+            const vr_vm_stabilize::Mat3x4& target,
+            const Vector& shoulder)
+            {
+                if (slot < 0 || slot > 1 || !chainValid || !targetValid ||
+                    chain.upperArm < 0 || chain.upperArm >= numBones ||
+                    chain.forearm < 0 || chain.forearm >= numBones ||
+                    chain.hand < 0 || chain.hand >= numBones)
+                {
+                    return;
+                }
+
+                vr_vm_stabilize::Mat3x4 sourceUpper{};
+                vr_vm_stabilize::Mat3x4 sourceForearm{};
+                vr_vm_stabilize::Mat3x4 sourceHand{};
+                if (!vr_vm_stabilize::SafeRead(
+                        sourceBones + chain.upperArm,
+                        sourceUpper) ||
+                    !vr_vm_stabilize::SafeRead(
+                        sourceBones + chain.forearm,
+                        sourceForearm) ||
+                    !vr_vm_stabilize::SafeRead(
+                        sourceBones + chain.hand,
+                        sourceHand) ||
+                    !HooksNativeViewmodelHandsOnlyMatrixFinite(sourceUpper) ||
+                    !HooksNativeViewmodelHandsOnlyMatrixFinite(sourceForearm) ||
+                    !HooksNativeViewmodelHandsOnlyMatrixFinite(sourceHand))
+                {
+                    return;
+                }
+
+                const float upperLength =
+                    (vr_vm_stabilize::GetOrigin(sourceForearm) -
+                        vr_vm_stabilize::GetOrigin(sourceUpper)).Length();
+                const float lowerLength =
+                    (vr_vm_stabilize::GetOrigin(sourceHand) -
+                        vr_vm_stabilize::GetOrigin(sourceForearm)).Length();
+                const float targetDistance =
+                    (vr_vm_stabilize::GetOrigin(target) - shoulder).Length();
+                if (!std::isfinite(upperLength) ||
+                    !std::isfinite(lowerLength) ||
+                    !std::isfinite(targetDistance) ||
+                    upperLength < 0.25f || lowerLength < 0.25f ||
+                    upperLength > 256.0f || lowerLength > 256.0f ||
+                    targetDistance < 0.01f)
+                {
+                    return;
+                }
+
+                float requiredUpperLength = upperLength;
+                for (int iteration = 0; iteration < 3; ++iteration)
+                {
+                    const float reachEpsilon = std::max(
+                        0.01f,
+                        (requiredUpperLength + lowerLength) * 0.0005f);
+                    const float maximumReach =
+                        requiredUpperLength + lowerLength - reachEpsilon;
+                    if (targetDistance <= maximumReach)
+                        break;
+                    requiredUpperLength +=
+                        targetDistance - maximumReach + 0.001f;
+                }
+
+                const float requiredScale = requiredUpperLength / upperLength;
+                if (!std::isfinite(requiredScale) || requiredScale < 1.0f)
+                    return;
+
+                armUpperLength[slot] = upperLength;
+                armLowerLength[slot] = lowerLength;
+                armTargetDistance[slot] = targetDistance;
+                armRequiredStretchScale[slot] = requiredScale;
+                armGeometryValid[slot] = true;
+                sharedUpperArmStretchScale = std::max(
+                    sharedUpperArmStretchScale,
+                    requiredScale);
+            };
+        accumulateRequiredStretch(
+            0,
+            haveLeftChain && leftShoulderValid,
+            haveLeftTarget,
+            leftChain,
+            leftTarget,
+            leftShoulder);
+        accumulateRequiredStretch(
+            1,
+            haveRightChain && rightShoulderValid,
+            haveRightTarget,
+            rightChain,
+            rightTarget,
+            rightShoulder);
 
         const uint8_t* studioHdr = nullptr;
         vr_vm_stabilize::TryGetStudioHdrFromDrawState(drawState, studioHdr);
@@ -17814,9 +18044,9 @@ namespace
             targetTurnLocal[slot] =
                 HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                     targetRelative,
-                    armFrameForward,
-                    armFrameRight,
-                    armFrameUp);
+                    armSolveForward[slot],
+                    armSolveRight[slot],
+                    armSolveUp[slot]);
             targetTurnLocalValid[slot] =
                 HooksNativeViewmodelHandsOnlyVectorFinite(
                     targetTurnLocal[slot]);
@@ -17837,6 +18067,10 @@ namespace
                 s_continuity.rightUpper != (haveRightChain ? rightChain.upperArm : -1) ||
                 s_continuity.rightForearm != (haveRightChain ? rightChain.forearm : -1) ||
                 s_continuity.rightHand != (haveRightChain ? rightChain.hand : -1) ||
+                (s_continuity.anchorRotationOffsetDeg[0] -
+                    configuredAnchorRotationOffsetDeg[0]).LengthSqr() > 0.0001f ||
+                (s_continuity.anchorRotationOffsetDeg[1] -
+                    configuredAnchorRotationOffsetDeg[1]).LengthSqr() > 0.0001f ||
                 (s_continuity.lastSolved.time_since_epoch().count() != 0 &&
                     now - s_continuity.lastSolved > std::chrono::milliseconds(750));
             if (keyChanged)
@@ -17851,6 +18085,10 @@ namespace
                 s_continuity.rightUpper = haveRightChain ? rightChain.upperArm : -1;
                 s_continuity.rightForearm = haveRightChain ? rightChain.forearm : -1;
                 s_continuity.rightHand = haveRightChain ? rightChain.hand : -1;
+                s_continuity.anchorRotationOffsetDeg[0] =
+                    configuredAnchorRotationOffsetDeg[0];
+                s_continuity.anchorRotationOffsetDeg[1] =
+                    configuredAnchorRotationOffsetDeg[1];
             }
 
             const bool timedEyeZeroFrame =
@@ -17895,9 +18133,9 @@ namespace
                     previousWorld[slot] =
                         HooksNativeViewmodelArmIkBodyLocalDirectionToWorld(
                             s_continuity.frameTurnLocal[slot],
-                            armFrameForward,
-                            armFrameRight,
-                            armFrameUp);
+                            armSolveForward[slot],
+                            armSolveRight[slot],
+                            armSolveUp[slot]);
                     previousValid[slot] =
                         HooksNativeViewmodelArmIkNormalize(
                             previousWorld[slot],
@@ -17971,6 +18209,7 @@ namespace
                 if (!chainValid || !targetValid)
                     return false;
 
+                const int slot = HooksNativeViewmodelArmIkSideSlot(chain.side);
                 vr_vm_stabilize::Mat3x4* candidate =
                     vr_vm_stabilize::AllocStableBones(numBones, seqEven);
                 if (!candidate)
@@ -18009,12 +18248,12 @@ namespace
                     solveMask,
                     shoulder,
                     armFrameForward,
+                    armAnchorRotationDelta[slot],
                     candidate))
                 {
                     return false;
                 }
 
-                const int slot = HooksNativeViewmodelArmIkSideSlot(chain.side);
                 const Vector* previous = previousValid[slot]
                     ? &previousWorld[slot]
                     : nullptr;
@@ -18029,15 +18268,17 @@ namespace
                     chain,
                     shoulder,
                     target,
-                    bodyForward,
-                    bodyRight,
-                    bodyUp,
+                    armSolveForward[slot],
+                    armSolveRight[slot],
+                    armSolveUp[slot],
                     previous,
                     true,
                     candidate,
                     bend,
                     previousTwist,
-                    &twistRadians))
+                    &twistRadians,
+                    false,
+                    sharedUpperArmStretchScale))
                 {
                     return false;
                 }
@@ -18155,9 +18396,9 @@ namespace
                         Vector turnLocal =
                             HooksNativeViewmodelArmIkWorldDirectionToBodyLocal(
                                 world,
-                                armFrameForward,
-                                armFrameRight,
-                                armFrameUp);
+                                armSolveForward[slot],
+                                armSolveRight[slot],
+                                armSolveUp[slot]);
                         if (HooksNativeViewmodelArmIkNormalize(
                             turnLocal,
                             turnLocal))
@@ -18210,6 +18451,36 @@ namespace
                 nullptr,
                 nullptr,
                 nullptr);
+        }
+        if (solvedSide[0] && solvedSide[1] &&
+            armGeometryValid[0] && armGeometryValid[1])
+        {
+            static std::mutex s_geometryLogMutex;
+            static std::unordered_set<std::string> s_geometryLogged;
+            bool shouldLogGeometry = false;
+            {
+                std::lock_guard<std::mutex> lock(s_geometryLogMutex);
+                shouldLogGeometry = s_geometryLogged.insert(lowerModel).second;
+            }
+            if (shouldLogGeometry)
+            {
+                const float shoulderForwardDelta = DotProduct(
+                    leftShoulder - rightShoulder,
+                    armFrameForward);
+                Game::logMsg(
+                    "[VR][ViewmodelArmIK] symmetric stretch model=%s shoulderForwardDelta=%.3f upper=(%.2f %.2f) lower=(%.2f %.2f) targetDistance=(%.2f %.2f) requiredScale=(%.3f %.3f) sharedScale=%.3f",
+                    lowerModel.c_str(),
+                    shoulderForwardDelta,
+                    armUpperLength[0],
+                    armUpperLength[1],
+                    armLowerLength[0],
+                    armLowerLength[1],
+                    armTargetDistance[0],
+                    armTargetDistance[1],
+                    armRequiredStretchScale[0],
+                    armRequiredStretchScale[1],
+                    sharedUpperArmStretchScale);
+            }
         }
         HooksNativeViewmodelArmIkLogOnce(
             "success|" + lowerModel,
@@ -19752,6 +20023,7 @@ namespace
         int headBone = -1;
         int neckBone = -1;
         int upperChestBone = -1;
+        int torsoYawRootBone = -1;
         int leftClavicleBone = -1;
         int rightClavicleBone = -1;
         int leftUpperArmBone = -1;
@@ -19868,6 +20140,40 @@ namespace
                 }
                 current = layout.boneParents[static_cast<size_t>(current)];
             }
+        }
+
+        // The first-person body keeps normal lower-body locomotion, but all
+        // spine bones must share the deadzone-resolved torso yaw.  Remember the
+        // lowest named spine/chest ancestor so a later residual correction can
+        // remove Source aim-yaw that is baked into the animated upper body.
+        layout.torsoYawRootBone = layout.upperChestBone;
+        int torsoYawCandidate = layout.upperChestBone;
+        for (int guard = 0;
+             guard < layout.numBones &&
+             torsoYawCandidate >= 0 &&
+             torsoYawCandidate < layout.numBones;
+             ++guard)
+        {
+            const int parent =
+                layout.boneParents[static_cast<size_t>(torsoYawCandidate)];
+            if (parent < 0 || parent >= layout.numBones ||
+                parent == torsoYawCandidate)
+            {
+                break;
+            }
+
+            const std::string lowerParent =
+                vr_vm_stabilize::ToLowerAscii(
+                    boneNames[static_cast<size_t>(parent)]);
+            if (lowerParent.find("spine") == std::string::npos &&
+                lowerParent.find("chest") == std::string::npos &&
+                lowerParent.find("torso") == std::string::npos)
+            {
+                break;
+            }
+
+            layout.torsoYawRootBone = parent;
+            torsoYawCandidate = parent;
         }
 
         const std::vector<const char*> clavicleNeedles = {
@@ -19995,11 +20301,12 @@ namespace
         if (layout.valid)
         {
             Game::logMsg(
-                "[VR][FirstPersonBody] bone layout ready bones=%d head=%d neck=%d upperChest=%d leftClavicle=%d rightClavicle=%d leftUpperArm=%d rightUpperArm=%d leftForearm=%d rightForearm=%d hiddenHead=%d hiddenLeftForearm=%d hiddenRightForearm=%d frozenLeftShoulder=%d frozenRightShoulder=%d",
+                "[VR][FirstPersonBody] bone layout ready bones=%d head=%d neck=%d upperChest=%d torsoYawRoot=%d leftClavicle=%d rightClavicle=%d leftUpperArm=%d rightUpperArm=%d leftForearm=%d rightForearm=%d hiddenHead=%d hiddenLeftForearm=%d hiddenRightForearm=%d frozenLeftShoulder=%d frozenRightShoulder=%d",
                 layout.numBones,
                 layout.headBone,
                 layout.neckBone,
                 layout.upperChestBone,
+                layout.torsoYawRootBone,
                 layout.leftClavicleBone,
                 layout.rightClavicleBone,
                 layout.leftUpperArmBone,
@@ -20260,6 +20567,93 @@ namespace
             outLength = (std::max)(outLength, std::sqrt(lengthSquared));
         }
         return std::isfinite(outLength);
+    }
+
+    inline bool HooksFirstPersonBodyLockAnimatedTorsoYaw(
+        const HooksFirstPersonBodyBoneLayout& layout,
+        const vr_vm_stabilize::Mat3x4& targetAnchorTransform,
+        vr_vm_stabilize::Mat3x4* bones,
+        float& outCorrectionDeg)
+    {
+        outCorrectionDeg = 0.0f;
+        if (!bones || layout.numBones <= 0 || layout.numBones > 128 ||
+            layout.torsoYawRootBone < 0 ||
+            layout.torsoYawRootBone >= layout.numBones ||
+            layout.leftUpperArmBone < 0 ||
+            layout.leftUpperArmBone >= layout.numBones ||
+            layout.rightUpperArmBone < 0 ||
+            layout.rightUpperArmBone >= layout.numBones ||
+            static_cast<int>(layout.boneParents.size()) < layout.numBones ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(targetAnchorTransform))
+        {
+            // Replacement rigs without a complete shoulder/spine reference keep
+            // the existing whole-model yaw correction instead of losing the body.
+            return true;
+        }
+
+        const Vector currentLeft = vr_vm_stabilize::GetOrigin(
+            bones[layout.leftUpperArmBone]);
+        const Vector currentRight = vr_vm_stabilize::GetOrigin(
+            bones[layout.rightUpperArmBone]);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(currentLeft) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(currentRight))
+        {
+            return false;
+        }
+
+        Vector currentShoulderLine = currentRight - currentLeft;
+        // BuildFromOrgAngles stores the body's physical right axis in column 1.
+        // The named left-to-right upper-arm line must share that yaw regardless
+        // of custom-model bind-pose asymmetry or Source aim-yaw animation.
+        Vector targetShoulderLine(
+            targetAnchorTransform.m[0][1],
+            targetAnchorTransform.m[1][1],
+            targetAnchorTransform.m[2][1]);
+        currentShoulderLine.z = 0.0f;
+        targetShoulderLine.z = 0.0f;
+        const float currentLength = currentShoulderLine.Length();
+        const float targetLength = targetShoulderLine.Length();
+        if (!std::isfinite(currentLength) || !std::isfinite(targetLength) ||
+            currentLength <= 0.01f || targetLength <= 0.01f)
+        {
+            return true;
+        }
+
+        currentShoulderLine *= 1.0f / currentLength;
+        targetShoulderLine *= 1.0f / targetLength;
+        const float dot = std::clamp(
+            DotProduct(currentShoulderLine, targetShoulderLine),
+            -1.0f,
+            1.0f);
+        const float crossZ =
+            currentShoulderLine.x * targetShoulderLine.y -
+            currentShoulderLine.y * targetShoulderLine.x;
+        const float correctionDeg = RAD2DEG(std::atan2(crossZ, dot));
+        if (!std::isfinite(correctionDeg))
+            return false;
+        outCorrectionDeg = correctionDeg;
+        if (std::fabs(correctionDeg) <= 0.001f)
+            return true;
+
+        const Vector pivot = vr_vm_stabilize::GetOrigin(
+            bones[layout.torsoYawRootBone]);
+        vr_vm_stabilize::Mat3x4 correctionDelta{};
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(pivot) ||
+            !HooksNativeViewmodelArmIkBuildAxisRotationDelta(
+                pivot,
+                Vector(0.0f, 0.0f, 1.0f),
+                DEG2RAD(correctionDeg),
+                correctionDelta))
+        {
+            return false;
+        }
+
+        return HooksNativeViewmodelArmIkApplyDeltaToBranch(
+            layout.boneParents,
+            layout.numBones,
+            layout.torsoYawRootBone,
+            correctionDelta,
+            bones);
     }
 
     inline bool HooksFirstPersonBodyBuildAnchoredBones(
@@ -20680,6 +21074,52 @@ namespace
             anchorRotationDelta,
             anchoredBones,
             s_layout.numBones);
+
+        // ModelInfo yaw only describes the entity transform. Source can also
+        // inject live view/aim yaw into the animated spine pose, which previously
+        // let physical HMD yaw bypass WorldModelVRPoseBodyYawDeadzoneDeg even
+        // after the whole model had been rotated to visualBodyYaw. Measure the
+        // actual frozen shoulder line against the resolved body-right axis and remove
+        // that residual yaw from the complete spine branch. Pitch/roll, breathing,
+        // locomotion and the explicit body-anchor rotation remain intact.
+        float animatedTorsoYawCorrectionDeg = 0.0f;
+        if (!HooksFirstPersonBodyLockAnimatedTorsoYaw(
+                s_layout,
+                targetAnchorTransform,
+                anchoredBones,
+                animatedTorsoYawCorrectionDeg))
+        {
+            return false;
+        }
+
+        {
+            static std::mutex s_torsoYawLogMutex;
+            static std::unordered_set<std::uintptr_t> s_torsoYawLogged;
+            const std::uintptr_t logKey =
+                reinterpret_cast<std::uintptr_t>(s_layout.studioHdr) ^
+                static_cast<std::uintptr_t>(bodyState->playerGeneration);
+            bool shouldLog = false;
+            {
+                std::lock_guard<std::mutex> lock(s_torsoYawLogMutex);
+                shouldLog = s_torsoYawLogged.insert(logKey).second;
+            }
+            if (shouldLog)
+            {
+                float turnYaw = vr->m_RenderRotationOffset.load(
+                    std::memory_order_acquire);
+                if (!std::isfinite(turnYaw))
+                    turnYaw = vr->m_RotationOffset;
+                Game::logMsg(
+                    "[VR][FirstPersonBody] torso yaw lock deadzone=%.1f headYaw=%.1f turnYaw=%.1f visualYaw=%.1f modelYaw=%.1f animatedResidual=%.1f root=%d",
+                    vr->m_WorldModelVRPoseBodyYawDeadzoneDeg,
+                    bodyState->view.angles.y,
+                    turnYaw,
+                    visualBodyYaw,
+                    modelInfo.angles.y,
+                    animatedTorsoYawCorrectionDeg,
+                    s_layout.torsoYawRootBone);
+            }
+        }
 
         int bodyLeanRoot = s_layout.upperChestBone;
         if (bodyLeanRoot < 0 || bodyLeanRoot >= s_layout.numBones)

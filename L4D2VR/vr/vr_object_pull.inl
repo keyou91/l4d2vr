@@ -1010,6 +1010,262 @@ namespace
         return true;
     }
 
+    struct ObjectPullNativeGlowOverride
+    {
+        bool active = false;
+        VR* owner = nullptr;
+        C_BaseEntity* entity = nullptr;
+        void* entityVtable = nullptr;
+        int entityIndex = 0;
+        int originalGlowType = 0;
+        int originalGlowRange = 0;
+        int originalGlowRangeMin = 0;
+    };
+
+    static ObjectPullNativeGlowOverride g_ObjectPullNativeGlow{};
+
+    // DT_BaseEntity contains m_Glow at 0x278. DT_GlowProperty stores
+    // m_iGlowType/m_nGlowRange/m_nGlowRangeMin at +4/+8/+C.
+    static constexpr int kObjectPullGlowTypeOffset = 0x27C;
+    static constexpr int kObjectPullGlowRangeOffset = 0x280;
+    static constexpr int kObjectPullGlowRangeMinOffset = 0x284;
+
+    static bool ObjectPullSafeReadNativeGlow(
+        C_BaseEntity* entity,
+        int& outType,
+        int& outRange,
+        int& outRangeMin)
+    {
+        if (!entity)
+            return false;
+
+#ifdef _MSC_VER
+        __try
+        {
+            const uint8_t* base =
+                reinterpret_cast<const uint8_t*>(entity);
+            outType = *reinterpret_cast<const int*>(
+                base + kObjectPullGlowTypeOffset);
+            outRange = *reinterpret_cast<const int*>(
+                base + kObjectPullGlowRangeOffset);
+            outRangeMin = *reinterpret_cast<const int*>(
+                base + kObjectPullGlowRangeMinOffset);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        const uint8_t* base =
+            reinterpret_cast<const uint8_t*>(entity);
+        outType = *reinterpret_cast<const int*>(
+            base + kObjectPullGlowTypeOffset);
+        outRange = *reinterpret_cast<const int*>(
+            base + kObjectPullGlowRangeOffset);
+        outRangeMin = *reinterpret_cast<const int*>(
+            base + kObjectPullGlowRangeMinOffset);
+        return true;
+#endif
+    }
+
+    static bool ObjectPullSafeWriteNativeGlow(
+        VR* vr,
+        C_BaseEntity* entity,
+        int glowType,
+        int glowRange,
+        int glowRangeMin)
+    {
+        if (!vr ||
+            !vr->m_Game ||
+            !vr->m_Game->m_Offsets ||
+            !entity ||
+            !vr->m_Game->m_Offsets->
+                CGlowProperty_SetGlowType_Client.valid)
+        {
+            return false;
+        }
+
+#ifdef _MSC_VER
+        __try
+        {
+            uint8_t* base = reinterpret_cast<uint8_t*>(entity);
+            void* glowProperty = base + 0x278;
+            if (!*reinterpret_cast<void**>(glowProperty))
+                return false;
+
+            *reinterpret_cast<int*>(
+                base + kObjectPullGlowRangeOffset) = glowRange;
+            *reinterpret_cast<int*>(
+                base + kObjectPullGlowRangeMinOffset) = glowRangeMin;
+
+            using SetGlowTypeFn = void(__thiscall*)(void*, int);
+            auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
+                vr->m_Game->m_Offsets->
+                    CGlowProperty_SetGlowType_Client.address);
+            setGlowType(glowProperty, glowType);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        uint8_t* base = reinterpret_cast<uint8_t*>(entity);
+        void* glowProperty = base + 0x278;
+        if (!*reinterpret_cast<void**>(glowProperty))
+            return false;
+
+        *reinterpret_cast<int*>(
+            base + kObjectPullGlowRangeOffset) = glowRange;
+        *reinterpret_cast<int*>(
+            base + kObjectPullGlowRangeMinOffset) = glowRangeMin;
+
+        using SetGlowTypeFn = void(__thiscall*)(void*, int);
+        auto setGlowType = reinterpret_cast<SetGlowTypeFn>(
+            vr->m_Game->m_Offsets->
+                CGlowProperty_SetGlowType_Client.address);
+        setGlowType(glowProperty, glowType);
+        return true;
+#endif
+    }
+
+    static bool ObjectPullNativeGlowEntityStillValid(
+        VR* vr,
+        const ObjectPullNativeGlowOverride& glow)
+    {
+        if (!vr ||
+            glow.owner != vr ||
+            !glow.entity ||
+            !glow.entityVtable ||
+            glow.entityIndex <= 0)
+        {
+            return false;
+        }
+
+        C_BaseEntity* current = ObjectPullSafeGetClientEntity(
+            vr,
+            glow.entityIndex);
+        void* currentVtable = nullptr;
+        return
+            current == glow.entity &&
+            ObjectPullReadClientVtable(current, currentVtable) &&
+            currentVtable == glow.entityVtable;
+    }
+
+    static void ObjectPullRestoreNativeGlow(VR* vr)
+    {
+        ObjectPullNativeGlowOverride& glow =
+            g_ObjectPullNativeGlow;
+        if (!glow.active)
+            return;
+
+        if (ObjectPullNativeGlowEntityStillValid(vr, glow))
+        {
+            ObjectPullSafeWriteNativeGlow(
+                vr,
+                glow.entity,
+                glow.originalGlowType,
+                glow.originalGlowRange,
+                glow.originalGlowRangeMin);
+        }
+
+        glow = {};
+    }
+
+    static void ObjectPullApplyNativeGlow(
+        VR* vr,
+        C_BaseEntity* entity,
+        void* entityVtable,
+        int entityIndex)
+    {
+        if (!vr ||
+            !vr->m_ObjectPullVisualsEnabled ||
+            !entity ||
+            !entityVtable ||
+            entityIndex <= 0)
+        {
+            ObjectPullRestoreNativeGlow(vr);
+            return;
+        }
+
+        ObjectPullNativeGlowOverride& glow =
+            g_ObjectPullNativeGlow;
+        const bool sameTarget =
+            glow.active &&
+            glow.owner == vr &&
+            glow.entity == entity &&
+            glow.entityVtable == entityVtable &&
+            glow.entityIndex == entityIndex;
+
+        if (!sameTarget)
+        {
+            ObjectPullRestoreNativeGlow(vr);
+
+            int originalType = 0;
+            int originalRange = 0;
+            int originalRangeMin = 0;
+            if (!ObjectPullSafeReadNativeGlow(
+                    entity,
+                    originalType,
+                    originalRange,
+                    originalRangeMin))
+            {
+                return;
+            }
+
+            if (originalType < 0 ||
+                originalType > 3 ||
+                originalRange < 0 ||
+                originalRange > 100000 ||
+                originalRangeMin < 0 ||
+                originalRangeMin > 100000)
+            {
+                return;
+            }
+
+            glow.active = true;
+            glow.owner = vr;
+            glow.entity = entity;
+            glow.entityVtable = entityVtable;
+            glow.entityIndex = entityIndex;
+            glow.originalGlowType = originalType;
+            glow.originalGlowRange = originalRange;
+            glow.originalGlowRangeMin = originalRangeMin;
+        }
+
+        const int glowRange = std::max(
+            1,
+            static_cast<int>(
+                std::ceil(
+                    std::max(
+                        0.1f,
+                        vr->m_ObjectPullMaxDistanceMeters) *
+                    std::max(1.0f, vr->m_VRScale))));
+
+        const bool applied = ObjectPullSafeWriteNativeGlow(
+            vr,
+            entity,
+            3,
+            glowRange,
+            0);
+        if (!applied)
+        {
+            glow = {};
+            return;
+        }
+
+        if (vr->m_ObjectPullDebugLog && !sameTarget)
+        {
+            Game::logMsg(
+                "[VR][ObjectPull][client] native glow applied on main thread entity=%p index=%d originalType=%d range=%d",
+                entity,
+                entityIndex,
+                glow.originalGlowType,
+                glowRange);
+        }
+    }
+
     struct ObjectPullMainThreadTargetState
     {
         VR* owner = nullptr;
@@ -1034,6 +1290,7 @@ namespace
 
     static void ObjectPullClearMainThreadTargetState(VR* vr)
     {
+        ObjectPullRestoreNativeGlow(vr);
         g_ObjectPullMainThreadTarget = {};
         g_ObjectPullMainThreadTarget.owner = vr;
     }
@@ -1346,6 +1603,11 @@ void VR::UpdateObjectPullClientTargetMainThread(
             ObjectPullClearMainThreadTargetState(this);
         }
 
+        ObjectPullApplyNativeGlow(
+            this,
+            state.entity,
+            state.entityVtable,
+            state.entityIndex);
         ObjectPullPublishClientTargetSnapshotFromMainThread(
             this,
             request,
@@ -1414,6 +1676,11 @@ void VR::UpdateObjectPullClientTargetMainThread(
         }
     }
 
+    ObjectPullApplyNativeGlow(
+        this,
+        state.entity,
+        state.entityVtable,
+        state.entityIndex);
     ObjectPullPublishClientTargetSnapshotFromMainThread(
         this,
         request,

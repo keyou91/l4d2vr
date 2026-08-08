@@ -28,6 +28,7 @@ static std::once_flag logResetOnce;
 using tCreateInterface = void* (__cdecl*)(const char* name, int* returnCode);
 
 void L4D2VRConfigOverlay_StartWorker();
+void L4D2VRConfigOverlay_Open();
 
 namespace
 {
@@ -505,6 +506,7 @@ namespace
     constexpr char kL4D2VRServerAckCommandName[] = "l4d2vr_server_ack";
     constexpr char kL4D2VRPoseAckCommandName[] = "l4d2vr_pose_ack";
     constexpr char kL4D2VRPoseReceiveCommandName[] = "l4d2vr_pose_receive";
+    constexpr char kVRConfigCommandName[] = "vrconfig";
 
     bool ParseUnsignedCommandArgument(
         const SourceCCommand& command,
@@ -589,6 +591,11 @@ namespace
             std::numeric_limits<float>::quiet_NaN());
     }
 
+    void __cdecl OnVRConfigCommand(const SourceCCommand&)
+    {
+        L4D2VRConfigOverlay_Open();
+    }
+
     SourceRegisteredConCommand g_L4D2VRServerAckCommand(
         kL4D2VRServerAckCommandName,
         &OnL4D2VRServerAckCommand,
@@ -604,6 +611,11 @@ namespace
         &OnL4D2VRPoseReceiveCommand,
         "Receives a relayed L4D2VR world-model pose.",
         kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_VRConfigCommand(
+        kVRConfigCommandName,
+        &OnVRConfigCommand,
+        "Opens the L4D2VR configuration overlay.",
+        0);
 
     bool g_L4D2VRCommandsRegistered = false;
 
@@ -621,12 +633,15 @@ namespace
                 cvar->RegisterConCommand(&g_L4D2VRPoseAckCommand);
             if (!cvar->FindCommandBase(kL4D2VRPoseReceiveCommandName))
                 cvar->RegisterConCommand(&g_L4D2VRPoseReceiveCommand);
+            if (!cvar->FindCommandBase(kVRConfigCommandName))
+                cvar->RegisterConCommand(&g_VRConfigCommand);
             g_L4D2VRCommandsRegistered = true;
             Game::logMsg(
-                "[VR][WorldPose] registered commands: %s, %s, %s",
+                "[VR][Commands] registered commands: %s, %s, %s, %s",
                 kL4D2VRServerAckCommandName,
                 kL4D2VRPoseAckCommandName,
-                kL4D2VRPoseReceiveCommandName);
+                kL4D2VRPoseReceiveCommandName,
+                kVRConfigCommandName);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {

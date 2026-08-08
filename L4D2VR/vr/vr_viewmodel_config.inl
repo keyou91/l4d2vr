@@ -1556,15 +1556,42 @@ void VR::ParseConfigFile()
     m_NativeViewmodelArmCroppingEnabled = getBool(
         "NativeViewmodelArmCroppingEnabled",
         m_NativeViewmodelArmCroppingEnabled);
-    m_NativeViewmodelArmAnchorOffsetMeters = getVector3(
-        "NativeViewmodelArmAnchorOffsetMeters",
-        m_NativeViewmodelArmAnchorOffsetMeters);
-    m_NativeViewmodelArmAnchorOffsetMeters.x = std::clamp(
-        m_NativeViewmodelArmAnchorOffsetMeters.x, -0.5f, 0.5f);
-    m_NativeViewmodelArmAnchorOffsetMeters.y = std::clamp(
-        m_NativeViewmodelArmAnchorOffsetMeters.y, -0.5f, 0.5f);
-    m_NativeViewmodelArmAnchorOffsetMeters.z = std::clamp(
-        m_NativeViewmodelArmAnchorOffsetMeters.z, -0.5f, 0.5f);
+    {
+        auto clampArmAnchorVector = [](
+            Vector value,
+            float minValue,
+            float maxValue)
+            {
+                value.x = std::clamp(value.x, minValue, maxValue);
+                value.y = std::clamp(value.y, minValue, maxValue);
+                value.z = std::clamp(value.z, minValue, maxValue);
+                return value;
+            };
+        m_NativeViewmodelLeftArmAnchorOffsetMeters = clampArmAnchorVector(
+            getVector3(
+                "NativeViewmodelLeftArmAnchorOffsetMeters",
+                m_NativeViewmodelLeftArmAnchorOffsetMeters),
+            -0.5f,
+            0.5f);
+        m_NativeViewmodelRightArmAnchorOffsetMeters = clampArmAnchorVector(
+            getVector3(
+                "NativeViewmodelRightArmAnchorOffsetMeters",
+                m_NativeViewmodelRightArmAnchorOffsetMeters),
+            -0.5f,
+            0.5f);
+        m_NativeViewmodelLeftArmAnchorRotationOffsetDeg = clampArmAnchorVector(
+            getVector3(
+                "NativeViewmodelLeftArmAnchorRotationOffsetDeg",
+                m_NativeViewmodelLeftArmAnchorRotationOffsetDeg),
+            -180.0f,
+            180.0f);
+        m_NativeViewmodelRightArmAnchorRotationOffsetDeg = clampArmAnchorVector(
+            getVector3(
+                "NativeViewmodelRightArmAnchorRotationOffsetDeg",
+                m_NativeViewmodelRightArmAnchorRotationOffsetDeg),
+            -180.0f,
+            180.0f);
+    }
     m_NativeViewmodelArmShoulderSpacingOffsetMeters = std::clamp(
         getFloat(
             "NativeViewmodelArmShoulderSpacingOffsetMeters",

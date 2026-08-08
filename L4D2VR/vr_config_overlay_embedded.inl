@@ -1,6 +1,6 @@
 // Embedded VR config editor for L4D2VR.
 // Included by game.cpp so the existing vcxproj does not need a new ClCompile item.
-// Open/close with F8. This panel only exposes options that exist in L4D2VRConfigTool.
+// Open/close with F8, or open from the Source console with vrconfig. This panel only exposes options that exist in L4D2VRConfigTool.
 
 #ifdef _MSC_VER
 #pragma execution_character_set("utf-8")
@@ -66,6 +66,24 @@ namespace
     constexpr int kCfgComponentValueX = 792;
     constexpr int kCfgStringEditX = 1100;
     constexpr int kCfgStringEditW = 120;
+
+    constexpr int kCfgAdvancedX = 884;
+    constexpr int kCfgAdvancedY = 112;
+    constexpr int kCfgAdvancedW = 198;
+    constexpr int kCfgAdvancedH = 36;
+    constexpr int kCfgResetX = 1096;
+    constexpr int kCfgResetY = 112;
+    constexpr int kCfgResetW = 158;
+    constexpr int kCfgResetH = 36;
+    constexpr int kCfgResetConfirmPanelX = 320;
+    constexpr int kCfgResetConfirmPanelY = 292;
+    constexpr int kCfgResetConfirmPanelW = 640;
+    constexpr int kCfgResetConfirmPanelH = 260;
+    constexpr int kCfgResetConfirmYesX = 444;
+    constexpr int kCfgResetConfirmNoX = 674;
+    constexpr int kCfgResetConfirmButtonY = 476;
+    constexpr int kCfgResetConfirmButtonW = 162;
+    constexpr int kCfgResetConfirmButtonH = 44;
 
     constexpr int kCfgMenuButtonW = 260;
     constexpr int kCfgMenuButtonH = 90;
@@ -217,7 +235,10 @@ namespace
         { "VrHandsEnabled", CfgOptionType::Bool, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "VR \xE5\x8F\x8C\xE6\x89\x8B", 0.0f, 0.0f, "false" },
         { "VrHandsGlovesEnabled", CfgOptionType::Bool, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "VR \xE6\x89\x8B\xE5\xA5\x97", 0.0f, 0.0f, "false" },
         { "NativeViewmodelArmCroppingEnabled", CfgOptionType::Bool, "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "\xE8\xA3\x81\xE5\x88\x87\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82", 0.0f, 0.0f, "true" },
-        { "NativeViewmodelArmAnchorOffsetMeters", CfgOptionType::Vec3, "\346\211\213\351\203\250 / VR \345\217\214\346\211\213", "\350\247\206\345\233\276\346\250\241\345\236\213\346\211\213\350\207\202\351\224\232\347\202\271\345\201\217\347\247\273", -0.5f, 0.5f, "0,0,0" },
+        { "NativeViewmodelLeftArmAnchorOffsetMeters", CfgOptionType::Vec3, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE5\xB7\xA6\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE4\xBD\x8D\xE7\xBD\xAE\xEF\xBC\x88\xE7\xB1\xB3\xEF\xBC\x89", -0.5f, 0.5f, "0,0,0" },
+        { "NativeViewmodelRightArmAnchorOffsetMeters", CfgOptionType::Vec3, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE5\x8F\xB3\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE4\xBD\x8D\xE7\xBD\xAE\xEF\xBC\x88\xE7\xB1\xB3\xEF\xBC\x89", -0.5f, 0.5f, "0,0,0" },
+        { "NativeViewmodelLeftArmAnchorRotationOffsetDeg", CfgOptionType::Vec3, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE5\xB7\xA6\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE8\xA7\x92\xE5\xBA\xA6\xEF\xBC\x88\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x89", -180.0f, 180.0f, "0,0,0" },
+        { "NativeViewmodelRightArmAnchorRotationOffsetDeg", CfgOptionType::Vec3, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE5\x8F\xB3\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE8\xA7\x92\xE5\xBA\xA6\xEF\xBC\x88\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x89", -180.0f, 180.0f, "0,0,0" },
         { "NativeViewmodelArmShoulderSpacingOffsetMeters", CfgOptionType::Float, "\346\211\213\351\203\250 / VR \345\217\214\346\211\213", "\350\247\206\345\233\276\346\250\241\345\236\213\346\211\213\350\207\202\351\227\264\350\267\235\345\201\217\347\247\273", -0.5f, 0.5f, "0" },
         { "VrHandsTwoHandedGripTargetBoxScale", CfgOptionType::Float, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE5\x8F\x8C\xE6\x89\x8B\xE6\x8C\x81\xE6\x9E\xAA\xE8\xA7\xA6\xE5\x8F\x91\xE8\x8C\x83\xE5\x9B\xB4", 0.25f, 8.0f, "1.0" },
         { "VrHandsTwoHandedGripHeldMode", CfgOptionType::Bool, "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "\xE9\x9C\x8A\xE8\xA6\x81\xE9\x95\xBF\xE6\x8C\x89\xE6\x8F\xA1\xE6\x8C\x81\xE9\x94\xAE\xE4\xBB\xA5\xE4\xBF\x9D\xE6\x8C\x81\xE5\x89\xAF\xE6\x89\x8B\xE6\x8A\x93\xE6\x8F\xA1\xE6\x8A\xA4\xE6\x9C\xA8\xE3\x80\x82", 0.0f, 0.0f, "false" },
@@ -464,7 +485,10 @@ namespace
         { "RightAmmoHudAngleOffset", "HUD (Hand)", "HUD\357\274\210\346\211\213\346\237\204\357\274\211", "Ammo HUD Angle Offset (pitch,yaw,roll)", "\345\274\271\350\215\257HUD\350\247\222\345\272\246\345\201\217\347\247\273 (\344\277\257\344\273\260,\345\201\217\350\210\252,\347\277\273\346\273\232)", "Additional rotation for the ammo HUD overlay (degrees).", "\345\274\271\350\215\257HUD\350\246\206\347\233\226\345\261\202\347\232\204\351\242\235\345\244\226\346\227\213\350\275\254\357\274\210\345\272\246\357\274\211\343\200\202", "Adjust so it sits like a weapon-side panel.", "\350\260\203\345\210\260\345\203\217\350\264\264\345\234\250\346\255\246\345\231\250\346\227\201\350\276\271\347\232\204\345\260\217\345\261\217\345\271\225\345\215\263\345\217\257\343\200\202" },
         
         { "NativeViewmodelArmCroppingEnabled", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "Crop Native Viewmodel Arms", "\xE8\xA3\x81\xE5\x88\x87\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82", "When enabled, keeps the existing wrist crop and shows only the native viewmodel hands. When disabled, complete native viewmodel arms use analytic two-bone IK. With the first-person body active, the IK shoulder roots come from the body model actual anchored upper-arm bones and use its shoulder line as the arm frame; otherwise the existing independent shoulder roots are used.", "\xE5\xBC\x80\xE5\x90\xAF\xE6\x97\xB6\xE4\xBF\x9D\xE7\x95\x99\xE7\x8E\xB0\xE6\x9C\x89\xE6\x89\x8B\xE8\x85\x95\xE8\xA3\x81\xE5\x88\x87\xEF\xBC\x8C\xE5\x8F\xAA\xE6\x98\xBE\xE7\xA4\xBA\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE9\x83\xA8\xE3\x80\x82\xE5\x85\xB3\xE9\x97\xAD\xE6\x97\xB6\xEF\xBC\x8C\xE5\xAE\x8C\xE6\x95\xB4\xE5\x8E\x9F\xE7\x94\x9F\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82\xE4\xBD\xBF\xE7\x94\xA8\xE8\xA7\xA3\xE6\x9E\x90\xE5\xBC\x8F\xE5\x8F\x8C\xE9\xAA\xA8 IK\xE3\x80\x82\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE5\x90\xAF\xE7\x94\xA8\xE6\x97\xB6\xEF\xBC\x8CIK \xE8\x82\xA9\xE9\x83\xA8\xE6\xA0\xB9\xE8\x8A\x82\xE7\x82\xB9\xE7\x9B\xB4\xE6\x8E\xA5\xE4\xBD\xBF\xE7\x94\xA8\xE8\xBA\xAB\xE4\xBD\x93\xE6\xA8\xA1\xE5\x9E\x8B\xE5\xAE\x9E\xE9\x99\x85\xE9\x94\x9A\xE5\xAE\x9A\xE5\x90\x8E\xE7\x9A\x84\xE4\xB8\x8A\xE8\x87\x82\xE8\x82\xA9\xE7\x82\xB9\xEF\xBC\x8C\xE5\xB9\xB6\xE6\x8C\x89\xE8\xBA\xAB\xE4\xBD\x93\xE8\x82\xA9\xE7\xBA\xBF\xE5\xBB\xBA\xE7\xAB\x8B\xE6\x89\x8B\xE8\x87\x82\xE5\x9D\x90\xE6\xA0\x87\xE7\xB3\xBB\xEF\xBC\x9B\xE6\x9C\xAA\xE5\x90\xAF\xE7\x94\xA8\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE6\x97\xB6\xE4\xBD\xBF\xE7\x94\xA8\xE5\x8E\x9F\xE6\x9C\x89\xE7\x8B\xAC\xE7\xAB\x8B\xE8\x82\xA9\xE7\x82\xB9\xE3\x80\x82", "The arm roots now stay centred on the visible torso while physical head yaw remains independent inside the body-yaw deadzone.", "\xE6\x89\x8B\xE8\x87\x82\xE6\xA0\xB9\xE8\x8A\x82\xE7\x82\xB9\xE4\xBC\x9A\xE4\xBF\x9D\xE6\x8C\x81\xE5\x9C\xA8\xE5\x8F\xAF\xE8\xA7\x81\xE8\xBA\xAF\xE5\xB9\xB2\xE4\xB8\x8A\xE5\xB1\x85\xE4\xB8\xAD\xEF\xBC\x9B\xE7\x89\xA9\xE7\x90\x86\xE8\xBD\xAC\xE5\xA4\xB4\xE4\xBD\x8D\xE4\xBA\x8E\xE8\xBA\xAB\xE4\xBD\x93\xE5\x81\x8F\xE8\x88\xAA\xE8\x87\xAA\xE7\x94\xB1\xE8\xA7\x92\xE5\xBA\xA6\xE5\x86\x85\xE6\x97\xB6\xE4\xB8\x8D\xE4\xBC\x9A\xE5\xB8\xA6\xE7\x9D\x80\xE8\x82\xA9\xE9\x83\xA8\xE4\xB8\x80\xE8\xB5\xB7\xE6\x97\x8B\xE8\xBD\xAC\xE3\x80\x82" },
-        { "NativeViewmodelArmAnchorOffsetMeters", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "Viewmodel Arm Anchor Offset (m)", "\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE5\x81\x8F\xE7\xA7\xBB", "Moves both first-person full-arm IK shoulder roots in the current body-aligned frame. X=forward, Y=right, Z=up. When the first-person body is active this offset is applied after reading its anchored shoulder bones.", "\xE7\xA7\xBB\xE5\x8A\xA8\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xAE\x8C\xE6\x95\xB4 IK \xE6\x89\x8B\xE8\x87\x82\xE7\x9A\x84\xE8\xBA\xAB\xE4\xBD\x93\xE5\xAF\xB9\xE9\xBD\x90\xE8\x82\xA9\xE7\x82\xB9\xE3\x80\x82X=\xE5\x90\x91\xE5\x89\x8D\xEF\xBC\x8CY=\xE5\x90\x91\xE5\x8F\xB3\xEF\xBC\x8CZ=\xE5\x90\x91\xE4\xB8\x8A\xE3\x80\x82\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE5\x90\xAF\xE7\x94\xA8\xE6\x97\xB6\xEF\xBC\x8C\xE4\xBC\x9A\xE5\x85\x88\xE8\xAF\xBB\xE5\x8F\x96\xE8\xBA\xAB\xE4\xBD\x93\xE5\xAE\x9E\xE9\x99\x85\xE9\x94\x9A\xE5\xAE\x9A\xE5\x90\x8E\xE7\x9A\x84\xE8\x82\xA9\xE7\x82\xB9\xEF\xBC\x8C\xE5\x86\x8D\xE5\xBA\x94\xE7\x94\xA8\xE6\xAD\xA4\xE5\x81\x8F\xE7\xA7\xBB\xE3\x80\x82", "Use small steps such as 0.01 m. This does not move the controller or hand targets.", "\xE5\xBB\xBA\xE8\xAE\xAE\xE6\xAF\x8F\xE6\xAC\xA1\xE4\xBB\xA5 0.01 \xE7\xB1\xB3\xE5\xBE\xAE\xE8\xB0\x83\xEF\xBC\x9B\xE8\xAF\xA5\xE5\x8F\x82\xE6\x95\xB0\xE4\xB8\x8D\xE4\xBC\x9A\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE6\x88\x96\xE6\x89\x8B\xE6\x8E\x8C\xE7\x9B\xAE\xE6\xA0\x87\xE3\x80\x82" },
+        { "NativeViewmodelLeftArmAnchorOffsetMeters", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Left Viewmodel Arm Anchor Offset (m)", "\xE5\xB7\xA6\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE4\xBD\x8D\xE7\xBD\xAE\xEF\xBC\x88\xE7\xB1\xB3\xEF\xBC\x89", "Moves only the left first-person full-arm IK shoulder root in the current body-aligned frame. X=forward, Y=right, Z=up. The offset is applied after the body/fallback shoulder position has been resolved.", "\xE4\xBB\x85\xE7\xA7\xBB\xE5\x8A\xA8\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xAE\x8C\xE6\x95\xB4\x20\x49\x4B\x20\xE5\xB7\xA6\xE8\x87\x82\xE7\x9A\x84\xE8\x82\xA9\xE9\x83\xA8\xE6\xA0\xB9\xE8\x8A\x82\xE7\x82\xB9\xE3\x80\x82\xE5\x9D\x90\xE6\xA0\x87\xE4\xBD\xBF\xE7\x94\xA8\xE5\xBD\x93\xE5\x89\x8D\xE8\xBA\xAB\xE4\xBD\x93\xE5\xAF\xB9\xE9\xBD\x90\xE5\x9D\x90\xE6\xA0\x87\xE7\xB3\xBB\xEF\xBC\x9A\x58\x3D\xE5\x90\x91\xE5\x89\x8D\xEF\xBC\x8C\x59\x3D\xE5\x90\x91\xE5\x8F\xB3\xEF\xBC\x8C\x5A\x3D\xE5\x90\x91\xE4\xB8\x8A\xEF\xBC\x9B\xE5\x9C\xA8\xE8\xBA\xAB\xE4\xBD\x93\xE8\x82\xA9\xE7\x82\xB9\xE6\x88\x96\xE5\xA4\x87\xE7\x94\xA8\xE8\x82\xA9\xE7\x82\xB9\xE7\xA1\xAE\xE5\xAE\x9A\xE5\x90\x8E\xE5\x86\x8D\xE5\xBA\x94\xE7\x94\xA8\xE3\x80\x82", "Use small steps such as 0.01 m. This does not move the controller or left-hand target.", "\xE5\xBB\xBA\xE8\xAE\xAE\xE6\xAF\x8F\xE6\xAC\xA1\xE4\xBB\xA5\x20\x30\x2E\x30\x31\x20\xE7\xB1\xB3\xE5\xBE\xAE\xE8\xB0\x83\xEF\xBC\x9B\xE4\xB8\x8D\xE4\xBC\x9A\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE6\x88\x96\xE5\xB7\xA6\xE6\x89\x8B\xE7\x9B\xAE\xE6\xA0\x87\xE3\x80\x82" },
+        { "NativeViewmodelRightArmAnchorOffsetMeters", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Right Viewmodel Arm Anchor Offset (m)", "\xE5\x8F\xB3\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE4\xBD\x8D\xE7\xBD\xAE\xEF\xBC\x88\xE7\xB1\xB3\xEF\xBC\x89", "Moves only the right first-person full-arm IK shoulder root in the current body-aligned frame. X=forward, Y=right, Z=up. The offset is applied after the body/fallback shoulder position has been resolved.", "\xE4\xBB\x85\xE7\xA7\xBB\xE5\x8A\xA8\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xAE\x8C\xE6\x95\xB4\x20\x49\x4B\x20\xE5\x8F\xB3\xE8\x87\x82\xE7\x9A\x84\xE8\x82\xA9\xE9\x83\xA8\xE6\xA0\xB9\xE8\x8A\x82\xE7\x82\xB9\xE3\x80\x82\xE5\x9D\x90\xE6\xA0\x87\xE4\xBD\xBF\xE7\x94\xA8\xE5\xBD\x93\xE5\x89\x8D\xE8\xBA\xAB\xE4\xBD\x93\xE5\xAF\xB9\xE9\xBD\x90\xE5\x9D\x90\xE6\xA0\x87\xE7\xB3\xBB\xEF\xBC\x9A\x58\x3D\xE5\x90\x91\xE5\x89\x8D\xEF\xBC\x8C\x59\x3D\xE5\x90\x91\xE5\x8F\xB3\xEF\xBC\x8C\x5A\x3D\xE5\x90\x91\xE4\xB8\x8A\xEF\xBC\x9B\xE5\x9C\xA8\xE8\xBA\xAB\xE4\xBD\x93\xE8\x82\xA9\xE7\x82\xB9\xE6\x88\x96\xE5\xA4\x87\xE7\x94\xA8\xE8\x82\xA9\xE7\x82\xB9\xE7\xA1\xAE\xE5\xAE\x9A\xE5\x90\x8E\xE5\x86\x8D\xE5\xBA\x94\xE7\x94\xA8\xE3\x80\x82", "Use small steps such as 0.01 m. This does not move the controller or right-hand target.", "\xE5\xBB\xBA\xE8\xAE\xAE\xE6\xAF\x8F\xE6\xAC\xA1\xE4\xBB\xA5\x20\x30\x2E\x30\x31\x20\xE7\xB1\xB3\xE5\xBE\xAE\xE8\xB0\x83\xEF\xBC\x9B\xE4\xB8\x8D\xE4\xBC\x9A\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE6\x88\x96\xE5\x8F\xB3\xE6\x89\x8B\xE7\x9B\xAE\xE6\xA0\x87\xE3\x80\x82" },
+        { "NativeViewmodelLeftArmAnchorRotationOffsetDeg", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Left Viewmodel Arm Anchor Rotation (pitch,yaw,roll)", "\xE5\xB7\xA6\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE8\xA7\x92\xE5\xBA\xA6\xEF\xBC\x88\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x89", "Rotates only the left full-arm IK shoulder-root frame in torso-local pitch, yaw and roll. It changes the animation-free arm-root orientation and the elbow bend/twist reference without rotating or moving the controller/hand target.", "\xE4\xBB\x85\xE6\x97\x8B\xE8\xBD\xAC\xE5\xB7\xA6\xE4\xBE\xA7\xE5\xAE\x8C\xE6\x95\xB4\xE6\x89\x8B\xE8\x87\x82\x20\x49\x4B\x20\xE7\x9A\x84\xE8\x82\xA9\xE9\x83\xA8\xE6\xA0\xB9\xE5\x9D\x90\xE6\xA0\x87\xE7\xB3\xBB\xEF\xBC\x8C\xE6\x8C\x89\xE8\xBA\xAB\xE4\xBD\x93\xE5\xB1\x80\xE9\x83\xA8\xE4\xBF\xAF\xE4\xBB\xB0\xE3\x80\x81\xE5\x81\x8F\xE8\x88\xAA\xE3\x80\x81\xE7\xBF\xBB\xE6\xBB\x9A\xE8\xB0\x83\xE6\x95\xB4\xE3\x80\x82\xE5\xAE\x83\xE4\xBC\x9A\xE6\x94\xB9\xE5\x8F\x98\xE6\x97\xA0\xE5\x8A\xA8\xE7\x94\xBB\xE6\x89\x8B\xE8\x87\x82\xE6\xA0\xB9\xE5\xA7\xBF\xE6\x80\x81\xE4\xBB\xA5\xE5\x8F\x8A\xE8\x82\x98\xE9\x83\xA8\xE5\xBC\xAF\xE6\x9B\xB2\x2F\xE6\x89\xAD\xE8\xBD\xAC\xE5\x8F\x82\xE8\x80\x83\xEF\xBC\x8C\xE4\xBD\x86\xE4\xB8\x8D\xE4\xBC\x9A\xE6\x97\x8B\xE8\xBD\xAC\xE6\x88\x96\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE4\xB8\x8E\xE6\x89\x8B\xE6\x8E\x8C\xE7\x9B\xAE\xE6\xA0\x87\xE3\x80\x82", "X=pitch, Y=yaw, Z=roll. Start with 1-5 degree adjustments.", "\x58\x3D\xE4\xBF\xAF\xE4\xBB\xB0\xEF\xBC\x8C\x59\x3D\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\x5A\x3D\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x9B\xE5\xBB\xBA\xE8\xAE\xAE\xE5\x85\x88\xE4\xBB\xA5\x20\x31\x20\xE5\x88\xB0\x20\x35\x20\xE5\xBA\xA6\xE5\xBE\xAE\xE8\xB0\x83\xE3\x80\x82" },
+        { "NativeViewmodelRightArmAnchorRotationOffsetDeg", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8\x20\x2F\x20\x56\x52\x20\xE5\x8F\x8C\xE6\x89\x8B", "Right Viewmodel Arm Anchor Rotation (pitch,yaw,roll)", "\xE5\x8F\xB3\xE8\x87\x82\xE9\x94\x9A\xE7\x82\xB9\xE8\xA7\x92\xE5\xBA\xA6\xEF\xBC\x88\xE4\xBF\xAF\xE4\xBB\xB0\x2C\xE5\x81\x8F\xE8\x88\xAA\x2C\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x89", "Rotates only the right full-arm IK shoulder-root frame in torso-local pitch, yaw and roll. It changes the animation-free arm-root orientation and the elbow bend/twist reference without rotating or moving the controller/hand target.", "\xE4\xBB\x85\xE6\x97\x8B\xE8\xBD\xAC\xE5\x8F\xB3\xE4\xBE\xA7\xE5\xAE\x8C\xE6\x95\xB4\xE6\x89\x8B\xE8\x87\x82\x20\x49\x4B\x20\xE7\x9A\x84\xE8\x82\xA9\xE9\x83\xA8\xE6\xA0\xB9\xE5\x9D\x90\xE6\xA0\x87\xE7\xB3\xBB\xEF\xBC\x8C\xE6\x8C\x89\xE8\xBA\xAB\xE4\xBD\x93\xE5\xB1\x80\xE9\x83\xA8\xE4\xBF\xAF\xE4\xBB\xB0\xE3\x80\x81\xE5\x81\x8F\xE8\x88\xAA\xE3\x80\x81\xE7\xBF\xBB\xE6\xBB\x9A\xE8\xB0\x83\xE6\x95\xB4\xE3\x80\x82\xE5\xAE\x83\xE4\xBC\x9A\xE6\x94\xB9\xE5\x8F\x98\xE6\x97\xA0\xE5\x8A\xA8\xE7\x94\xBB\xE6\x89\x8B\xE8\x87\x82\xE6\xA0\xB9\xE5\xA7\xBF\xE6\x80\x81\xE4\xBB\xA5\xE5\x8F\x8A\xE8\x82\x98\xE9\x83\xA8\xE5\xBC\xAF\xE6\x9B\xB2\x2F\xE6\x89\xAD\xE8\xBD\xAC\xE5\x8F\x82\xE8\x80\x83\xEF\xBC\x8C\xE4\xBD\x86\xE4\xB8\x8D\xE4\xBC\x9A\xE6\x97\x8B\xE8\xBD\xAC\xE6\x88\x96\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE4\xB8\x8E\xE6\x89\x8B\xE6\x8E\x8C\xE7\x9B\xAE\xE6\xA0\x87\xE3\x80\x82", "X=pitch, Y=yaw, Z=roll. Start with 1-5 degree adjustments.", "\x58\x3D\xE4\xBF\xAF\xE4\xBB\xB0\xEF\xBC\x8C\x59\x3D\xE5\x81\x8F\xE8\x88\xAA\xEF\xBC\x8C\x5A\x3D\xE7\xBF\xBB\xE6\xBB\x9A\xEF\xBC\x9B\xE5\xBB\xBA\xE8\xAE\xAE\xE5\x85\x88\xE4\xBB\xA5\x20\x31\x20\xE5\x88\xB0\x20\x35\x20\xE5\xBA\xA6\xE5\xBE\xAE\xE8\xB0\x83\xE3\x80\x82" },
         { "NativeViewmodelArmShoulderSpacingOffsetMeters", "Hands / VR Hands", "\xE6\x89\x8B\xE9\x83\xA8 / VR \xE5\x8F\x8C\xE6\x89\x8B", "Viewmodel Arm Spacing Offset (m)", "\xE8\xA7\x86\xE5\x9B\xBE\xE6\xA8\xA1\xE5\x9E\x8B\xE6\x89\x8B\xE8\x87\x82\xE9\x97\xB4\xE8\xB7\x9D\xE5\x81\x8F\xE7\xA7\xBB", "Adds to the total distance between the two first-person IK shoulder roots. With the first-person body active, the offset starts from the body model actual anchored shoulder width; positive values widen the arms and negative values narrow them.", "\xE8\xB0\x83\xE6\x95\xB4\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE5\xAE\x8C\xE6\x95\xB4 IK \xE6\x89\x8B\xE8\x87\x82\xE5\xB7\xA6\xE5\x8F\xB3\xE8\x82\xA9\xE7\x82\xB9\xE6\x80\xBB\xE9\x97\xB4\xE8\xB7\x9D\xEF\xBC\x9B\xE7\xAC\xAC\xE4\xB8\x80\xE4\xBA\xBA\xE7\xA7\xB0\xE8\xBA\xAB\xE4\xBD\x93\xE5\x90\xAF\xE7\x94\xA8\xE6\x97\xB6\xEF\xBC\x8C\xE4\xBC\x9A\xE4\xBB\x8E\xE8\xBA\xAB\xE4\xBD\x93\xE6\xA8\xA1\xE5\x9E\x8B\xE5\xAE\x9E\xE9\x99\x85\xE9\x94\x9A\xE5\xAE\x9A\xE5\x90\x8E\xE7\x9A\x84\xE8\x82\xA9\xE5\xAE\xBD\xE7\xBB\xA7\xE7\xBB\xAD\xE5\x81\x8F\xE7\xA7\xBB\xE3\x80\x82\xE6\xAD\xA3\xE5\x80\xBC\xE5\x8A\xA0\xE5\xAE\xBD\xEF\xBC\x8C\xE8\xB4\x9F\xE5\x80\xBC\xE6\x94\xB6\xE7\xAA\x84\xE3\x80\x82", "Half of the configured value is applied to each side along the measured shoulder line.", "\xE8\xAE\xBE\xE5\xAE\x9A\xE5\x80\xBC\xE4\xBC\x9A\xE6\xB2\xBF\xE5\xAE\x9E\xE9\x99\x85\xE8\x82\xA9\xE7\xBA\xBF\xE5\xB9\xB3\xE5\x9D\x87\xE5\x88\x86\xE9\x85\x8D\xE5\x88\xB0\xE5\xB7\xA6\xE5\x8F\xB3\xE4\xB8\xA4\xE4\xBE\xA7\xE3\x80\x82" },
         { "HideArms", "Hands / Debug", "\346\211\213\351\203\250 / \350\260\203\350\257\225", "Hide Arms", "\351\232\220\350\227\217\346\211\213\350\207\202", "Hides in-game arm models while keeping weapons.", "\351\232\220\350\227\217\346\270\270\346\210\217\344\270\255\347\232\204\346\211\213\350\207\202\346\250\241\345\236\213\357\274\214\344\273\205\344\277\235\347\225\231\346\255\246\345\231\250\343\200\202", "", "" },
         
@@ -731,6 +755,8 @@ namespace
         bool visible = false;
         bool materialVisible = false;
         bool prevF8 = false;
+        bool resetConfirmVisible = false;
+        bool advancedMode = false;
         bool dirty = true;
         bool needsUpload = true;
         bool useChinese = true;
@@ -1637,31 +1663,114 @@ namespace
         return CfgIsEnabled(s, "KillIndicatorEnabled", false) || CfgIsEnabled(s, "HitIndicatorEnabled", false);
     }
 
-    static bool CfgIsSpecVisible(const CfgOverlayState& s, const CfgOptionSpec& spec) // NOLINT(readability-function-cognitive-complexity)
+    // Simple mode contains only the main user-facing feature switches plus the
+    // handful of global scale/display settings that are useful before enabling
+    // any feature. All tuning values and nested behavior switches stay in
+    // Advanced mode, even when their parent feature is currently enabled.
+    static bool CfgIsSimpleSpec(const CfgOptionSpec& spec)
+    {
+        static constexpr const char* kSimpleKeys[] =
+        {
+            "ConfigOverlayDistanceMeters",
+            "ConfigOverlaySizeMeters",
+            "VRScale",
+            "IPDScale",
+            "Roomscale1To1Movement",
+            "LeftHanded",
+            "MoveDirectionFromController",
+            "SnapTurning",
+            "MouseModeEnabled",
+            "AutoMatQueueMode",
+            "AntiAliasing",
+            "ReShadeVRCompat",
+            "VrRecommendedVideoSettingsEnabled",
+            "DesktopMirrorEnabled",
+            "HudAlwaysVisible",
+            "HudAlwaysHidden",
+            "LeftWristHudEnabled",
+            "RightAmmoHudEnabled",
+            "FirstPersonBodyEnabled",
+            "WorldModelVRPoseEnabled",
+            "VrHandsEnabled",
+            "RequireSecondaryAttackForItemSwitch",
+            "ViewmodelAdjustEnabled",
+            "ViewmodelDisableMoveBob",
+            "ViewmodelAutoGripAlignEnabled",
+            "AutoRepeatSemiAutoFire",
+            "HitSoundEnabled",
+            "KillSoundEnabled",
+            "BlockFireOnFriendlyAimEnabled",
+            "ManualThrowEnabled",
+            "ObjectPullEnabled",
+            "MotionGesturesEnabled",
+            "ScopeEnabled",
+            "ThirdPersonCameraFollowHmd",
+            "D3DAimLineOverlayEnabled",
+            "FlashlightEnhancementEnabled",
+            "AutoFlashlightEnabled",
+        };
+
+        for (const char* simpleKey : kSimpleKeys)
+        {
+            if (std::strcmp(spec.key, simpleKey) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    // Parent/child containment for the config UI. This is deliberately kept
+    // separate from Simple/Advanced filtering: Advanced mode reveals children,
+    // but a child still stays hidden until the feature it configures is active.
+    static bool CfgSpecParentEnabled(const CfgOverlayState& s, const CfgOptionSpec& spec) // NOLINT(readability-function-cognitive-complexity)
     {
         const char* key = spec.key;
         if (!key || !*key)
             return false;
 
-        // Hidden from the main config panel, except for the user-facing arm crop switch.
+        // Internal/legacy NativeViewmodel values stay hidden. The complete-arm
+        // anchor controls are the exception and are exposed only while full-arm
+        // IK is active below.
+        const bool nativeFullArmTuning =
+            std::strcmp(key, "NativeViewmodelLeftArmAnchorOffsetMeters") == 0 ||
+            std::strcmp(key, "NativeViewmodelRightArmAnchorOffsetMeters") == 0 ||
+            std::strcmp(key, "NativeViewmodelLeftArmAnchorRotationOffsetDeg") == 0 ||
+            std::strcmp(key, "NativeViewmodelRightArmAnchorRotationOffsetDeg") == 0 ||
+            std::strcmp(key, "NativeViewmodelArmShoulderSpacingOffsetMeters") == 0;
         if (CfgStartsWith(key, "NativeViewmodel") &&
-            std::strcmp(key, "NativeViewmodelArmCroppingEnabled") != 0)
+            std::strcmp(key, "NativeViewmodelArmCroppingEnabled") != 0 &&
+            !nativeFullArmTuning)
         {
             return false;
         }
         if (std::strcmp(key, "HitIndicatorEnabled") == 0)
             return false;
-        if (std::strcmp(key, "HiddenMaterialNames") == 0)
-            return CfgIsEnabled(s, "ClothingMaterials", false);
 
         // --- Roomscale Movement ---
         if (CfgStartsWith(key, "Roomscale1To1") && std::strcmp(key, "Roomscale1To1Movement") != 0)
-            return CfgIsEnabled(s, "Roomscale1To1Movement", false);
+        {
+            if (!CfgIsEnabled(s, "Roomscale1To1Movement", false))
+                return false;
+            if ((std::strcmp(key, "Roomscale1To1CrouchEnterMeters") == 0 ||
+                std::strcmp(key, "Roomscale1To1CrouchExitMeters") == 0) &&
+                !CfgIsEnabled(s, "Roomscale1To1PhysicalCrouch", true))
+            {
+                return false;
+            }
+        }
 
         // --- Input / Turning ---
         if (std::strcmp(key, "SnapTurnAngle") == 0)
             return CfgIsEnabled(s, "SnapTurning", false);
+
         // --- Input / Mouse Mode ---
+        if (std::strcmp(key, "MouseModeScopeToggleKey") == 0 ||
+            std::strcmp(key, "MouseModeScopedViewmodelAnchorOffset") == 0 ||
+            std::strcmp(key, "MouseModeScopeOverlayOffset") == 0 ||
+            std::strcmp(key, "MouseModeScopeOverlayAngleOffset") == 0)
+        {
+            return CfgIsEnabled(s, "MouseModeEnabled", false) &&
+                CfgIsEnabled(s, "ScopeEnabled", false);
+        }
         if (CfgStartsWith(key, "MouseMode") && std::strcmp(key, "MouseModeEnabled") != 0)
             return CfgIsEnabled(s, "MouseModeEnabled", false);
 
@@ -1671,8 +1780,38 @@ namespace
         if (CfgStartsWith(key, "RightAmmoHud") && std::strcmp(key, "RightAmmoHudEnabled") != 0)
             return CfgIsEnabled(s, "RightAmmoHudEnabled", false);
 
+        // --- Body / First Person ---
+        if (std::strcmp(key, "ClothingMaterials") == 0)
+            return CfgIsEnabled(s, "FirstPersonBodyEnabled", false);
+        if (std::strcmp(key, "HiddenMaterialNames") == 0)
+        {
+            return CfgIsEnabled(s, "FirstPersonBodyEnabled", false) &&
+                CfgIsEnabled(s, "ClothingMaterials", false);
+        }
+
+        // The body-yaw deadzone and lean envelope are shared by first-person body
+        // anchoring and the world-model VR pose. World-model-only values remain
+        // under WorldModelVRPoseEnabled.
+        const bool anyBodyPoseEnabled =
+            CfgIsEnabled(s, "FirstPersonBodyEnabled", false) ||
+            CfgIsEnabled(s, "WorldModelVRPoseEnabled", false);
+        if (std::strcmp(key, "WorldModelVRPoseBodyYawDeadzoneDeg") == 0 ||
+            std::strcmp(key, "BodyLeanMaxOffsetMeters") == 0 ||
+            std::strcmp(key, "BodyLeanMaxAngleDeg") == 0)
+        {
+            return anyBodyPoseEnabled;
+        }
+        if (std::strcmp(key, "WorldModelVRPoseLocalThirdPerson") == 0 ||
+            std::strcmp(key, "WorldModelVRPoseLeftHandRotationOffsetDeg") == 0 ||
+            std::strcmp(key, "WorldModelVRPoseRightHandRotationOffsetDeg") == 0)
+        {
+            return CfgIsEnabled(s, "WorldModelVRPoseEnabled", false);
+        }
+
         // --- Hands / VR Hands ---
-        const bool vrHandsEntryEnabled = CfgIsEnabled(s, "VrHandsEnabled", false) || CfgIsEnabled(s, "LeftHanded", false);
+        const bool vrHandsEntryEnabled =
+            CfgIsEnabled(s, "VrHandsEnabled", false) ||
+            CfgIsEnabled(s, "LeftHanded", false);
         if (std::strcmp(key, "VrHandsGlovesEnabled") == 0)
             return vrHandsEntryEnabled;
         if (std::strcmp(key, "NativeViewmodelArmCroppingEnabled") == 0)
@@ -1681,68 +1820,110 @@ namespace
                 !CfgIsEnabled(s, "VrHandsGlovesEnabled", false) &&
                 !CfgIsEnabled(s, "LeftHanded", false);
         }
-        if (CfgStartsWith(key, "VrHandsTwoHanded") || CfgStartsWith(key, "VrHandsVirtualStock") || std::strcmp(key, "VrHandsRealBulletSpreadEnabled") == 0)
+        if (nativeFullArmTuning)
+        {
+            return vrHandsEntryEnabled &&
+                !CfgIsEnabled(s, "VrHandsGlovesEnabled", false) &&
+                !CfgIsEnabled(s, "LeftHanded", false) &&
+                !CfgIsEnabled(s, "NativeViewmodelArmCroppingEnabled", true);
+        }
+        if (std::strcmp(key, "VrHandsVirtualStockEnabled") == 0)
             return vrHandsEntryEnabled;
+        if (std::strcmp(key, "VrHandsVirtualStockStrength") == 0 ||
+            std::strcmp(key, "VrHandsVirtualStockOffsetMeters") == 0)
+        {
+            return vrHandsEntryEnabled && CfgIsEnabled(s, "VrHandsVirtualStockEnabled", false);
+        }
+        if (CfgStartsWith(key, "VrHandsTwoHanded") ||
+            std::strcmp(key, "VrHandsRealBulletSpreadEnabled") == 0)
+        {
+            return vrHandsEntryEnabled;
+        }
 
         // --- Hands / Reload ---
         if (std::strcmp(key, "MagazineInteractionEnabled") == 0)
             return vrHandsEntryEnabled;
-        if (std::strcmp(key, "MagazineInteractionQuickReloadMode") == 0)
-            return vrHandsEntryEnabled && CfgIsEnabled(s, "MagazineInteractionEnabled", false);
-        if (std::strcmp(key, "MagazineInteractionUseButtonGripInput") == 0)
-            return vrHandsEntryEnabled && CfgIsEnabled(s, "MagazineInteractionEnabled", false);
-        if (std::strcmp(key, "MagazineInteractionSeparateButtonInput") == 0)
-            return vrHandsEntryEnabled &&
-                CfgIsEnabled(s, "MagazineInteractionUseButtonGripInput", false) &&
-                CfgIsEnabled(s, "MagazineInteractionEnabled", false);
-        if (std::strcmp(key, "MagazineInteractionUseButtonDisbleReloadCommand") == 0)
-            return vrHandsEntryEnabled && CfgIsEnabled(s, "MagazineInteractionUseButtonGripInput", false) && CfgIsEnabled(s, "MagazineInteractionEnabled", false);
-        if (std::strcmp(key, "MagazineBoxDebugEnabled") == 0 ||
-            std::strcmp(key, "MagazineInteractionSuppressEmptyClipAutoReload") == 0 ||
-            std::strcmp(key, "MagazineInteractionShotgunShellsPerInsert") == 0 ||
-            std::strcmp(key, "MagazineInteractionFreshMagazinePickupOffsetMeters") == 0 ||
-            std::strcmp(key, "MagazineInteractionFreshMagazineWristAnchorOffsetMeters") == 0)
+        if (CfgStartsWith(key, "MagazineInteraction") &&
+            std::strcmp(key, "MagazineInteractionEnabled") != 0)
+        {
+            if (!vrHandsEntryEnabled || !CfgIsEnabled(s, "MagazineInteractionEnabled", false))
+                return false;
+
+            if (std::strcmp(key, "MagazineInteractionSeparateButtonInput") == 0 ||
+                std::strcmp(key, "MagazineInteractionUseButtonDisbleReloadCommand") == 0)
+            {
+                return CfgIsEnabled(s, "MagazineInteractionUseButtonGripInput", false);
+            }
+        }
+        if (std::strcmp(key, "MagazineBoxDebugEnabled") == 0)
             return vrHandsEntryEnabled && CfgIsEnabled(s, "MagazineInteractionEnabled", false);
 
         // --- Interaction / Combos ---
         if (std::strcmp(key, "ViewmodelAdjustCombo") == 0 ||
             std::strcmp(key, "ViewmodelAdjustMoveSpeed") == 0 ||
             std::strcmp(key, "ViewmodelAdjustRotateSpeed") == 0)
+        {
             return CfgIsEnabled(s, "ViewmodelAdjustEnabled", false);
+        }
+
         // --- Weapons / Fire ---
-        if (std::strcmp(key, "AutoRepeatSemiAutoFireHz") == 0 || std::strcmp(key, "AutoRepeatSprayPushEnabled") == 0)
+        if (std::strcmp(key, "AutoRepeatSemiAutoFireHz") == 0 ||
+            std::strcmp(key, "AutoRepeatSprayPushEnabled") == 0)
+        {
             return CfgIsEnabled(s, "AutoRepeatSemiAutoFire", false);
-        if (std::strcmp(key, "AutoRepeatSprayPushDelayTicks") == 0 || std::strcmp(key, "AutoRepeatSprayPushHoldTicks") == 0)
-            return CfgIsEnabled(s, "AutoRepeatSemiAutoFire", false) && CfgIsEnabled(s, "AutoRepeatSprayPushEnabled", false);
+        }
+        if (std::strcmp(key, "AutoRepeatSprayPushDelayTicks") == 0 ||
+            std::strcmp(key, "AutoRepeatSprayPushHoldTicks") == 0)
+        {
+            return CfgIsEnabled(s, "AutoRepeatSemiAutoFire", false) &&
+                CfgIsEnabled(s, "AutoRepeatSprayPushEnabled", false);
+        }
         if (std::strcmp(key, "HitSoundSpec") == 0)
             return CfgIsEnabled(s, "HitSoundEnabled", false);
         if (std::strcmp(key, "HitSoundVolume") == 0)
-            return CfgIsEnabled(s, "HitSoundEnabled", false) || CfgIsEnabled(s, "KillSoundEnabled", false);
+        {
+            return CfgIsEnabled(s, "HitSoundEnabled", false) ||
+                CfgIsEnabled(s, "KillSoundEnabled", false);
+        }
         if (std::strcmp(key, "KillSoundNormalSpec") == 0 ||
             std::strcmp(key, "KillSoundHeadshotSpec") == 0 ||
             std::strcmp(key, "KillSoundVolume") == 0 ||
             std::strcmp(key, "HeadshotSoundVolume") == 0)
+        {
             return CfgIsEnabled(s, "KillSoundEnabled", false);
+        }
         if (CfgStartsWith(key, "KillIndicator") && std::strcmp(key, "KillIndicatorEnabled") != 0)
             return CfgHitKillIndicatorsEnabled(s);
 
         // --- Aim Assist ---
-        if (std::strcmp(key, "AimLineOnlyWhenLaserSight") == 0)
-            return CfgIsEnabled(s, "D3DAimLineOverlayEnabled", false);
         if (CfgStartsWith(key, "D3DAimLineOverlay") && std::strcmp(key, "D3DAimLineOverlayEnabled") != 0)
+            return CfgIsEnabled(s, "D3DAimLineOverlayEnabled", false);
+        if (std::strcmp(key, "AimLineOnlyWhenLaserSight") == 0)
             return CfgIsEnabled(s, "D3DAimLineOverlayEnabled", false);
 
         // --- Motion Gestures ---
         if (CfgStartsWith(key, "MotionGesture") && std::strcmp(key, "MotionGesturesEnabled") != 0)
-            return CfgIsEnabled(s, "MotionGesturesEnabled", true);
-        if (std::strcmp(key, "MotionGestureSwingThreshold") == 0)
-            return CfgIsEnabled(s, "MotionGesturesEnabled", true) && CfgIsEnabled(s, "MotionGestureSwingEnabled", true);
-        if (std::strcmp(key, "MotionGesturePushThreshold") == 0)
-            return CfgIsEnabled(s, "MotionGesturesEnabled", true) && CfgIsEnabled(s, "MotionGesturePushEnabled", true);
-        if (std::strcmp(key, "MotionGestureDownSwingThreshold") == 0)
-            return CfgIsEnabled(s, "MotionGesturesEnabled", true) && CfgIsEnabled(s, "MotionGestureDownSwingEnabled", true);
-        if (std::strcmp(key, "MotionGestureJumpThreshold") == 0)
-            return CfgIsEnabled(s, "MotionGesturesEnabled", true) && CfgIsEnabled(s, "MotionGestureJumpEnabled", true);
+        {
+            if (!CfgIsEnabled(s, "MotionGesturesEnabled", true))
+                return false;
+            if (std::strcmp(key, "MotionGestureSwingThreshold") == 0)
+                return CfgIsEnabled(s, "MotionGestureSwingEnabled", true);
+            if (std::strcmp(key, "MotionGesturePushThreshold") == 0)
+                return CfgIsEnabled(s, "MotionGesturePushEnabled", true);
+            if (std::strcmp(key, "MotionGestureDownSwingThreshold") == 0)
+                return CfgIsEnabled(s, "MotionGestureDownSwingEnabled", true);
+            if (std::strcmp(key, "MotionGestureJumpThreshold") == 0)
+                return CfgIsEnabled(s, "MotionGestureJumpEnabled", true);
+        }
+
+        // --- Inventory / Anchor Debug ---
+        if (std::strcmp(key, "InventoryAnchorColor") == 0 ||
+            std::strcmp(key, "InventoryHudMarkerDistance") == 0 ||
+            std::strcmp(key, "InventoryHudMarkerUpOffset") == 0 ||
+            std::strcmp(key, "InventoryHudMarkerSeparation") == 0)
+        {
+            return CfgIsEnabled(s, "ShowInventoryAnchors", false);
+        }
 
         // --- Optics ---
         if (CfgStartsWith(key, "Scope") && std::strcmp(key, "ScopeEnabled") != 0)
@@ -1752,11 +1933,34 @@ namespace
             if ((std::strcmp(key, "ScopeLookThroughDistanceMeters") == 0 ||
                 std::strcmp(key, "ScopeLookThroughAngleDeg") == 0) &&
                 !CfgIsEnabled(s, "ScopeRequireLookThrough", true))
+            {
                 return false;
-            if (CfgStartsWith(key, "ScopeStabilization") && std::strcmp(key, "ScopeStabilizationEnabled") != 0)
+            }
+            if (std::strcmp(key, "ScopeOverlayIdleAlpha") == 0 &&
+                !CfgIsEnabled(s, "ScopeOverlayAlwaysVisible", false))
+            {
+                return false;
+            }
+            if (CfgStartsWith(key, "ScopeStabilization") &&
+                std::strcmp(key, "ScopeStabilizationEnabled") != 0)
+            {
                 return CfgIsEnabled(s, "ScopeStabilizationEnabled", true);
+            }
         }
 
+        // --- Flashlight ---
+        if (std::strcmp(key, "AutoFlashlightDarkThreshold") == 0)
+            return CfgIsEnabled(s, "AutoFlashlightEnabled", false);
+
+        return true;
+    }
+
+    static bool CfgIsSpecVisible(const CfgOverlayState& s, const CfgOptionSpec& spec)
+    {
+        if (!CfgSpecParentEnabled(s, spec))
+            return false;
+        if (!s.advancedMode && !CfgIsSimpleSpec(spec))
+            return false;
         return true;
     }
 
@@ -1879,6 +2083,528 @@ namespace
             s.dirty = true;
     }
 
+    // Release config template used by the Reset Settings action. Keep this as the
+    // authoritative sample so resetting does not depend on the user's already-edited VR\config.txt.
+    static constexpr char kCfgSampleConfigText0[] = R"L4D2VR0(VRScale=43.2
+IPDScale=1.0
+TurnSpeed=0.3
+SnapTurning=false
+SnapTurnAngle=45.0
+LeftHanded=false
+LeftHandedSwapInputActions=false
+AutoBunnyHop=false
+AutoAirStrafe=false
+AutoAirStrafeLandingSpeedPreserve=true
+AutoAirStrafeMaxGainPerHop=0
+AutoAirStrafeTargetSpeed=450
+AutoAirStrafeSpeedProjection=0
+AutoAirStrafeMaxTurnBrakeProjection=2
+AutoAirStrafeTurnResponsiveness=0.25
+AutoAirStrafeDebugLog=false
+AutoAirStrafeDebugLogHz=4
+LedgeGuardEnabled=true
+LedgeGuardProbeDistance=36
+LedgeGuardProbeHeight=18
+LedgeGuardDropDistance=96
+LedgeGuardMinMoveSpeed=1
+LedgeGuardDebugLog=false
+LedgeGuardDebugLogHz=2
+AntiAliasing=0
+ReShadeVRCompat=false
+EyeRenderTargetMatchProjectionAspect=false
+
+ThirdPersonCameraFollowHmd=false
+ThirdPersonVRCameraOffset=38,0,0
+ThirdPersonFrontVRCameraOffset=80,30,-15
+ThirdPersonFrontViewOverlayWidthMeters=0.3
+ThirdPersonFrontViewOverlayFov=20
+ThirdPersonFrontViewOverlayOffset=1.5,0.4,-0.3
+ThirdPersonFrontViewOverlayAngleOffset=-45,-5,-5
+ThirdPersonScopeOverlayOffsetX=1.5
+ThirdPersonScopeOverlayOffsetY=0.4
+ThirdPersonScopeOverlayOffsetZ=-0.3
+
+Roomscale1To1DebugLog=false
+AutoMatQueueMode=false
+VrRecommendedVideoSettingsEnabled=false
+QueuedRenderHmdYawUsesTurnPath=false
+QueuedSubmitWaitMs=1
+QueuedRenderThreadPriorityBoost=1
+QueuedSubmitUseRenderPoseToken=true
+RenderPipelineDebugLog=false
+RenderPipelineDebugLogHz=2
+QueuedRenderPoseWaitMs=0
+QueuedRenderPoseRelaxPercent=0
+QueuedRenderPoseFromTracking=false
+QueuedRenderMaxFpsSmart=true
+QueuedRenderMaxFps=0
+QueuedRenderMaxFramesAhead=1
+QueuedRenderViewSmoothMs=0
+StairStepCameraSmoothMs=90
+QueuedRenderHmdSmoothMs=0
+QueuedViewmodelStabilize=true
+QueuedViewmodelStabilizeDebugLog=false
+QueuedViewmodelStabilizeDebugLogHz=6
+QueuedSourceMarkerDebugLog=false
+QueuedSourceMarkerDebugLogHz=4
+
+HandHudDebugLog=false
+HandHudDebugLogHz=1
+
+Roomscale1To1Movement=false
+Roomscale1To1DebugLogHz=4
+Roomscale1To1DecoupleCamera=true
+Roomscale1To1ServerMove=true
+Roomscale1To1MovementScale=1.0
+Roomscale1To1MinApplyMeters=0.005
+Roomscale1To1PhysicalCrouch=true
+Roomscale1To1CrouchEnterMeters=0.25
+Roomscale1To1CrouchExitMeters=0.18
+Roomscale1To1DisableWhileThumbstick=true
+AutoRecenterSmooth=true
+AutoRecenterSoftStartDistance=18
+AutoRecenterMaxSpeed=18
+AutoRecenterHardDistance=150
+GameLaserSightBeamEnabled=true
+GameLaserSightReplaceParticle=true
+GameLaserSightThickness=0.55
+GameLaserSightColor=255,0,0,220
+GameLaserSightEndOffset=0.0,0.0,0.0
+HandHudWorldQuadEnabled=true
+HandHudWorldQuadAttachToControllers=true
+HandHudWorldQuadDistanceMeters=0.5
+HandHudWorldQuadYOffsetMeters=0.2
+HandHudWorldQuadXGapMeters=0.01
+HandHudWorldQuadAngleOffset=40,0,0
+
+LeftWristHudEnabled=false
+LeftWristHudWidthMeters=0.1
+LeftWristHudCurvature=0
+LeftWristHudShowTeammates=true
+LeftWristHudAlpha=0.5
+RightAmmoHudAlpha=0.5
+HandHudTempHealthDecayRate=0.27
+RightAmmoHudUVMaxU=1
+LeftWristHudXOffset=0.01
+LeftWristHudYOffset=0.01
+LeftWristHudZOffset=-0.0
+LeftWristHudAngleOffset=-75,0,0
+RightAmmoHudEnabled=false
+RightAmmoHudWidthMeters=0.8
+RightAmmoHudXOffset=-0.07
+RightAmmoHudYOffset=0.03
+RightAmmoHudZOffset=-0.09
+RightAmmoHudAngleOffset=-75,0,0
+QueuedBulletVisualHitOffset=0.0,0.0,0.02
+BulletVisualsUseMuzzleSmoke=true
+BulletVisualsUseViewmodelPose=true
+ForceNonVRServerMovement=false
+MoveDirectionFromController=false
+
+cmd=exec cam.cfg
+HudDistance=1.3
+HudSize=1.3
+HudAlwaysVisible=false
+HudAlwaysHidden=false
+FixedHudYOffset=0.25
+FixedHudDistanceOffset=0.25
+ControllerSmoothing=0.0
+WeaponAimPitchOffsetDeg=-45.0
+FirstPersonBodyEnabled=true
+FirstPersonBodyHideHead=true
+FirstPersonBodyHideArms=true
+WorldModelVRPoseEnabled=true
+WorldModelVRPoseLocalThirdPerson=true
+WorldModelVRPoseLeftHandRotationOffsetDeg=0,0,0
+WorldModelVRPoseRightHandRotationOffsetDeg=0,0,0
+WorldModelVRPoseSendHz=25
+WorldModelVRPoseInterpolationMs=50
+WorldModelVRPoseStaleAfterMs=250
+WorldModelVRPoseBlendSeconds=0.15
+WorldModelVRPoseBodyYawDeadzoneDeg=60
+BodyLeanMaxOffsetMeters=0.20
+BodyLeanMaxAngleDeg=15
+WorldModelVRPoseBodyYawTurnSpeedDegPerSecond=180
+WorldModelVRPoseDebugLog=false
+ClothingMaterials=true
+HiddenMaterialNames=francis:xie-v2,francis:xie,coach:xie-v2,coach:xie,nick:xie-v2,nick:xie,louis:xie-v2,louis:xie,ellis:xie-v2,ellis:xie,bill:xie-v2,bill:xie,rochelle:xie-v2,rochelle:xie,zoey:xie-v2,zoey:xie
+FirstPersonBodyVisibleUpperArmLengthMeters=0.10
+FirstPersonBodyAnchorOffsetMeters=0,0,0
+FirstPersonBodyAnchorRotationOffsetDeg=0,0,0
+FirstPersonBodyCameraOffsetMeters=0.08,0,0
+FirstPersonBodyMovementCameraCompensationMeters=0.03
+FirstPersonBodyBackwardMovementCameraCompensationMeters=0.03
+FirstPersonBodyCrouchCameraCompensationMeters=0.00
+FirstPersonBodyHideWorldWeapon=true
+HideArms=false
+VrHandsEnabled=true
+VrHandsGlovesEnabled=false
+VrHandsTwoHandedGripTargetBoxScale=1.0
+VrHandsTwoHandedGripHeldMode=false
+VrHandsRealBulletSpreadEnabled=false
+VrHandsTwoHandedAimMountFriendly=false
+VrHandsVirtualStockEnabled=false
+VrHandsTwoHandedAimStrength=1.0
+VrHandsTwoHandedAimSmoothingSeconds=0.025
+VrHandsTwoHandedAimMinHandDistanceMeters=0.12
+VrHandsTwoHandedAimMaxHandDistanceMeters=0.85
+VrHandsTwoHandedAimOffhandOffsetMeters=0.12,0.0,0.0
+VrHandsVirtualStockOffsetMeters=-0.28,0.16,-0.12
+VrHandsVirtualStockStrength=0.65
+VrHandsGloveThumbMaxCurl=1.0
+VrHandsGloveIndexMaxCurl=1.0
+VrHandsGloveMiddleMaxCurl=1.0
+VrHandsGloveRingMaxCurl=1.0
+VrHandsGlovePinkyMaxCurl=1.0
+NativeViewmodelHandsOnly=true
+NativeViewmodelArmCroppingEnabled=false
+NativeViewmodelLeftArmAnchorOffsetMeters=0,0,0
+NativeViewmodelRightArmAnchorOffsetMeters=0,0,0
+NativeViewmodelLeftArmAnchorRotationOffsetDeg=0,0,0
+NativeViewmodelRightArmAnchorRotationOffsetDeg=0,0,0
+NativeViewmodelArmShoulderSpacingOffsetMeters=0
+NativeViewmodelHandsOnlyWristKeepFraction=1.0
+NativeViewmodelHandsOnlyTrimUnits=0.0
+NativeViewmodelHandsOnlyArmBendScale=0.0
+NativeViewmodelHandsOnlyCutRotationDeg=0,0,0
+NativeViewmodelHandsOnlyLeftCutRotationDeg=0,-25,0
+NativeViewmodelHandsOnlyRightCutRotationDeg=8,-25,0
+)L4D2VR0";
+    static constexpr char kCfgSampleConfigText1[] = R"L4D2VR1(NativeViewmodelHandsOnlyAutoCutRotation=true
+NativeViewmodelHandsOnlyCutRotationOverrides=
+NativeViewmodelRightHandAnimationKeepUnits=4.0
+NativeViewmodelLeftHandFreezeAfterMapSeconds=0.0
+NativeViewmodelHandsOnlyFreezePoseLock=true
+NativeViewmodelHandsOnlyFreezePoseOffsetMeters=0.55,0.18,-0.18
+NativeViewmodelHandsOnlyFreezePoseRotationOffsetDeg=0,0,0
+NativeViewmodelHandsOnlyLeftFreezePoseRotationOffsetDeg=0,0,0
+NativeViewmodelHandsOnlyRightFreezePoseRotationOffsetDeg=0,0,0
+NativeViewmodelLeftHandPoseOffsetMeters=0,0,0
+NativeViewmodelLeftHandPoseRotationOffsetDeg=0,0,0
+NativeViewmodelRightHandPoseOffsetMeters=0,0,0
+NativeViewmodelRightHandPoseRotationOffsetDeg=0,0,0
+NativeViewmodelLeftHandOpenVRSkeleton=true
+NativeViewmodelLeftHandOpenVRCurlStrength=1.0
+NativeViewmodelLeftHandOpenVRCurlScale=1.0
+NativeViewmodelLeftHandOpenVRCurlDirection=1.0
+NativeViewmodelLeftHandOpenVRCurlAxis=2
+NativeViewmodelLeftHandOpenVRThumbRootOffsetUnits=0,0,0
+NativeViewmodelLeftHandOpenVRThumbRootRotationOffsetDeg=0,0,0
+NativeViewmodelRightHandOpenVRThumbRootOffsetUnits=0,0,0
+NativeViewmodelRightHandOpenVRThumbRootRotationOffsetDeg=0,0,0
+NativeViewmodelLeftHandOpenVRThumbInitialCurl=0.0
+NativeViewmodelLeftHandOpenVRIndexInitialCurl=0.0
+NativeViewmodelLeftHandOpenVRMiddleInitialCurl=0.0
+NativeViewmodelLeftHandOpenVRRingInitialCurl=0.0
+NativeViewmodelLeftHandOpenVRPinkyInitialCurl=0.0
+VrHandsLeftHandedLeftPoseOffsetMeters=0,0,0
+VrHandsLeftHandedTwoHandedRightPoseOffsetMeters=0,0,0
+VrHandsLeftHandedViewmodelPoseOffsetMeters=0,0,0
+VrHandsLeftHandedViewmodelPoseRotationOffsetDeg=0,0,0
+MagazineBoxDebugEnabled=true
+ViewmodelBoneLabelsEnabled=false
+MagazineInteractionEnabled=true
+MagazineInteractionQuickReloadMode=false
+MagazineInteractionUseButtonGripInput=true
+MagazineInteractionUseButtonDisbleReloadCommand=false
+MagazineInteractionSeparateButtonInput=false
+MagazineInteractionSuppressEmptyClipAutoReload=false
+MagazineInteractionShotgunShellsPerInsert=1
+MagazineInteractionThumbIndexCurlStart=0.62
+MagazineInteractionThumbIndexCurlRelease=0.42
+MagazineInteractionThreeFingerCurlStart=0.62
+MagazineInteractionThreeFingerCurlRelease=0.42
+ManualReloadMagazineBoneOverrides=
+MagazineInteractionGrabPaddingMeters=0.12
+MagazineInteractionPullTriggerMeters=0.08
+MagazineInteractionPullTriggerByMagazineMeters=0.025
+MagazineInteractionFreshMagazineGrabRangeMeters=0.18
+MagazineInteractionFreshMagazinePickupOffsetMeters=0.45,-0.28,0.25
+MagazineInteractionFreshMagazineBoxHalfExtentsMeters=0.055,0.045,0.12
+MagazineInteractionFreshMagazineSocketLocalOffsetMeters=-0.12,0,0
+MagazineInteractionFreshMagazineWristAnchorOffsetMeters=0,0,0
+MagazineInteractionSocketCaptureRadiusMeters=0.06
+MagazineInteractionSocketCaptureAngleDeg=35
+MagazineInteractionSocketRequiredDepthMeters=0.04
+MagazineInteractionSocketRequiredOverlapFraction=0.45
+MagazineInteractionSocketCaptureBoxHalfExtentsMeters=0,0,0
+MagazineInteractionSocketCaptureBoxLocalOffsetMeters=0,0,0
+MagazineInteractionSocketCaptureBoxLocalRotationOffsetDeg=0,0,0
+MagazineInteractionSocketCaptureBoxHalfExtentsMetersOverrides=
+MagazineInteractionSocketCaptureBoxLocalOffsetMetersOverrides=
+MagazineInteractionSocketCaptureBoxLocalRotationOffsetDegOverrides=
+MagazineInteractionSocketCaptureAngleDegOverrides=
+MagazineInteractionBoltGrabPaddingMeters=0.10
+MagazineInteractionBoltPullDistanceMeters=0.055
+MagazineInteractionBoltReturnDistanceMeters=0.018
+MagazineInteractionBoltBoxHalfExtentsMeters=0.045,0.035,0.035
+MagazineInteractionBoltBoxHalfExtentsMetersX=0.045
+MagazineInteractionBoltBoxHalfExtentsMetersY=0.035
+MagazineInteractionBoltBoxHalfExtentsMetersZ=0.035
+MagazineInteractionBoltBoxLocalOffsetMeters=0.000,0.000,0.000
+MagazineInteractionBoltBoxLocalOffsetMetersOverrides=
+MagazineInteractionBoltBoxLocalOffsetMetersX=0.000
+MagazineInteractionBoltBoxLocalOffsetMetersY=0.000
+MagazineInteractionBoltBoxLocalOffsetMetersZ=0.000
+MagazineInteractionBoltPullAxisLocal=0,0,1
+MagazineInteractionBoltPullAxisLocalOverrides=
+MagazineInteractionBoltBoneOverrides=
+MagazineInteractionStaleSeconds=0.20
+ViewmodelDisableMoveBob=false
+
+RequireSecondaryAttackForItemSwitch=false
+VoiceRecordCombo=Crouch+Reload
+SpeechToTextEnabled=false
+SpeechToTextSendChatEnabled=true
+SpeechToTextSendVoiceEnabled=false
+SpeechToTextSendVoiceLoopbackEnabled=false
+SpeechToTextMinimumRecordSeconds=0.30
+SpeechToTextCommandPrefix=VR\speech\whisper-cli.exe
+SpeechToTextModel=VR\speech\models\ggml-base.bin
+SpeechToTextLanguage=zh
+SpeechToTextSendVoiceCommandPrefix=
+SpeechToTextSendVoiceModel=
+SpeechToTextSendVoiceWorkingDir=
+SpeechToTextSendVoiceReferenceAudio=
+SpeechToTextSendVoicePromptText=
+SpeechToTextSendVoicePromptLanguage=
+SpeechToTextSendVoiceLanguage=
+SpeechToTextSendVoiceTextSplitMethod=
+TextToSpeechEnabled=false
+TextToSpeechSurvivorOnly=true
+TextToSpeechIncludeSpeakerName=true
+TextToSpeechSkipOwnMessages=true
+TextToSpeechVolume=1.0
+TextToSpeechCommandPrefix=python api_v2.py
+TextToSpeechModel=VR\speech\GPT-SoVITS\GPT_SoVITS\configs\tts_infer.yaml
+TextToSpeechWorkingDir=VR\speech\GPT-SoVITS
+TextToSpeechServerPort=9880
+TextToSpeechReferenceAudio=VR\speech\GPT-SoVITS\reference.wav
+TextToSpeechPromptText=
+TextToSpeechPromptLanguage=zh
+TextToSpeechLanguage=zh
+TextToSpeechTextSplitMethod=cut5
+TextToSpeechWhitelistRegexes=
+TextToSpeechWhitelistSeparator=__VR_REGEX_SPLIT__
+QuickTurnCombo=SecondaryAttack+Crouch
+ViewmodelAdjustEnabled=false
+ViewmodelAdjustCombo=Reload+SecondaryAttack
+ViewmodelAutoGripAlignEnabled=true
+ViewmodelAutoGripAlignRotation=false
+ViewmodelAutoGripTargetOffsetMeters=0,0,0
+ViewmodelAutoGripTargetRotationOffsetDeg=0,0,0
+ViewmodelAutoGripPalmCenterFraction=0.45
+ViewmodelAutoGripAlignDebugLog=false
+
+AimLineEnabled=true
+AimLineOnlyWhenLaserSight=false
+AimLineTimingAligned=true
+MeleeAimLineEnabled=false
+BlockFireOnFriendlyAimEnabled=false
+BlockFireOnFriendlyAimRadiusMeters=0.1
+)L4D2VR1";
+    static constexpr char kCfgSampleConfigText2[] = R"L4D2VR2(D3DAimLineOverlayEnabled=false
+D3DAimLineOverlayWidthPixels=2.0
+D3DAimLineOverlayOutlinePixels=1.0
+D3DAimLineOverlayEndpointPixels=1.5
+D3DAimLineOverlayColor=255,0,0,100
+D3DAimLineOverlayOutlineColor=255,0,0,1
+D3DAimLineOverlaySyncAimLineColor=true
+AimLineThickness=0.15
+AimLineFrameDurationMultiplier=0
+AimLineColor=255,0,0,100
+AimLineMinHitDistance=0
+
+ManualThrowEnabled=false
+ManualThrowVelocityScale=4.0
+ManualThrowHorizontalVelocityScale=1.0
+ManualThrowVerticalVelocityScale=1.0
+ManualThrowArcLiftRatio=0.0
+ManualThrowVelocityWindowTicks=5
+ManualThrowPeakVelocityBlend=0.5
+ManualThrowMaxVelocity=1400.0
+
+# Object pull uses the existing weapon-hand Grip binding; there is no separate SteamVR Object Pull action.
+# Merely point anywhere on a supported item's collision bounds to select it and show its native outline.
+# Hold Grip and flick backward to launch it, then keep holding or press Grip again during flight to catch
+# it at the hand and perform the game's native pickup. Selection and outline stop at MaxDistanceMeters.
+ObjectPullEnabled=true
+ObjectPullVisualsEnabled=true
+ObjectPullMaxDistanceMeters=12.0
+ObjectPullMinimumDistanceMeters=0.25
+ObjectPullTargetAssistRadiusMeters=0.15
+ObjectPullGestureDistanceMeters=0.16
+ObjectPullCatchDistanceMeters=0.70
+ObjectPullSpeedMetersPerSecond=3.0
+ObjectPullCatchOffsetMeters=0.32,0.0,-0.08
+ObjectPullDebugLog=false
+
+MotionGesturesEnabled=true
+MotionGestureSwingEnabled=true
+MotionGestureSwingThreshold=2
+MotionGesturePushEnabled=true
+MotionGesturePushThreshold=1.5
+MotionGestureDownSwingEnabled=true
+MotionGestureDownSwingThreshold=2.0
+MotionGestureJumpEnabled=true
+MotionGestureJumpThreshold=2.0
+MotionGestureCooldown=0.8
+MotionGestureHoldDuration=0.2
+SingleHandPushAngleTolerance=30.0
+
+
+InventoryGestureRange=0.16
+InventoryBodyOriginOffset=-0.1,0.0,-0.28
+InventoryChestOffset=0.45,0.0,0.5
+InventoryBackOffset=0.12,0.0,0.1
+InventoryLeftWaistOffset=0.45,-0.28,0.25
+InventoryRightWaistOffset=0.45,0.28,0.25
+ 
+ShowInventoryAnchors=true
+InventoryAnchorColor=0,255,255,255
+InventoryHudMarkerDistance=0.45
+InventoryHudMarkerUpOffset=-0.10
+InventoryHudMarkerSeparation=0.14
+
+InventoryQuickSwitchEnabled=true
+InventoryQuickSwitchOffset=0.05,0.2,0.2  
+InventoryQuickSwitchZoneRadius=0.15    
+
+CustomAction1Command=thirdpersonshoulder
+CustomAction2Command=
+CustomAction3Command=
+CustomAction4Command=
+CustomAction5Command=
+
+
+ScopeEnabled=false
+ScopeRTTSize=512
+ScopeFov=20
+ScopeMagnification=20,15,5,3
+ScopeAimSensitivityScale=60,40,35,15
+ScopeZNear=2
+ScopeCameraOffset=12,0,3
+ScopeCameraAngleOffset=0,0,0
+ScopeOverlayWidthMeters=0.3
+ScopeOverlayXOffset=0.02
+ScopeOverlayYOffset=0.04
+ScopeOverlayZOffset=-0.06
+ScopeOverlayAngleOffset=-45,-5,-5
+ScopeRequireLookThrough=true
+ScopeLookThroughDistanceMeters=0.5
+ScopeLookThroughAngleDeg=60
+ScopeOverlayAlwaysVisible=false
+ScopeOverlayIdleAlpha=0.5
+ScopeStabilizationEnabled=true
+ScopeStabilizationMinCutoff=0.5
+ScopeStabilizationBeta=0.5
+ScopeStabilizationDCutoff=1.0
+
+
+MouseModeEnabled=false
+SystemMouseInputSuppressAfterMapLoad=false
+MouseModeYawSensitivity=0.01
+MouseModePitchSensitivity=0.01
+MouseModeViewmodelAnchorOffset=0.42,0.0,-0.28
+MouseModeAimConvergeDistance=2048
+MouseModeTurnSmoothing=0.03
+MouseModePitchSmoothing=0.03
+MouseModePitchAffectsView=true
+MouseModeAimFromHmd=true
+MouseModeScopedViewmodelAnchorOffset=0.35,0.0,-0.13
+MouseModeHmdAimSensitivity=1
+MouseModeScopeOverlayOffset=0,-0.02,-0.3
+MouseModeScopeOverlayAngleOffset=0,0,0
+MouseModeScopeSensitivityScale=50,25,15,5
+MouseModeScopeToggleKey=key:q
+MouseModeScopeMagnificationKey=key:z
+
+AutoRepeatSemiAutoFire=false
+AutoRepeatSemiAutoFireHz=12.0
+AutoRepeatSprayPushEnabled=false
+AutoRepeatSprayPushDelayTicks=0
+AutoRepeatSprayPushHoldTicks=1
+AutoFastMelee=false
+AutoFastMeleeShoveEcho=true
+AutoFastMeleeUseWeaponSwitch=true
+AutoFastMeleePushWaitTicks=2
+AutoFastMeleePostWaitTicks=29
+SpecialInfectedDodgeEnabled=false
+SpecialInfectedDodgeDistance=260
+LazyScopeRearMirrorRTT=true
+DesktopRearMirrorWindowEnabled=false
+DesktopIntentSenseHudWindowEnabled=false
+DebugVASLog=false
+
+HitSoundEnabled=false
+KillSoundEnabled=false
+HitSoundSpec=game:vrmod/hit.mp3
+KillSoundNormalSpec=game:vrmod/kill.mp3
+KillSoundHeadshotSpec=game:vrmod/headshot.mp3
+HitSoundVolume=1.2
+KillSoundVolume=1.8
+HeadshotSoundVolume=1.3
+FeedbackSoundSpatialBlend=0
+FeedbackSoundSpatialRange=1000
+HitIndicatorEnabled=false
+KillIndicatorEnabled=false
+KillIndicatorMaterialBaseSpec=overlays/2965700751
+KillIndicatorLifetimeSeconds=0.8
+KillIndicatorSizePixels=160
+KillIndicatorRiseUnits=18
+KillIndicatorMaxDistance=4096
+
+ShadowTweaksEnabled=false
+r_shadows=true
+r_shadowrendertotexture=false
+r_flashlightdepthtexture=false
+r_flashlightdepthres=256
+r_shadow_half_update_rate=true
+r_shadowmaxrendered=0
+cl_max_shadow_renderable_dist=0
+r_FlashlightDetailProps=0
+z_mob_simple_shadows=1
+r_shadowfromworldlights=true
+r_flashlightmodels=true
+r_shadows_on_renderables_enable=true
+r_flashlightrendermodels=true
+cl_player_shadow_dist=0
+z_infected_shadows=true
+nb_shadow_blobby_dist=493.820007
+nb_shadow_cull_dist=500.584991
+r_flashlightinfectedshadows=true
+FlashlightFollowHmd=true
+FlashlightFollowHmdForFirearms=false
+AutoFlashlightEnabled=false
+AutoFlashlightDarkThreshold=8
+AutoFlashlightBrightThreshold=8
+AutoFlashlightSampleInterval=0.15
+AutoFlashlightForwardNearDistance=48
+AutoFlashlightForwardFarDistance=96
+AutoFlashlightLateralOffset=24
+AutoFlashlightVerticalOffset=-8
+AutoFlashlightSmoothingTime=0.2
+AutoFlashlightMinOnTime=0.9
+AutoFlashlightMinOffTime=0.25
+AutoFlashlightManualOverrideSeconds=6.0
+AutoFlashlightDebugLog=false
+AutoFlashlightDebugLogHz=2.0
+AutoFlashlightHighConfidenceSamples=1
+AutoFlashlightLowConfidenceSamples=2
+LocalVScriptConvarsEnabled=false
+LocalVScriptConvarsBlockExternalWrites=true
+LocalVScriptConvarsPath=VR\local_client_convars.nut
+LocalVScriptConvarsLogEnabled=false
+FlashlightEnhancementEnabled=false
+)L4D2VR2";
+
+    static constexpr const char* kCfgSampleConfigChunks[] =
+    {
+        kCfgSampleConfigText0,
+        kCfgSampleConfigText1,
+        kCfgSampleConfigText2,
+    };
+
     static void CfgLoad(CfgOverlayState& s)
     {
         CfgReadLanguageValue(s);
@@ -1926,6 +2652,71 @@ namespace
             ? "\345\267\262\346\211\223\345\274\200\343\200\202\347\224\250 VR \346\216\247\345\210\266\345\231\250\345\260\204\347\272\277\347\202\271\345\207\273\346\214\211\351\222\256\343\200\202"
             : "Opened. Point and click with the VR controller laser.";
         s.dirty = true;
+    }
+
+    static bool CfgResetToSample(CfgOverlayState& s)
+    {
+        if (s.configPath.empty())
+            s.configPath = CfgDefaultConfigPath();
+
+        try
+        {
+            const std::filesystem::path parent = std::filesystem::path(s.configPath).parent_path();
+            if (!parent.empty())
+                std::filesystem::create_directories(parent);
+        }
+        catch (...)
+        {
+            s.status = (s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A" : "Reset failed: ") + s.configPath;
+            s.resetConfirmVisible = false;
+            s.dirty = true;
+            return false;
+        }
+
+        std::ofstream out(s.configPath, std::ios::binary | std::ios::trunc);
+        if (!out.good())
+        {
+            s.status = (s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A" : "Reset failed: ") + s.configPath;
+            s.resetConfirmVisible = false;
+            s.dirty = true;
+            return false;
+        }
+
+        // Translation phase newline normalization means the embedded raw string uses '\n'.
+        // Write CRLF explicitly so the restored config keeps the project's Windows format.
+        for (const char* chunk : kCfgSampleConfigChunks)
+        {
+            for (const char* p = chunk; *p; ++p)
+            {
+                if (*p == '\r')
+                    continue;
+                if (*p == '\n')
+                    out.write("\r\n", 2);
+                else
+                    out.put(*p);
+            }
+        }
+        out.flush();
+        const bool writeOk = out.good();
+        out.close();
+        if (!writeOk)
+        {
+            s.status = (s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A" : "Reset failed: ") + s.configPath;
+            s.resetConfirmVisible = false;
+            s.dirty = true;
+            return false;
+        }
+
+        s.resetConfirmVisible = false;
+        s.calibrationBoltPullFirstRunBlockedProfileKey.clear();
+        s.calibrationBoltPullFirstRunSaveSkipped = false;
+        CfgLoad(s);
+        CfgApplyOverlayPlacement(s);
+        s.status = s.useChinese
+            ? "\xE5\xB7\xB2\xE6\x8C\x89 sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xEF\xBC\x8C\xE9\x9D\xA2\xE6\x9D\xBF\xE5\xB7\xB2\xE5\x88\xB7\xE6\x96\xB0\xE3\x80\x82"
+            : "Reset config.txt to the release sample and refreshed the panel.";
+        s.dirty = true;
+        return true;
     }
 
     static std::string CfgRawValueForKey(const CfgOverlayState& s, const char* key)
@@ -3161,6 +3952,52 @@ namespace
         CfgGdiFill(g, x, y, w, h, enabled ? CfgRgb{ 46, 56, 76 } : CfgRgb{ 44, 46, 52 });
         CfgGdiFrame(g, x, y, w, h, enabled ? CfgRgb{ 136, 162, 205 } : CfgRgb{ 90, 94, 104 }, 2);
         CfgGdiText(g, x + 4, y, w - 8, h, labelUtf8, g.boldFont, enabled ? CfgRgb{ 238, 243, 248 } : CfgRgb{ 140, 144, 150 }, DT_CENTER);
+    }
+
+    static void CfgRenderResetConfirm(CfgOverlayState& s, CfgGdiSurface& g)
+    {
+        if (!s.resetConfirmVisible)
+            return;
+
+        CfgGdiFill(g, kCfgResetConfirmPanelX, kCfgResetConfirmPanelY,
+            kCfgResetConfirmPanelW, kCfgResetConfirmPanelH, { 22, 25, 34 });
+        CfgGdiFrame(g, kCfgResetConfirmPanelX, kCfgResetConfirmPanelY,
+            kCfgResetConfirmPanelW, kCfgResetConfirmPanelH, { 216, 116, 116 }, 3);
+        CfgGdiText(
+            g,
+            kCfgResetConfirmPanelX + 28,
+            kCfgResetConfirmPanelY + 24,
+            kCfgResetConfirmPanelW - 56,
+            40,
+            s.useChinese ? "\xE7\xA1\xAE\xE8\xAE\xA4\xE9\x87\x8D\xE7\xBD\xAE\xE6\x89\x80\xE6\x9C\x89\xE8\xAE\xBE\xE7\xBD\xAE\xEF\xBC\x9F" : "Reset all settings?",
+            g.headerFont,
+            { 246, 238, 238 },
+            DT_CENTER);
+        CfgGdiTextWrap(
+            g,
+            kCfgResetConfirmPanelX + 42,
+            kCfgResetConfirmPanelY + 82,
+            kCfgResetConfirmPanelW - 84,
+            80,
+            s.useChinese
+                ? "\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE4\xBC\x9A\xE7\x94\xA8\xE5\x8F\x91\xE5\xB8\x83 sample \xE5\xAE\x8C\xE6\x95\xB4\xE8\xA6\x86\xE7\x9B\x96 config.txt\xEF\xBC\x8C\xE5\x8C\x85\xE6\x8B\xAC\xE6\x89\x80\xE6\x9C\x89 # \xE6\xB3\xA8\xE9\x87\x8A\xE8\xA1\x8C\xEF\xBC\x8C\xE5\xB9\xB6\xE7\xAB\x8B\xE5\x8D\xB3\xE5\x88\xB7\xE6\x96\xB0\xE6\x9C\xAC\xE9\x9D\xA2\xE6\x9D\xBF\xE3\x80\x82"
+                : "This overwrites config.txt with the complete release sample, including every # comment line, then refreshes this panel immediately.",
+            g.normalFont,
+            { 210, 216, 228 });
+        CfgGdiButton(
+            g,
+            kCfgResetConfirmYesX,
+            kCfgResetConfirmButtonY,
+            kCfgResetConfirmButtonW,
+            kCfgResetConfirmButtonH,
+            s.useChinese ? "\xE7\xA1\xAE\xE8\xAE\xA4\xE9\x87\x8D\xE7\xBD\xAE" : "Confirm Reset");
+        CfgGdiButton(
+            g,
+            kCfgResetConfirmNoX,
+            kCfgResetConfirmButtonY,
+            kCfgResetConfirmButtonW,
+            kCfgResetConfirmButtonH,
+            s.useChinese ? "\xE5\x8F\x96\xE6\xB6\x88" : "Cancel");
     }
 
     static void CfgConvertGdiToRgba(CfgOverlayState& s, const CfgGdiSurface& g)
@@ -5383,9 +6220,29 @@ namespace
         }
 
         CfgGdiText(g, 26, 84, 1228, 24, std::string(s.useChinese ? "\351\205\215\347\275\256\346\226\207\344\273\266\357\274\232" : "Config: ") + s.configPath, g.smallFont, { 150, 162, 180 });
-        CfgGdiFill(g, 26, 112, 560, 36, { 24, 36, 56 });
-        CfgGdiFrame(g, 26, 112, 560, 36, { 68, 86, 116 }, 1);
-        CfgGdiText(g, 40, 112, 520, 36, s.useChinese ? "\xE6\x96\x87\xE6\x9C\xAC\xE9\xA1\xB9\xEF\xBC\x9A\xE7\x82\xB9\xE2\x80\x9C\xE7\xBC\x96\xE8\xBE\x91\xE2\x80\x9D\xE6\x89\x93\xE5\xBC\x80 VR \xE9\x94\xAE\xE7\x9B\x98\xEF\xBC\x9BVec3/\xE9\xA2\x9C\xE8\x89\xB2\xEF\xBC\x9A\xE5\x85\x88\xE9\x80\x89\xE5\x88\x86\xE9\x87\x8F\xEF\xBC\x8C\xE5\x86\x8D\xE6\x8C\x89 -/+\xE3\x80\x82" : "Text rows: Edit opens VR keyboard. Vec3/Color: select component then -/+.", g.normalFont, { 112, 125, 145 });
+        CfgGdiFill(g, 26, 112, 840, 36, { 24, 36, 56 });
+        CfgGdiFrame(g, 26, 112, 840, 36, { 68, 86, 116 }, 1);
+        CfgGdiText(
+            g,
+            40,
+            112,
+            820,
+            36,
+            s.advancedMode
+                ? (s.useChinese ? "\xE9\xAB\x98\xE7\xBA\xA7\xE6\xA8\xA1\xE5\xBC\x8F\xEF\xBC\x9A\xE5\xB1\x95\xE5\xBC\x80\xE5\xB7\xB2\xE5\x90\xAF\xE7\x94\xA8\xE5\x8A\x9F\xE8\x83\xBD\xE7\x9A\x84\xE5\xAD\x90\xE5\x8A\x9F\xE8\x83\xBD\xE5\x92\x8C\xE8\xB0\x83\xE8\x8A\x82\xE5\x8F\x82\xE6\x95\xB0\xE3\x80\x82" : "Advanced: child features and tuning are shown for enabled parent features.")
+                : (s.useChinese ? "\xE7\xAE\x80\xE6\x98\x93\xE6\xA8\xA1\xE5\xBC\x8F\xEF\xBC\x9A\xE4\xBB\x85\xE6\x98\xBE\xE7\xA4\xBA\xE4\xB8\xBB\xE8\xA6\x81\xE5\x8A\x9F\xE8\x83\xBD\xEF\xBC\x8C\xE7\x82\xB9\xE2\x80\x9C\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE\xE2\x80\x9D\xE5\xB1\x95\xE5\xBC\x80\xE4\xBB\x8E\xE5\xB1\x9E\xE9\xA1\xB9\xE3\x80\x82" : "Simple: main features only. Open Advanced to show child settings."),
+            g.normalFont,
+            { 112, 125, 145 });
+        CfgGdiButton(
+            g,
+            kCfgAdvancedX,
+            kCfgAdvancedY,
+            kCfgAdvancedW,
+            kCfgAdvancedH,
+            s.advancedMode
+                ? (s.useChinese ? "\xE7\xAE\x80\xE6\x98\x93\xE8\xAE\xBE\xE7\xBD\xAE" : "Simple")
+                : (s.useChinese ? "\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE" : "Advanced"));
+        CfgGdiButton(g, kCfgResetX, kCfgResetY, kCfgResetW, kCfgResetH, s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE8\xAE\xBE\xE7\xBD\xAE" : "Reset Settings");
 
         const int total = (int)s.visibleSpecIndexes.size();
         if (!CfgIsSelectableRow(s, s.selected))
@@ -5591,6 +6448,7 @@ namespace
         CfgGdiText(g, 1010, kCfgOverlayH - 43, 240, 34, counter, g.normalFont, { 164, 180, 205 }, DT_RIGHT);
 
         (void)lastDrawnItem;
+        CfgRenderResetConfirm(s, g);
         CfgConvertGdiToRgba(s, g);
         s.dirty = false;
         s.needsUpload = true;
@@ -6140,6 +6998,10 @@ namespace
             ov = vr::VROverlay();
 
         s.visible = true;
+        s.resetConfirmVisible = false;
+        s.advancedMode = false;
+        s.selected = 0;
+        s.scroll = 0;
         CfgLoad(s);
         CfgInvalidateFixedPlacement(s);
         CfgApplyOverlayPlacement(s, ov);
@@ -7963,6 +8825,34 @@ namespace
     {
         (void)CfgCloseSourceGameUiIfCalibrationActive(s);
 
+        if (s.resetConfirmVisible)
+        {
+            const bool confirm =
+                mx >= kCfgResetConfirmYesX &&
+                mx < kCfgResetConfirmYesX + kCfgResetConfirmButtonW &&
+                my >= kCfgResetConfirmButtonY &&
+                my < kCfgResetConfirmButtonY + kCfgResetConfirmButtonH;
+            const bool cancel =
+                mx >= kCfgResetConfirmNoX &&
+                mx < kCfgResetConfirmNoX + kCfgResetConfirmButtonW &&
+                my >= kCfgResetConfirmButtonY &&
+                my < kCfgResetConfirmButtonY + kCfgResetConfirmButtonH;
+
+            if (confirm)
+            {
+                (void)CfgResetToSample(s);
+                return;
+            }
+            if (cancel)
+            {
+                s.resetConfirmVisible = false;
+                s.status = s.useChinese ? "\xE5\xB7\xB2\xE5\x8F\x96\xE6\xB6\x88\xE9\x87\x8D\xE7\xBD\xAE\xE3\x80\x82" : "Reset cancelled.";
+                s.dirty = true;
+                return;
+            }
+            return;
+        }
+
         if (my >= kCfgTopButtonY && my <= kCfgTopButtonY + kCfgTopButtonH)
         {
             if (mx >= kCfgPagePrevX && mx <= kCfgPagePrevX + kCfgPageButtonW)
@@ -8065,6 +8955,7 @@ namespace
                     s.keyboardEditKey.clear();
                     s.keyboardEventHandle = vr::k_ulOverlayHandleInvalid;
                 }
+                s.resetConfirmVisible = false;
                 s.visible = false;
                 s.hoverSelectionSuppressedUntilMs = 0;
                 s.hoveredItem = -1;
@@ -8075,6 +8966,44 @@ namespace
                 s.dirty = true;
                 return;
             }
+        }
+
+        if (s.panelMode == CfgPanelMode::Config &&
+            mx >= kCfgAdvancedX && mx < kCfgAdvancedX + kCfgAdvancedW &&
+            my >= kCfgAdvancedY && my < kCfgAdvancedY + kCfgAdvancedH)
+        {
+            s.advancedMode = !s.advancedMode;
+            s.selected = 0;
+            s.scroll = 0;
+            s.hoveredItem = -1;
+            s.hoverSelectionSuppressedUntilMs = 0;
+            CfgRebuildVisibleIndexes(s);
+            s.status = s.advancedMode
+                ? (s.useChinese ? "\xE5\xB7\xB2\xE5\xB1\x95\xE5\xBC\x80\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE\xEF\xBC\x9A\xE6\x98\xBE\xE7\xA4\xBA\xE5\xB7\xB2\xE5\x90\xAF\xE7\x94\xA8\xE5\x8A\x9F\xE8\x83\xBD\xE7\x9A\x84\xE4\xBB\x8E\xE5\xB1\x9E\xE5\x8F\x82\xE6\x95\xB0\xE3\x80\x82" : "Advanced settings expanded. Child parameters are shown for enabled features.")
+                : (s.useChinese ? "\xE5\xB7\xB2\xE5\x88\x87\xE5\x9B\x9E\xE7\xAE\x80\xE6\x98\x93\xE8\xAE\xBE\xE7\xBD\xAE\xE3\x80\x82" : "Simple settings enabled.");
+            s.dirty = true;
+            return;
+        }
+
+        if (s.panelMode == CfgPanelMode::Config &&
+            mx >= kCfgResetX && mx < kCfgResetX + kCfgResetW &&
+            my >= kCfgResetY && my < kCfgResetY + kCfgResetH)
+        {
+            if (s.keyboardActive)
+            {
+                if (vr::IVROverlay* ov = vr::VROverlay())
+                    ov->HideKeyboard();
+                s.keyboardActive = false;
+                s.keyboardEditKey.clear();
+                s.keyboardEventHandle = vr::k_ulOverlayHandleInvalid;
+                s.keyboardUserValue = 0;
+            }
+            s.resetConfirmVisible = true;
+            s.status = s.useChinese
+                ? "\xE5\x86\x8D\xE6\xAC\xA1\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE5\xB0\x86\xE6\x8C\x89 sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xE3\x80\x82"
+                : "Confirm once more to reset config.txt to the release sample.";
+            s.dirty = true;
+            return;
         }
 
         if (s.panelMode == CfgPanelMode::MagazineCalibration)
@@ -8403,10 +9332,14 @@ namespace
                 {
                     s.visible = !s.visible;
                 }
+                s.resetConfirmVisible = false;
                 s.hoverSelectionSuppressedUntilMs = 0;
                 s.hoveredItem = -1;
                 if (s.visible)
                 {
+                    s.advancedMode = false;
+                    s.selected = 0;
+                    s.scroll = 0;
                     CfgLoad(s);
                     CfgInvalidateFixedPlacement(s);
                     CfgApplyOverlayPlacement(s);
@@ -8504,4 +9437,35 @@ void L4D2VRConfigOverlay_StartWorker()
         {
             CfgOverlayThreadMain();
         }).detach();
+}
+
+void L4D2VRConfigOverlay_Open()
+{
+    L4D2VRConfigOverlay_StartWorker();
+
+    CfgOverlayState& s = g_CfgOverlay;
+    std::lock_guard<std::mutex> lock(s.mutex);
+    vr::IVROverlay* ov = vr::VROverlay();
+
+    if (s.materialVisible)
+        CfgCloseMaterialPanel(s, false, ov);
+
+    s.resetConfirmVisible = false;
+    if (!s.visible)
+    {
+        CfgOpenPanelFromMenuButton(s, ov);
+        return;
+    }
+
+    s.advancedMode = false;
+    s.selected = 0;
+    s.scroll = 0;
+    s.hoveredItem = -1;
+    CfgRebuildVisibleIndexes(s);
+    CfgInvalidateFixedPlacement(s);
+    CfgApplyOverlayPlacement(s, ov);
+    s.status = s.useChinese
+        ? "\xE5\xB7\xB2\xE9\x80\x9A\xE8\xBF\x87 vrconfig \xE6\x89\x93\xE5\xBC\x80\xE9\x85\x8D\xE7\xBD\xAE\xE9\x9D\xA2\xE6\x9D\xBF\xE3\x80\x82"
+        : "Config overlay opened by vrconfig.";
+    s.dirty = true;
 }
