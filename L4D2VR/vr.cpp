@@ -11357,7 +11357,6 @@ void VR::ScanSpecialInfectedEntitiesFromClientList()
         m_SpecialInfectedArrowDebugLog ||
         m_SpecialInfectedIntentSenseEnabled ||
         m_DesktopIntentSenseHudWindowEnabled ||
-        m_SpecialInfectedWarningActionEnabled ||
         (m_SpecialInfectedBlindSpotDistance > 0.0f) ||
         (m_SpecialInfectedPreWarningDistance > 0.0f && m_SpecialInfectedPreWarningAutoAimEnabled) ||
         ((m_RearMirrorEnabled || m_DesktopRearMirrorWindowEnabled) && m_RearMirrorShowOnlyOnSpecialWarning
