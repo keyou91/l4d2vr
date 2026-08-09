@@ -5233,6 +5233,156 @@ namespace dxvk {
         const RGNDATA* pDirtyRegion,
         DWORD dwFlags) {
 
+        using PresentSpikeClock = std::chrono::steady_clock;
+        struct PresentSpikeSample {
+            bool valid = false;
+            uint64_t cycleUs = 0;
+            uint64_t outsideUs = 0;
+            uint64_t insideUs = 0;
+            uint64_t cursorUs = 0;
+            uint64_t preVrUs = 0;
+            uint64_t presentLockUs = 0;
+            uint64_t swapchainUs = 0;
+            uint64_t postStatsUs = 0;
+            uint64_t consumerGateUs = 0;
+            uint64_t busyCheckUs = 0;
+            uint64_t textureWaitUs = 0;
+            uint64_t barrierWaitUs = 0;
+            uint64_t updateUs = 0;
+            uint64_t restoreUs = 0;
+            uint64_t otherUs = 0;
+            uint64_t preEndFrameUs = 0;
+            uint64_t endFrameUs = 0;
+            uint64_t postEndFrameUs = 0;
+            uint64_t updatePrePoseUs = 0;
+            uint64_t updatePosesUs = 0;
+            uint64_t updateSettingsUs = 0;
+            uint64_t updateSubmitUs = 0;
+            uint64_t updatePlayerUs = 0;
+            uint64_t updateTrackingUs = 0;
+            uint64_t updateInputUs = 0;
+            uint64_t updateTailUs = 0;
+            uint64_t submitTimingDataUs = 0;
+            uint64_t submitTextureLockUs = 0;
+            uint64_t submitPrepareUs = 0;
+            uint64_t submitQueueLockUs = 0;
+            uint64_t submitOverlayBindUs = 0;
+            uint64_t submitLeftEyeUs = 0;
+            uint64_t submitRightEyeUs = 0;
+            uint64_t submitFinishUs = 0;
+            uint64_t submitHandHudUs = 0;
+            uint64_t submitSlotGateUs = 0;
+            uint32_t submitSlotIndex = 0;
+            uint32_t submitSlotLast = 0;
+            uint32_t submitSlotSkipTotal = 0;
+            bool submitSlotSkipped = false;
+            bool submitSlotAdvanced = false;
+            uint32_t completed = 0;
+            uint32_t submitted = 0;
+            uint32_t endFrameThreadId = 0;
+            bool queued = false;
+            bool sourceBusy = false;
+            bool endFrameOnPresentThread = false;
+        };
+
+        static thread_local bool s_presentSpikeTimingWasEnabled = false;
+        static thread_local PresentSpikeClock::time_point s_lastPresentSpikeExit{};
+        static thread_local DWORD s_lastPresentSpikeReportMs = 0;
+        static thread_local PresentSpikeSample s_worstPresentSpike{};
+
+        VR* const presentSpikeVr = (g_Game != nullptr) ? g_Game->m_VR : nullptr;
+        const bool presentSpikeDiagnostics =
+            presentSpikeVr != nullptr && presentSpikeVr->m_PresentSpikeDebugLog;
+        const auto presentSpikeEntry = presentSpikeDiagnostics
+            ? PresentSpikeClock::now()
+            : PresentSpikeClock::time_point{};
+        uint64_t presentSpikeOutsideUs = 0;
+        uint64_t presentSpikeCursorUs = 0;
+        uint64_t presentSpikePreVrUs = 0;
+        uint64_t presentSpikeLockUs = 0;
+        uint64_t presentSpikeSwapchainUs = 0;
+        uint64_t presentSpikePostStatsUs = 0;
+        uint64_t presentSpikeConsumerGateUs = 0;
+        uint64_t presentSpikeBusyCheckUs = 0;
+        uint64_t presentSpikeTextureWaitUs = 0;
+        uint64_t presentSpikeBarrierWaitUs = 0;
+        uint64_t presentSpikeUpdateUs = 0;
+        uint64_t presentSpikeRestoreUs = 0;
+        PresentSpikeClock::time_point presentSpikeCursorEnd{};
+        PresentSpikeClock::time_point presentSpikePreVrEnd{};
+        PresentSpikeClock::time_point presentSpikeSwapchainEnd{};
+        bool presentSpikeSourceBusy = false;
+        uint64_t presentSpikePreEndFrameUs = 0;
+        uint64_t presentSpikeEndFrameUs = 0;
+        uint64_t presentSpikePostEndFrameUs = 0;
+        uint32_t presentSpikeEndFrameThreadId = 0;
+        bool presentSpikeEndFrameOnPresentThread = false;
+        const DWORD presentSpikeCurrentThreadId = presentSpikeDiagnostics
+            ? ::GetCurrentThreadId()
+            : 0;
+
+        if (!presentSpikeDiagnostics) {
+            s_presentSpikeTimingWasEnabled = false;
+        }
+        else {
+            if (!s_presentSpikeTimingWasEnabled) {
+                s_lastPresentSpikeExit = {};
+                s_lastPresentSpikeReportMs = ::GetTickCount();
+                s_worstPresentSpike = {};
+                s_presentSpikeTimingWasEnabled = true;
+            }
+            if (s_lastPresentSpikeExit.time_since_epoch().count() != 0) {
+                presentSpikeOutsideUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeEntry - s_lastPresentSpikeExit).count());
+            }
+
+            uint64_t endFrameEntryUs = 0;
+            uint64_t endFrameExitUs = 0;
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                const uint32_t seq1 = presentSpikeVr->m_PresentSpikeEndFrameSeq.load(
+                    std::memory_order_acquire);
+                if ((seq1 & 1u) != 0u)
+                    continue;
+                endFrameEntryUs = presentSpikeVr->m_PresentSpikeEndFrameEntryUs.load(
+                    std::memory_order_relaxed);
+                endFrameExitUs = presentSpikeVr->m_PresentSpikeEndFrameExitUs.load(
+                    std::memory_order_relaxed);
+                presentSpikeEndFrameThreadId =
+                    presentSpikeVr->m_PresentSpikeEndFrameThreadId.load(
+                        std::memory_order_relaxed);
+                const uint32_t seq2 = presentSpikeVr->m_PresentSpikeEndFrameSeq.load(
+                    std::memory_order_acquire);
+                if (seq1 == seq2 && (seq2 & 1u) == 0u)
+                    break;
+                endFrameEntryUs = 0;
+                endFrameExitUs = 0;
+                presentSpikeEndFrameThreadId = 0;
+            }
+
+            if (endFrameEntryUs != 0 && endFrameExitUs >= endFrameEntryUs) {
+                presentSpikeEndFrameUs = endFrameExitUs - endFrameEntryUs;
+                presentSpikeEndFrameOnPresentThread =
+                    presentSpikeEndFrameThreadId == presentSpikeCurrentThreadId;
+                if (presentSpikeEndFrameOnPresentThread &&
+                    s_lastPresentSpikeExit.time_since_epoch().count() != 0) {
+                    const uint64_t lastPresentExitUs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            s_lastPresentSpikeExit.time_since_epoch()).count());
+                    const uint64_t currentPresentEntryUs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            presentSpikeEntry.time_since_epoch()).count());
+                    if (endFrameEntryUs >= lastPresentExitUs &&
+                        endFrameExitUs <= currentPresentEntryUs) {
+                        presentSpikePreEndFrameUs =
+                            endFrameEntryUs - lastPresentExitUs;
+                        presentSpikePostEndFrameUs =
+                            currentPresentEntryUs - endFrameExitUs;
+                    }
+                }
+            }
+        }
+
         if (m_cursor.IsSoftwareCursor()) {
             D3D9_SOFTWARE_CURSOR* pSoftwareCursor = m_cursor.GetSoftwareCursor();
 
@@ -5253,6 +5403,13 @@ namespace dxvk {
                 pSoftwareCursor->YHotSpot = 0;
                 pSoftwareCursor->ResetCursor = false;
             }
+        }
+
+        if (presentSpikeDiagnostics) {
+            presentSpikeCursorEnd = PresentSpikeClock::now();
+            presentSpikeCursorUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikeCursorEnd - presentSpikeEntry).count());
         }
 
         const DWORD presentThreadId = ::GetCurrentThreadId();
@@ -5324,6 +5481,13 @@ namespace dxvk {
             // consumer gate provide the synchronization point used by VR::Update instead.
         }
 
+        if (presentSpikeDiagnostics) {
+            presentSpikePreVrEnd = PresentSpikeClock::now();
+            presentSpikePreVrUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikePreVrEnd - presentSpikeCursorEnd).count());
+        }
+
         HRESULT result = D3D_OK;
         {
             D3D9DeviceLock queuedPresentLock;
@@ -5332,24 +5496,28 @@ namespace dxvk {
                 // already-active Source calls and isolate only this transaction rather
                 // than making every draw in the rendered frame contend on one spinlock.
                 VR* const timingVr = g_Game->m_VR;
-                if (timingVr->m_RenderPipelineDebugLog) {
+                if (timingVr->m_RenderPipelineDebugLog || presentSpikeDiagnostics) {
                     const auto lockWaitStart = std::chrono::steady_clock::now();
                     queuedPresentLock = LockDeviceExclusive();
                     const auto lockWaitEnd = std::chrono::steady_clock::now();
                     const uint64_t lockWaitUs = static_cast<uint64_t>(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             lockWaitEnd - lockWaitStart).count());
-                    timingVr->m_PresentExclusiveLockWaitUsLast.store(
-                        lockWaitUs,
-                        std::memory_order_relaxed);
-                    uint64_t previousMax =
-                        timingVr->m_PresentExclusiveLockWaitUsMax.load(
-                            std::memory_order_relaxed);
-                    while (lockWaitUs > previousMax &&
-                        !timingVr->m_PresentExclusiveLockWaitUsMax.compare_exchange_weak(
-                            previousMax,
+                    if (presentSpikeDiagnostics)
+                        presentSpikeLockUs = lockWaitUs;
+                    if (timingVr->m_RenderPipelineDebugLog) {
+                        timingVr->m_PresentExclusiveLockWaitUsLast.store(
                             lockWaitUs,
-                            std::memory_order_relaxed)) {
+                            std::memory_order_relaxed);
+                        uint64_t previousMax =
+                            timingVr->m_PresentExclusiveLockWaitUsMax.load(
+                                std::memory_order_relaxed);
+                        while (lockWaitUs > previousMax &&
+                            !timingVr->m_PresentExclusiveLockWaitUsMax.compare_exchange_weak(
+                                previousMax,
+                                lockWaitUs,
+                                std::memory_order_relaxed)) {
+                        }
                     }
                 }
                 else {
@@ -5357,12 +5525,21 @@ namespace dxvk {
                 }
             }
 
+            const auto presentSpikeSwapchainStart = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
             result = m_implicitSwapchain->Present(
                 pSourceRect,
                 pDestRect,
                 hDestWindowOverride,
                 pDirtyRegion,
                 dwFlags);
+            if (presentSpikeDiagnostics) {
+                presentSpikeSwapchainEnd = PresentSpikeClock::now();
+                presentSpikeSwapchainUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeSwapchainEnd - presentSpikeSwapchainStart).count());
+            }
         }
 
         if (g_Game && g_Game->m_VR) {
@@ -5505,6 +5682,13 @@ namespace dxvk {
             }
         }
 
+        if (presentSpikeDiagnostics) {
+            const auto presentSpikePostStatsEnd = PresentSpikeClock::now();
+            presentSpikePostStatsUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikePostStatsEnd - presentSpikeSwapchainEnd).count());
+        }
+
         // Pair Source's producer publication with a final queued-render completion
         // barrier, then release it before VR::Update because pose waits must not hold it.
         std::unique_lock<std::recursive_mutex> sourceRenderConsumerGate;
@@ -5513,9 +5697,28 @@ namespace dxvk {
             const bool inGame = postPresentVR->m_Game && postPresentVR->m_Game->m_EngineClient &&
                 postPresentVR->m_Game->m_EngineClient->IsInGame();
             const bool queued = postPresentVR->m_Game && postPresentVR->m_Game->GetMatQueueMode() != 0;
+            const auto presentSpikeConsumerGateStart = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
             if (queued)
                 sourceRenderConsumerGate = std::unique_lock<std::recursive_mutex>(postPresentVR->m_SourceRenderConsumerGate);
+            if (presentSpikeDiagnostics) {
+                const auto presentSpikeConsumerGateEnd = PresentSpikeClock::now();
+                presentSpikeConsumerGateUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeConsumerGateEnd - presentSpikeConsumerGateStart).count());
+            }
+            const auto presentSpikeBusyCheckStart = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
             queuedSourceRenderBusy = inGame && queued && postPresentVR->IsSourceRenderQueueBusy();
+            if (presentSpikeDiagnostics) {
+                const auto presentSpikeBusyCheckEnd = PresentSpikeClock::now();
+                presentSpikeBusyCheckUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeBusyCheckEnd - presentSpikeBusyCheckStart).count());
+                presentSpikeSourceBusy = queuedSourceRenderBusy;
+            }
         }
 
         // Preserve the normal queued path's final texture-lifecycle/device barrier.
@@ -5523,18 +5726,237 @@ namespace dxvk {
         // no post-Present eye resolve or overlay work.
         if (!queuedSourceRenderBusy && postPresentVR &&
             postPresentVR->m_CreatedVRTextures.load(std::memory_order_acquire)) {
+            const auto presentSpikeTextureWaitStart = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
             std::lock_guard<TextureStateMutex> textureLifecycleLock(postPresentVR->m_TextureMutex);
+            const auto presentSpikeTextureWaitEnd = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
+            if (presentSpikeDiagnostics) {
+                presentSpikeTextureWaitUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeTextureWaitEnd - presentSpikeTextureWaitStart).count());
+            }
+            const auto presentSpikeBarrierWaitStart = presentSpikeDiagnostics
+                ? PresentSpikeClock::now()
+                : PresentSpikeClock::time_point{};
             D3D9DeviceLock postPresentDeviceBarrier = LockDeviceExclusive();
+            if (presentSpikeDiagnostics) {
+                const auto presentSpikeBarrierWaitEnd = PresentSpikeClock::now();
+                presentSpikeBarrierWaitUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        presentSpikeBarrierWaitEnd - presentSpikeBarrierWaitStart).count());
+            }
         }
 
         if (sourceRenderConsumerGate.owns_lock())
             sourceRenderConsumerGate.unlock();
 
+        const auto presentSpikeUpdateStart = presentSpikeDiagnostics
+            ? PresentSpikeClock::now()
+            : PresentSpikeClock::time_point{};
         if (g_Game && g_Game->m_VR)
             g_Game->m_VR->Update();
+        if (presentSpikeDiagnostics) {
+            const auto presentSpikeUpdateEnd = PresentSpikeClock::now();
+            presentSpikeUpdateUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikeUpdateEnd - presentSpikeUpdateStart).count());
+        }
 
+        const auto presentSpikeRestoreStart = presentSpikeDiagnostics
+            ? PresentSpikeClock::now()
+            : PresentSpikeClock::time_point{};
         if (g_Game && g_Game->m_VR && g_Game->GetMatQueueMode() == 0)
             VrAimLineRestoreOverlayBackups(this, g_Game->m_VR);
+        if (presentSpikeDiagnostics) {
+            const auto presentSpikeRestoreEnd = PresentSpikeClock::now();
+            presentSpikeRestoreUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikeRestoreEnd - presentSpikeRestoreStart).count());
+        }
+
+        if (presentSpikeDiagnostics) {
+            const auto presentSpikeExit = PresentSpikeClock::now();
+            const uint64_t presentSpikeInsideUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    presentSpikeExit - presentSpikeEntry).count());
+            const uint64_t presentSpikeCycleUs =
+                presentSpikeOutsideUs + presentSpikeInsideUs;
+            const uint64_t presentSpikeAccountedUs =
+                presentSpikeCursorUs +
+                presentSpikePreVrUs +
+                presentSpikeLockUs +
+                presentSpikeSwapchainUs +
+                presentSpikePostStatsUs +
+                presentSpikeConsumerGateUs +
+                presentSpikeBusyCheckUs +
+                presentSpikeTextureWaitUs +
+                presentSpikeBarrierWaitUs +
+                presentSpikeUpdateUs +
+                presentSpikeRestoreUs;
+            const uint64_t presentSpikeOtherUs =
+                presentSpikeInsideUs > presentSpikeAccountedUs
+                    ? presentSpikeInsideUs - presentSpikeAccountedUs
+                    : 0;
+            const uint64_t presentSpikeThresholdUs = static_cast<uint64_t>(
+                presentSpikeVr->m_PresentSpikeThresholdMs * 1000.0f);
+
+            if (presentSpikeCycleUs >= presentSpikeThresholdUs &&
+                (!s_worstPresentSpike.valid ||
+                    presentSpikeCycleUs > s_worstPresentSpike.cycleUs)) {
+                s_worstPresentSpike.valid = true;
+                s_worstPresentSpike.cycleUs = presentSpikeCycleUs;
+                s_worstPresentSpike.outsideUs = presentSpikeOutsideUs;
+                s_worstPresentSpike.insideUs = presentSpikeInsideUs;
+                s_worstPresentSpike.cursorUs = presentSpikeCursorUs;
+                s_worstPresentSpike.preVrUs = presentSpikePreVrUs;
+                s_worstPresentSpike.presentLockUs = presentSpikeLockUs;
+                s_worstPresentSpike.swapchainUs = presentSpikeSwapchainUs;
+                s_worstPresentSpike.postStatsUs = presentSpikePostStatsUs;
+                s_worstPresentSpike.consumerGateUs = presentSpikeConsumerGateUs;
+                s_worstPresentSpike.busyCheckUs = presentSpikeBusyCheckUs;
+                s_worstPresentSpike.textureWaitUs = presentSpikeTextureWaitUs;
+                s_worstPresentSpike.barrierWaitUs = presentSpikeBarrierWaitUs;
+                s_worstPresentSpike.updateUs = presentSpikeUpdateUs;
+                s_worstPresentSpike.restoreUs = presentSpikeRestoreUs;
+                s_worstPresentSpike.otherUs = presentSpikeOtherUs;
+                s_worstPresentSpike.preEndFrameUs = presentSpikePreEndFrameUs;
+                s_worstPresentSpike.endFrameUs = presentSpikeEndFrameUs;
+                s_worstPresentSpike.postEndFrameUs = presentSpikePostEndFrameUs;
+                s_worstPresentSpike.updatePrePoseUs =
+                    presentSpikeVr->m_PresentSpikeUpdatePrePoseUs;
+                s_worstPresentSpike.updatePosesUs =
+                    presentSpikeVr->m_PresentSpikeUpdatePosesUs;
+                s_worstPresentSpike.updateSettingsUs =
+                    presentSpikeVr->m_PresentSpikeUpdateSettingsUs;
+                s_worstPresentSpike.updateSubmitUs =
+                    presentSpikeVr->m_PresentSpikeUpdateSubmitUs;
+                s_worstPresentSpike.updatePlayerUs =
+                    presentSpikeVr->m_PresentSpikeUpdatePlayerUs;
+                s_worstPresentSpike.updateTrackingUs =
+                    presentSpikeVr->m_PresentSpikeUpdateTrackingUs;
+                s_worstPresentSpike.updateInputUs =
+                    presentSpikeVr->m_PresentSpikeUpdateInputUs;
+                s_worstPresentSpike.updateTailUs =
+                    presentSpikeVr->m_PresentSpikeUpdateTailUs;
+                s_worstPresentSpike.submitTimingDataUs =
+                    presentSpikeVr->m_PresentSpikeSubmitTimingDataUs;
+                s_worstPresentSpike.submitTextureLockUs =
+                    presentSpikeVr->m_PresentSpikeSubmitTextureLockUs;
+                s_worstPresentSpike.submitPrepareUs =
+                    presentSpikeVr->m_PresentSpikeSubmitPrepareUs;
+                s_worstPresentSpike.submitQueueLockUs =
+                    presentSpikeVr->m_PresentSpikeSubmitQueueLockUs;
+                s_worstPresentSpike.submitOverlayBindUs =
+                    presentSpikeVr->m_PresentSpikeSubmitOverlayBindUs;
+                s_worstPresentSpike.submitLeftEyeUs =
+                    presentSpikeVr->m_PresentSpikeSubmitLeftEyeUs;
+                s_worstPresentSpike.submitRightEyeUs =
+                    presentSpikeVr->m_PresentSpikeSubmitRightEyeUs;
+                s_worstPresentSpike.submitFinishUs =
+                    presentSpikeVr->m_PresentSpikeSubmitFinishUs;
+                s_worstPresentSpike.submitHandHudUs =
+                    presentSpikeVr->m_PresentSpikeSubmitHandHudUs;
+                s_worstPresentSpike.submitSlotGateUs =
+                    presentSpikeVr->m_PresentSpikeSubmitSlotGateUs;
+                s_worstPresentSpike.submitSlotIndex =
+                    presentSpikeVr->m_PresentSpikeSubmitSlotIndex;
+                s_worstPresentSpike.submitSlotLast =
+                    presentSpikeVr->m_PresentSpikeSubmitSlotLast;
+                s_worstPresentSpike.submitSlotSkipped =
+                    presentSpikeVr->m_PresentSpikeSubmitSlotSkipped;
+                s_worstPresentSpike.submitSlotAdvanced =
+                    presentSpikeVr->m_PresentSpikeSubmitSlotAdvanced;
+                s_worstPresentSpike.submitSlotSkipTotal =
+                    presentSpikeVr->m_CompositorFrameIndexDedupSkipCount.load(
+                        std::memory_order_relaxed);
+                s_worstPresentSpike.completed =
+                    presentSpikeVr->m_RenderCompletedFrameId.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.submitted =
+                    presentSpikeVr->m_LastSubmittedFrameId.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.queued =
+                    g_Game != nullptr && g_Game->GetMatQueueMode() != 0;
+                s_worstPresentSpike.sourceBusy = presentSpikeSourceBusy;
+                s_worstPresentSpike.endFrameThreadId =
+                    presentSpikeEndFrameThreadId;
+                s_worstPresentSpike.endFrameOnPresentThread =
+                    presentSpikeEndFrameOnPresentThread;
+            }
+
+            const DWORD presentSpikeNowMs = ::GetTickCount();
+            const DWORD presentSpikeReportIntervalMs = static_cast<DWORD>(
+                1000.0f / std::max(0.2f, presentSpikeVr->m_PresentSpikeDebugLogHz));
+            bool presentSpikeLogged = false;
+            if (presentSpikeNowMs - s_lastPresentSpikeReportMs >=
+                presentSpikeReportIntervalMs) {
+                if (s_worstPresentSpike.valid) {
+                    const PresentSpikeSample& spike = s_worstPresentSpike;
+                    Game::logMsg(
+                        "[VR][PresentSpike] tid=%lu cycleUs=%llu outsideUs=%llu insideUs=%llu cursorUs=%llu preVrUs=%llu presentLockUs=%llu swapchainUs=%llu postStatsUs=%llu consumerGateUs=%llu busyCheckUs=%llu textureWaitUs=%llu barrierWaitUs=%llu updateUs=%llu restoreUs=%llu otherUs=%llu preEndFrameUs=%llu endFrameUs=%llu postEndFrameUs=%llu endFrameTid=%u endFrameSameTid=%d updPrePoseUs=%llu updPosesUs=%llu updSettingsUs=%llu updSubmitUs=%llu updPlayerUs=%llu updTrackingUs=%llu updInputUs=%llu updTailUs=%llu subTimingUs=%llu subTexLockUs=%llu subPrepareUs=%llu subQueueLockUs=%llu subOverlayUs=%llu subLeftUs=%llu subRightUs=%llu subFinishUs=%llu subHandHudUs=%llu subSlotUs=%llu slotIndex=%u slotLast=%u slotSkip=%d slotAdvance=%d slotSkipTotal=%u q=%d sourceBusy=%d completed=%u submitted=%u",
+                        ::GetCurrentThreadId(),
+                        static_cast<unsigned long long>(spike.cycleUs),
+                        static_cast<unsigned long long>(spike.outsideUs),
+                        static_cast<unsigned long long>(spike.insideUs),
+                        static_cast<unsigned long long>(spike.cursorUs),
+                        static_cast<unsigned long long>(spike.preVrUs),
+                        static_cast<unsigned long long>(spike.presentLockUs),
+                        static_cast<unsigned long long>(spike.swapchainUs),
+                        static_cast<unsigned long long>(spike.postStatsUs),
+                        static_cast<unsigned long long>(spike.consumerGateUs),
+                        static_cast<unsigned long long>(spike.busyCheckUs),
+                        static_cast<unsigned long long>(spike.textureWaitUs),
+                        static_cast<unsigned long long>(spike.barrierWaitUs),
+                        static_cast<unsigned long long>(spike.updateUs),
+                        static_cast<unsigned long long>(spike.restoreUs),
+                        static_cast<unsigned long long>(spike.otherUs),
+                        static_cast<unsigned long long>(spike.preEndFrameUs),
+                        static_cast<unsigned long long>(spike.endFrameUs),
+                        static_cast<unsigned long long>(spike.postEndFrameUs),
+                        spike.endFrameThreadId,
+                        spike.endFrameOnPresentThread ? 1 : 0,
+                        static_cast<unsigned long long>(spike.updatePrePoseUs),
+                        static_cast<unsigned long long>(spike.updatePosesUs),
+                        static_cast<unsigned long long>(spike.updateSettingsUs),
+                        static_cast<unsigned long long>(spike.updateSubmitUs),
+                        static_cast<unsigned long long>(spike.updatePlayerUs),
+                        static_cast<unsigned long long>(spike.updateTrackingUs),
+                        static_cast<unsigned long long>(spike.updateInputUs),
+                        static_cast<unsigned long long>(spike.updateTailUs),
+                        static_cast<unsigned long long>(spike.submitTimingDataUs),
+                        static_cast<unsigned long long>(spike.submitTextureLockUs),
+                        static_cast<unsigned long long>(spike.submitPrepareUs),
+                        static_cast<unsigned long long>(spike.submitQueueLockUs),
+                        static_cast<unsigned long long>(spike.submitOverlayBindUs),
+                        static_cast<unsigned long long>(spike.submitLeftEyeUs),
+                        static_cast<unsigned long long>(spike.submitRightEyeUs),
+                        static_cast<unsigned long long>(spike.submitFinishUs),
+                        static_cast<unsigned long long>(spike.submitHandHudUs),
+                        static_cast<unsigned long long>(spike.submitSlotGateUs),
+                        spike.submitSlotIndex,
+                        spike.submitSlotLast,
+                        spike.submitSlotSkipped ? 1 : 0,
+                        spike.submitSlotAdvanced ? 1 : 0,
+                        spike.submitSlotSkipTotal,
+                        spike.queued ? 1 : 0,
+                        spike.sourceBusy ? 1 : 0,
+                        spike.completed,
+                        spike.submitted);
+                    presentSpikeLogged = true;
+                }
+                s_worstPresentSpike = {};
+                s_lastPresentSpikeReportMs = presentSpikeNowMs;
+            }
+
+            // Do not attribute synchronous diagnostic file I/O to the next frame's
+            // outside-Present Source work; the probe must not create its own spike.
+            s_lastPresentSpikeExit = presentSpikeLogged
+                ? PresentSpikeClock::now()
+                : presentSpikeExit;
+        }
 
         return result;
     }

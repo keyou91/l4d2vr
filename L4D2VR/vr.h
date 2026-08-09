@@ -756,6 +756,42 @@ public:
 	// Render/HUD/multicore pipeline diagnostics. Default off; logs key frame boundaries only.
 	bool  m_RenderPipelineDebugLog = false;
 	float m_RenderPipelineDebugLogHz = 2.0f;
+	// Low-overhead Source main-thread Present spike profiler. It retains only the
+	// worst segmented frame in each reporting window, avoiding per-frame file I/O.
+	bool  m_PresentSpikeDebugLog = false;
+	float m_PresentSpikeThresholdMs = 15.0f;
+	float m_PresentSpikeDebugLogHz = 1.0f;
+	// Last VR::Update phase breakdown. PresentEx reads these on the same main thread.
+	uint64_t m_PresentSpikeUpdatePrePoseUs = 0;
+	uint64_t m_PresentSpikeUpdatePosesUs = 0;
+	uint64_t m_PresentSpikeUpdateSettingsUs = 0;
+	uint64_t m_PresentSpikeUpdateSubmitUs = 0;
+	uint64_t m_PresentSpikeUpdatePlayerUs = 0;
+	uint64_t m_PresentSpikeUpdateTrackingUs = 0;
+	uint64_t m_PresentSpikeUpdateInputUs = 0;
+	uint64_t m_PresentSpikeUpdateTailUs = 0;
+	// SubmitVRTextures sub-phase timings. These isolate compositor/queue waits
+	// without enabling the much noisier render-pipeline diagnostics.
+	uint64_t m_PresentSpikeSubmitTimingDataUs = 0;
+	uint64_t m_PresentSpikeSubmitTextureLockUs = 0;
+	uint64_t m_PresentSpikeSubmitPrepareUs = 0;
+	uint64_t m_PresentSpikeSubmitQueueLockUs = 0;
+	uint64_t m_PresentSpikeSubmitOverlayBindUs = 0;
+	uint64_t m_PresentSpikeSubmitLeftEyeUs = 0;
+	uint64_t m_PresentSpikeSubmitRightEyeUs = 0;
+	uint64_t m_PresentSpikeSubmitFinishUs = 0;
+	uint64_t m_PresentSpikeSubmitHandHudUs = 0;
+	uint64_t m_PresentSpikeSubmitSlotGateUs = 0;
+	uint32_t m_PresentSpikeSubmitSlotIndex = 0;
+	uint32_t m_PresentSpikeSubmitSlotLast = 0;
+	bool m_PresentSpikeSubmitSlotSkipped = false;
+	bool m_PresentSpikeSubmitSlotAdvanced = false;
+	// Seqlock-published IMaterialSystem::EndFrame timing, potentially written by
+	// a different Source thread and consumed at the next Present entry.
+	std::atomic<uint32_t> m_PresentSpikeEndFrameSeq{ 0 };
+	std::atomic<uint64_t> m_PresentSpikeEndFrameEntryUs{ 0 };
+	std::atomic<uint64_t> m_PresentSpikeEndFrameExitUs{ 0 };
+	std::atomic<uint32_t> m_PresentSpikeEndFrameThreadId{ 0 };
 	// Source material queue marker diagnostics for queued/multicore frame completion pacing.
 	bool  m_QueuedSourceMarkerDebugLog = false;
 	float m_QueuedSourceMarkerDebugLogHz = 4.0f;
@@ -1208,10 +1244,12 @@ public:
 	std::atomic<uint32_t> m_LastSubmittedPoseToken{ 0 };
 	std::atomic<bool> m_SubmitInFlight{ false };
 	std::atomic<uint32_t> m_LastSubmittedCompositorFrameIndex{ 0 };
-	// RenderPipelineDebugLog-only counters and timings. All writers check the
+	// Active compositor-slot gate counter. The gate preserves a fresh frame rather
+	// than entering an already occupied HMD slot and blocking in PostPresentHandoff.
+	std::atomic<uint32_t> m_CompositorFrameIndexDedupSkipCount{ 0 };
+	// RenderPipelineDebugLog-only counters and timings. Other writers check the
 	// switch before touching these atomics, keeping the normal hot path clean.
 	std::atomic<uint32_t> m_SubmitInFlightSkipCount{ 0 };
-	std::atomic<uint32_t> m_CompositorFrameIndexDedupSkipCount{ 0 };
 	std::atomic<uint32_t> m_ActualCompositorSubmitCount{ 0 };
 	std::atomic<uint32_t> m_SubmitVRTexturesEntryCount{ 0 };
 	std::atomic<uint32_t> m_SubmitEyeNoneCount{ 0 };
@@ -1277,6 +1315,10 @@ public:
 	// Present-side wait budget (ms) for a fresh rendered frame in mat_queue_mode!=0.
 	// 0 disables waiting. Used as an upper bound by adaptive submit-wait logic.
 	int m_QueuedSubmitWaitMs = 1;
+	// When Present reaches an HMD compositor slot already used by the previous eye
+	// pair, poll briefly for the next slot instead of entering a full-period
+	// PostPresentHandoff wait. 0 restores immediate deferral.
+	int m_QueuedSubmitCompositorSlotWaitUs = 1000;
 	// Queued submit policy switch:
 	// true = submit only frames whose render-completed pose token advanced (less ghosting, may skip frames)
 	// false = original submit-pose-token path (smoother cadence, can submit stale render-pose frames)

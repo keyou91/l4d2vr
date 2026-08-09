@@ -1,5 +1,10 @@
 void __fastcall Hooks::dEndFrame(void* ecx, void* edx)
 {
+	const bool profilePresentSpike =
+		m_VR && m_VR->m_PresentSpikeDebugLog;
+	const auto presentSpikeEndFrameEntry = profilePresentSpike
+		? std::chrono::steady_clock::now()
+		: std::chrono::steady_clock::time_point{};
 	const bool logQueuedEndFrame =
 		m_VR &&
 		m_VR->m_RenderPipelineDebugLog &&
@@ -20,6 +25,23 @@ void __fastcall Hooks::dEndFrame(void* ecx, void* edx)
 		: false;
 
 	hkEndFrame.fOriginal(ecx);
+
+	if (profilePresentSpike)
+	{
+		const auto presentSpikeEndFrameExit = std::chrono::steady_clock::now();
+		const uint64_t entryUs = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				presentSpikeEndFrameEntry.time_since_epoch()).count());
+		const uint64_t exitUs = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				presentSpikeEndFrameExit.time_since_epoch()).count());
+
+		m_VR->m_PresentSpikeEndFrameSeq.fetch_add(1u, std::memory_order_acq_rel);
+		m_VR->m_PresentSpikeEndFrameEntryUs.store(entryUs, std::memory_order_relaxed);
+		m_VR->m_PresentSpikeEndFrameExitUs.store(exitUs, std::memory_order_relaxed);
+		m_VR->m_PresentSpikeEndFrameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+		m_VR->m_PresentSpikeEndFrameSeq.fetch_add(1u, std::memory_order_release);
+	}
 
 	if (logQueuedEndFrame)
 	{

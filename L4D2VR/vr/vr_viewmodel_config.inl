@@ -3219,6 +3219,12 @@ void VR::ParseConfigFile()
     // Multicore rendering: present-side wait budget (ms) for a fresh dRenderView frame before submit.
     // 0 = no wait (max FPS, can increase stale-frame submits), 1~3 = usually best balance.
     m_QueuedSubmitWaitMs = std::clamp(getInt("QueuedSubmitWaitMs", m_QueuedSubmitWaitMs), 0, 20);
+    // Same compositor slot: wait only near-term for its frame index to advance.
+    // This is separate from QueuedSubmitWaitMs and never waits for Source rendering.
+    m_QueuedSubmitCompositorSlotWaitUs = std::clamp(
+        getInt("QueuedSubmitCompositorSlotWaitUs", m_QueuedSubmitCompositorSlotWaitUs),
+        0,
+        3000);
     // OS priority boost for the queued Source render-worker thread.
     // 0 = default, 1 = ABOVE_NORMAL, 2 = HIGHEST.
     m_QueuedRenderThreadPriorityBoost = std::clamp(
@@ -3262,6 +3268,9 @@ void VR::ParseConfigFile()
     m_QueuedViewmodelStabilizeDebugLogHz = std::max(0.0f, getFloat("QueuedViewmodelStabilizeDebugLogHz", m_QueuedViewmodelStabilizeDebugLogHz));
     m_RenderPipelineDebugLog = getBool("RenderPipelineDebugLog", m_RenderPipelineDebugLog);
     m_RenderPipelineDebugLogHz = std::clamp(getFloat("RenderPipelineDebugLogHz", m_RenderPipelineDebugLogHz), 0.0f, 60.0f);
+    m_PresentSpikeDebugLog = getBool("PresentSpikeDebugLog", m_PresentSpikeDebugLog);
+    m_PresentSpikeThresholdMs = std::clamp(getFloat("PresentSpikeThresholdMs", m_PresentSpikeThresholdMs), 5.0f, 100.0f);
+    m_PresentSpikeDebugLogHz = std::clamp(getFloat("PresentSpikeDebugLogHz", m_PresentSpikeDebugLogHz), 0.2f, 10.0f);
     m_QueuedSourceMarkerDebugLog = getBool("QueuedSourceMarkerDebugLog", m_QueuedSourceMarkerDebugLog);
     m_QueuedSourceMarkerDebugLogHz = std::clamp(getFloat("QueuedSourceMarkerDebugLogHz", m_QueuedSourceMarkerDebugLogHz), 0.0f, 60.0f);
     m_RightEyeCopyFromLeft = getBool("RightEyeCopyFromLeft", m_RightEyeCopyFromLeft);

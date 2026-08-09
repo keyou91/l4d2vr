@@ -1593,6 +1593,29 @@ void VR::Update()
     if (!m_Game->m_Initialized)
         return;
 
+    const bool profilePresentSpikeUpdate = m_PresentSpikeDebugLog;
+    auto presentSpikeUpdatePhaseStart = profilePresentSpikeUpdate
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+    m_PresentSpikeUpdatePrePoseUs = 0;
+    m_PresentSpikeUpdatePosesUs = 0;
+    m_PresentSpikeUpdateSettingsUs = 0;
+    m_PresentSpikeUpdateSubmitUs = 0;
+    m_PresentSpikeUpdatePlayerUs = 0;
+    m_PresentSpikeUpdateTrackingUs = 0;
+    m_PresentSpikeUpdateInputUs = 0;
+    m_PresentSpikeUpdateTailUs = 0;
+    auto markPresentSpikeUpdatePhase = [&](uint64_t& target)
+        {
+            if (!profilePresentSpikeUpdate)
+                return;
+            const auto now = std::chrono::steady_clock::now();
+            target = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    now - presentSpikeUpdatePhaseStart).count());
+            presentSpikeUpdatePhaseStart = now;
+        };
+
     // Consume the queued render-camera bridge on the update thread. dRenderView
     // publishes this instead of racing plain m_SetupOrigin/m_SetupAngles while
     // UpdateTracking derives the next camera anchor. The serial path owns these
@@ -1675,7 +1698,9 @@ void VR::Update()
     if (!queuedAtFrameStart)
         SubmitVRTextures();
 
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdatePrePoseUs);
     bool posesValid = UpdatePosesAndActions();
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdatePosesUs);
     UpdateAutoMatQueueMode();
     const int queueModeAfterAuto = m_Game ? m_Game->GetMatQueueMode() : 0;
     static int s_LastObservedQueueMode = -999;
@@ -1727,6 +1752,7 @@ void VR::Update()
     ApplyShadowSettingsIfNeeded();
     ApplyFlashlightEnhancementIfNeeded();
     ApplyLocalVScriptConvarsIfNeeded();
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdateSettingsUs);
     if (!posesValid)
     {
         // Continue using the last known poses so smoothing and aim helpers stay active.
@@ -1763,6 +1789,7 @@ void VR::Update()
             }
         }
     }
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdateSubmitUs);
     // Auto ResetPosition shortly after a level finishes loading.
 
     {
@@ -2015,6 +2042,8 @@ void VR::Update()
         UpdateAutoFlashlight(localPlayer);
     }
 
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdatePlayerUs);
+
     UpdateTracking();
     UpdateNativeViewmodelLeftHandOpenVRFingerCurls();
     UpdateNativeViewmodelRightHandOpenVRFingerCurls();
@@ -2026,12 +2055,14 @@ void VR::Update()
         ShutdownTextToSpeechServer();
     UpdateKillIndicatorOverlays();
     UpdateDamageFeedback();
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdateTrackingUs);
 
 
     if (!m_Game->m_VguiSurface)
     {
         PumpSpeechToTextVoiceBroadcast();
         FlushHapticMixer();
+        markPresentSpikeUpdatePhase(m_PresentSpikeUpdateInputUs);
         return;
     }
 
@@ -2052,9 +2083,11 @@ void VR::Update()
     // Refresh this independently atomic scalar so the queued render path can
     // late-latch current body yaw instead of waiting one additional update.
     m_RenderRotationOffset.store(m_RotationOffset, std::memory_order_release);
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdateInputUs);
 
     PumpSpeechToTextVoiceBroadcast();
     FlushHapticMixer();
+    markPresentSpikeUpdatePhase(m_PresentSpikeUpdateTailUs);
 }
 
 bool VR::GetWalkAxis(float& x, float& y) {
@@ -3037,6 +3070,21 @@ vr::EVROverlayError VR::SetOverlayTextureSynchronized(
 void VR::SubmitVRTextures()
 {
     const bool renderPipelineDiagnostics = m_RenderPipelineDebugLog;
+    const bool profilePresentSpikeSubmit = m_PresentSpikeDebugLog;
+    m_PresentSpikeSubmitTimingDataUs = 0;
+    m_PresentSpikeSubmitTextureLockUs = 0;
+    m_PresentSpikeSubmitPrepareUs = 0;
+    m_PresentSpikeSubmitQueueLockUs = 0;
+    m_PresentSpikeSubmitOverlayBindUs = 0;
+    m_PresentSpikeSubmitLeftEyeUs = 0;
+    m_PresentSpikeSubmitRightEyeUs = 0;
+    m_PresentSpikeSubmitFinishUs = 0;
+    m_PresentSpikeSubmitHandHudUs = 0;
+    m_PresentSpikeSubmitSlotGateUs = 0;
+    m_PresentSpikeSubmitSlotIndex = 0;
+    m_PresentSpikeSubmitSlotLast = 0;
+    m_PresentSpikeSubmitSlotSkipped = false;
+    m_PresentSpikeSubmitSlotAdvanced = false;
     if (renderPipelineDiagnostics)
         m_SubmitVRTexturesEntryCount.fetch_add(1, std::memory_order_relaxed);
 
@@ -3226,32 +3274,80 @@ void VR::SubmitVRTextures()
         if (!m_QueuedSubmitUseRenderPoseToken && poseToken == lastSubmittedTokenAtPoseRead)
             return;
 
-        // Do not pre-emptively discard this submit when GetFrameTiming reports
-        // the same compositor frame index. That index advances on compositor
-        // vsync and is not phase-aligned with the engine Present path, so equality
-        // does not prove that the new eye textures are duplicates. Let Submit()
-        // decide and handle VRCompositorError_AlreadySubmitted below.
-        if (renderPipelineDiagnostics)
-        {
-            vr::Compositor_FrameTiming timing{};
-            timing.m_nSize = sizeof(timing);
-            if (m_Compositor->GetFrameTiming(&timing, 0) &&
-                timing.m_nFrameIndex != 0)
+        // Source Present and compositor vsync are not phase-aligned. Entering a
+        // compositor slot that already owns a stereo pair can make the later
+        // PostPresentHandoff synchronously wait almost one full HMD period. Poll
+        // for at most a small bounded interval; if the slot still has not advanced,
+        // leave the fresh frame/pose pending for the next Present call.
+        const auto slotGateStart = std::chrono::steady_clock::now();
+        auto readCompositorFrameIndex = [&]()
             {
+                vr::Compositor_FrameTiming timing{};
+                timing.m_nSize = sizeof(timing);
+                if (!m_Compositor->GetFrameTiming(&timing, 0) || timing.m_nFrameIndex == 0)
+                    return false;
                 compositorFrameIndex = timing.m_nFrameIndex;
+                return true;
+            };
+
+        const uint32_t lastSubmittedCompositorFrameIndex =
+            m_LastSubmittedCompositorFrameIndex.load(std::memory_order_acquire);
+        const bool haveCompositorFrameIndex = readCompositorFrameIndex();
+        m_PresentSpikeSubmitSlotIndex = compositorFrameIndex;
+        m_PresentSpikeSubmitSlotLast = lastSubmittedCompositorFrameIndex;
+
+        if (haveCompositorFrameIndex &&
+            lastSubmittedCompositorFrameIndex != 0 &&
+            compositorFrameIndex == lastSubmittedCompositorFrameIndex)
+        {
+            const int slotWaitUs = std::clamp(m_QueuedSubmitCompositorSlotWaitUs, 0, 3000);
+            const auto slotDeadline = slotGateStart + std::chrono::microseconds(slotWaitUs);
+            while (slotWaitUs > 0 && std::chrono::steady_clock::now() < slotDeadline)
+            {
+                SwitchToThread();
+                if (readCompositorFrameIndex() &&
+                    compositorFrameIndex != lastSubmittedCompositorFrameIndex)
+                {
+                    m_PresentSpikeSubmitSlotAdvanced = true;
+                    break;
+                }
             }
 
-            const uint32_t lastSubmittedCompositorFrameIndex =
-                m_LastSubmittedCompositorFrameIndex.load(
-                    std::memory_order_acquire);
-            if (compositorFrameIndex != 0 &&
-                compositorFrameIndex == lastSubmittedCompositorFrameIndex)
+            m_PresentSpikeSubmitSlotIndex = compositorFrameIndex;
+            if (compositorFrameIndex == lastSubmittedCompositorFrameIndex)
             {
-                m_CompositorFrameIndexDedupSkipCount.fetch_add(
-                    1,
-                    std::memory_order_relaxed);
+                const uint32_t skipCount =
+                    m_CompositorFrameIndexDedupSkipCount.fetch_add(
+                        1,
+                        std::memory_order_relaxed) + 1;
+                m_PresentSpikeSubmitSlotSkipped = true;
+                m_PresentSpikeSubmitSlotGateUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - slotGateStart).count());
+
+                if (renderPipelineDiagnostics)
+                {
+                    static std::chrono::steady_clock::time_point s_lastCompositorSlotSkipLog{};
+                    if (!ShouldThrottle(s_lastCompositorSlotSkipLog, m_RenderPipelineDebugLogHz))
+                    {
+                        Game::logMsg(
+                            "[VR][Queued][CompositorSlotDefer] tid=%lu frameIndex=%u waitUs=%llu budgetUs=%d skipCount=%u completed=%u submitted=%u",
+                            GetCurrentThreadId(),
+                            compositorFrameIndex,
+                            static_cast<unsigned long long>(m_PresentSpikeSubmitSlotGateUs),
+                            slotWaitUs,
+                            skipCount,
+                            m_RenderCompletedFrameId.load(std::memory_order_acquire),
+                            m_LastSubmittedFrameId.load(std::memory_order_acquire));
+                    }
+                }
+                return;
             }
         }
+
+        m_PresentSpikeSubmitSlotGateUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - slotGateStart).count());
     }
 
     if (queued && sceneReadyForStaleResubmit && m_QueuedSubmitUseRenderPoseToken)
@@ -3491,7 +3587,16 @@ void VR::SubmitVRTextures()
             if (!m_CompositorExplicitTiming || timingDataSubmitted)
                 return;
 
+            const auto timingDataStart = profilePresentSpikeSubmit
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
             vr::EVRCompositorError timingError = m_Compositor->SubmitExplicitTimingData();
+            if (profilePresentSpikeSubmit)
+            {
+                m_PresentSpikeSubmitTimingDataUs += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - timingDataStart).count());
+            }
             if (timingError != vr::VRCompositorError_None)
             {
                 LogCompositorError("SubmitExplicitTimingData", timingError);
@@ -3569,8 +3674,28 @@ void VR::SubmitVRTextures()
                 }
             }
 
+            auto invokeCompositorSubmit = [&](const vr::Texture_t* submittedTexture,
+                vr::EVRSubmitFlags submittedFlags)
+                {
+                    const auto eyeSubmitStart = profilePresentSpikeSubmit
+                        ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
+                    const vr::EVRCompositorError error =
+                        m_Compositor->Submit(eye, submittedTexture, bounds, submittedFlags);
+                    if (profilePresentSpikeSubmit)
+                    {
+                        uint64_t& eyeSubmitUs = eye == vr::Eye_Left
+                            ? m_PresentSpikeSubmitLeftEyeUs
+                            : m_PresentSpikeSubmitRightEyeUs;
+                        eyeSubmitUs += static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - eyeSubmitStart).count());
+                    }
+                    return error;
+                };
+
             vr::EVRCompositorError submitError =
-                m_Compositor->Submit(eye, submitTexture, bounds, submitFlags);
+                invokeCompositorSubmit(submitTexture, submitFlags);
             recordCompositorSubmit(submitError);
             if (submitError != vr::VRCompositorError_None &&
                 useRenderPoseTextureSubmit &&
@@ -3590,12 +3715,7 @@ void VR::SubmitVRTextures()
                             m_LastSubmittedFrameId.load(std::memory_order_acquire));
                     }
                 }
-                submitError =
-                    m_Compositor->Submit(
-                        eye,
-                        &textureCopy,
-                        bounds,
-                        vr::Submit_Default);
+                submitError = invokeCompositorSubmit(&textureCopy, vr::Submit_Default);
                 recordCompositorSubmit(submitError);
             }
             if (submitError != vr::VRCompositorError_None)
@@ -3628,7 +3748,17 @@ void VR::SubmitVRTextures()
         {
             // Keep the submit descriptors, pixels and frame/pose generation together.
             // The Source completion functor takes the same mutex before replacing the pair.
-            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+            std::unique_lock<TextureStateMutex> textureLock(m_TextureMutex, std::defer_lock);
+            const auto textureLockStart = profilePresentSpikeSubmit
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
+            textureLock.lock();
+            if (profilePresentSpikeSubmit)
+            {
+                m_PresentSpikeSubmitTextureLockUs += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - textureLockStart).count());
+            }
 
             const bool sceneEyePair =
                 leftTexture == &m_VKLeftEye.m_VRTexture &&
@@ -3665,6 +3795,9 @@ void VR::SubmitVRTextures()
             // Queue overlay layout transitions before taking the native VkQueue gate.
             // A staged overlay forces the heavy gate below so these new D3D commands
             // are flushed and synchronized exactly once for the whole consumer batch.
+            const auto prepareStart = profilePresentSpikeSubmit
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
             if (g_D3DVR9)
             {
                 for (size_t i = 0; i < pendingOverlayTextureBinds.count; ++i)
@@ -3691,6 +3824,12 @@ void VR::SubmitVRTextures()
                     return false;
                 }
             }
+            if (profilePresentSpikeSubmit)
+            {
+                m_PresentSpikeSubmitPrepareUs += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - prepareStart).count());
+            }
 
             struct SubmissionQueueGuard
             {
@@ -3706,9 +3845,18 @@ void VR::SubmitVRTextures()
             {
                 const bool canUsePreparedQueueGate =
                     preparedQueuedEyePair && pendingOverlayTextureBinds.count == 0;
+                const auto queueLockStart = profilePresentSpikeSubmit
+                    ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
                 const HRESULT queueLockHr = canUsePreparedQueueGate
                     ? g_D3DVR9->LockPreparedSubmissionQueue()
                     : g_D3DVR9->LockSubmissionQueue();
+                if (profilePresentSpikeSubmit)
+                {
+                    m_PresentSpikeSubmitQueueLockUs += static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - queueLockStart).count());
+                }
                 if (FAILED(queueLockHr))
                     return false;
                 submissionQueueGuard.locked = true;
@@ -3717,6 +3865,9 @@ void VR::SubmitVRTextures()
             // All D3D producers have completed before this point. Publish the scene's
             // Vulkan-backed overlays while the same native queue gate used for the eye
             // pair is held, avoiding one queue drain/lock cycle per overlay.
+            const auto overlayBindStart = profilePresentSpikeSubmit
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
             if (vr::IVROverlay* overlayApi = vr::VROverlay())
             {
                 for (size_t i = 0; i < pendingOverlayTextureBinds.count; ++i)
@@ -3730,6 +3881,12 @@ void VR::SubmitVRTextures()
                 }
             }
             pendingOverlayTextureBinds.Clear();
+            if (profilePresentSpikeSubmit)
+            {
+                m_PresentSpikeSubmitOverlayBindUs += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - overlayBindStart).count());
+            }
 
             if (queued)
             {
@@ -3744,7 +3901,16 @@ void VR::SubmitVRTextures()
                 if (m_CompositorExplicitTiming)
                 {
                     m_CompositorNeedsHandoff = true;
+                    const auto finishStart = profilePresentSpikeSubmit
+                        ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
                     FinishFrame();
+                    if (profilePresentSpikeSubmit)
+                    {
+                        m_PresentSpikeSubmitFinishUs += static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - finishStart).count());
+                    }
                 }
                 return true;
             }
@@ -3755,7 +3921,16 @@ void VR::SubmitVRTextures()
             if (successfulSubmit && m_CompositorExplicitTiming)
             {
                 m_CompositorNeedsHandoff = true;
+                const auto finishStart = profilePresentSpikeSubmit
+                    ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
                 FinishFrame();
+                if (profilePresentSpikeSubmit)
+                {
+                    m_PresentSpikeSubmitFinishUs += static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - finishStart).count());
+                }
             }
             return successfulSubmit;
         };
@@ -4104,7 +4279,16 @@ void VR::SubmitVRTextures()
     }
 
     // Upload and bind dynamic intent/hand HUD textures on every fresh frame.
+    const auto handHudStart = profilePresentSpikeSubmit
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     UpdateHandHudOverlays(&pendingOverlayTextureBinds);
+    if (profilePresentSpikeSubmit)
+    {
+        m_PresentSpikeSubmitHandHudUs += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - handHudStart).count());
+    }
 
     submitStereoPair(&m_VKLeftEye.m_VRTexture, leftEyeSubmitBounds,
         &m_VKRightEye.m_VRTexture, rightEyeSubmitBounds);
