@@ -43,6 +43,7 @@ VrRecommendedVideoSettingsEnabled=false
 QueuedRenderHmdYawUsesTurnPath=false
 QueuedSubmitWaitMs=1
 QueuedSubmitCompositorSlotWaitUs=1000
+QueuedAsyncCompositorSubmit=true
 QueuedRenderThreadPriorityBoost=1
 QueuedSubmitUseRenderPoseToken=true
 RenderPipelineDebugLog=false

@@ -3225,6 +3225,11 @@ void VR::ParseConfigFile()
         getInt("QueuedSubmitCompositorSlotWaitUs", m_QueuedSubmitCompositorSlotWaitUs),
         0,
         3000);
+    // Move the final queued eye Submit + PostPresentHandoff to a dedicated
+    // compositor worker. The synchronous path remains available as a fallback.
+    m_QueuedAsyncCompositorSubmit = getBool(
+        "QueuedAsyncCompositorSubmit",
+        m_QueuedAsyncCompositorSubmit);
     // OS priority boost for the queued Source render-worker thread.
     // 0 = default, 1 = ABOVE_NORMAL, 2 = HIGHEST.
     m_QueuedRenderThreadPriorityBoost = std::clamp(

@@ -5277,6 +5277,15 @@ namespace dxvk {
             uint32_t submitSlotSkipTotal = 0;
             bool submitSlotSkipped = false;
             bool submitSlotAdvanced = false;
+            bool asyncSubmitPending = false;
+            uint64_t asyncSubmitTotalUs = 0;
+            uint64_t asyncSubmitSlotUs = 0;
+            uint64_t asyncSubmitQueueUs = 0;
+            uint64_t asyncSubmitEyesUs = 0;
+            uint64_t asyncSubmitHandoffUs = 0;
+            uint32_t asyncSubmitQueued = 0;
+            uint32_t asyncSubmitCompleted = 0;
+            uint32_t asyncSubmitErrors = 0;
             uint32_t completed = 0;
             uint32_t submitted = 0;
             uint32_t endFrameThreadId = 0;
@@ -5872,6 +5881,33 @@ namespace dxvk {
                 s_worstPresentSpike.submitSlotSkipTotal =
                     presentSpikeVr->m_CompositorFrameIndexDedupSkipCount.load(
                         std::memory_order_relaxed);
+                s_worstPresentSpike.asyncSubmitPending =
+                    presentSpikeVr->m_QueuedCompositorSubmitPending.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitTotalUs =
+                    presentSpikeVr->m_QueuedCompositorSubmitTotalUsLast.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitSlotUs =
+                    presentSpikeVr->m_QueuedCompositorSubmitSlotUsLast.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitQueueUs =
+                    presentSpikeVr->m_QueuedCompositorSubmitQueueUsLast.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitEyesUs =
+                    presentSpikeVr->m_QueuedCompositorSubmitEyesUsLast.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitHandoffUs =
+                    presentSpikeVr->m_QueuedCompositorSubmitHandoffUsLast.load(
+                        std::memory_order_acquire);
+                s_worstPresentSpike.asyncSubmitQueued =
+                    presentSpikeVr->m_QueuedCompositorSubmitQueuedCount.load(
+                        std::memory_order_relaxed);
+                s_worstPresentSpike.asyncSubmitCompleted =
+                    presentSpikeVr->m_QueuedCompositorSubmitCompletedCount.load(
+                        std::memory_order_relaxed);
+                s_worstPresentSpike.asyncSubmitErrors =
+                    presentSpikeVr->m_QueuedCompositorSubmitErrorCount.load(
+                        std::memory_order_relaxed);
                 s_worstPresentSpike.completed =
                     presentSpikeVr->m_RenderCompletedFrameId.load(
                         std::memory_order_acquire);
@@ -5896,7 +5932,7 @@ namespace dxvk {
                 if (s_worstPresentSpike.valid) {
                     const PresentSpikeSample& spike = s_worstPresentSpike;
                     Game::logMsg(
-                        "[VR][PresentSpike] tid=%lu cycleUs=%llu outsideUs=%llu insideUs=%llu cursorUs=%llu preVrUs=%llu presentLockUs=%llu swapchainUs=%llu postStatsUs=%llu consumerGateUs=%llu busyCheckUs=%llu textureWaitUs=%llu barrierWaitUs=%llu updateUs=%llu restoreUs=%llu otherUs=%llu preEndFrameUs=%llu endFrameUs=%llu postEndFrameUs=%llu endFrameTid=%u endFrameSameTid=%d updPrePoseUs=%llu updPosesUs=%llu updSettingsUs=%llu updSubmitUs=%llu updPlayerUs=%llu updTrackingUs=%llu updInputUs=%llu updTailUs=%llu subTimingUs=%llu subTexLockUs=%llu subPrepareUs=%llu subQueueLockUs=%llu subOverlayUs=%llu subLeftUs=%llu subRightUs=%llu subFinishUs=%llu subHandHudUs=%llu subSlotUs=%llu slotIndex=%u slotLast=%u slotSkip=%d slotAdvance=%d slotSkipTotal=%u q=%d sourceBusy=%d completed=%u submitted=%u",
+                        "[VR][PresentSpike] tid=%lu cycleUs=%llu outsideUs=%llu insideUs=%llu cursorUs=%llu preVrUs=%llu presentLockUs=%llu swapchainUs=%llu postStatsUs=%llu consumerGateUs=%llu busyCheckUs=%llu textureWaitUs=%llu barrierWaitUs=%llu updateUs=%llu restoreUs=%llu otherUs=%llu preEndFrameUs=%llu endFrameUs=%llu postEndFrameUs=%llu endFrameTid=%u endFrameSameTid=%d updPrePoseUs=%llu updPosesUs=%llu updSettingsUs=%llu updSubmitUs=%llu updPlayerUs=%llu updTrackingUs=%llu updInputUs=%llu updTailUs=%llu subTimingUs=%llu subTexLockUs=%llu subPrepareUs=%llu subQueueLockUs=%llu subOverlayUs=%llu subLeftUs=%llu subRightUs=%llu subFinishUs=%llu subHandHudUs=%llu subSlotUs=%llu slotIndex=%u slotLast=%u slotSkip=%d slotAdvance=%d slotSkipTotal=%u asyncPending=%d asyncTotalUs=%llu asyncSlotUs=%llu asyncQueueUs=%llu asyncEyesUs=%llu asyncHandoffUs=%llu asyncQueued=%u asyncCompleted=%u asyncErrors=%u q=%d sourceBusy=%d completed=%u submitted=%u",
                         ::GetCurrentThreadId(),
                         static_cast<unsigned long long>(spike.cycleUs),
                         static_cast<unsigned long long>(spike.outsideUs),
@@ -5941,6 +5977,15 @@ namespace dxvk {
                         spike.submitSlotSkipped ? 1 : 0,
                         spike.submitSlotAdvanced ? 1 : 0,
                         spike.submitSlotSkipTotal,
+                        spike.asyncSubmitPending ? 1 : 0,
+                        static_cast<unsigned long long>(spike.asyncSubmitTotalUs),
+                        static_cast<unsigned long long>(spike.asyncSubmitSlotUs),
+                        static_cast<unsigned long long>(spike.asyncSubmitQueueUs),
+                        static_cast<unsigned long long>(spike.asyncSubmitEyesUs),
+                        static_cast<unsigned long long>(spike.asyncSubmitHandoffUs),
+                        spike.asyncSubmitQueued,
+                        spike.asyncSubmitCompleted,
+                        spike.asyncSubmitErrors,
                         spike.queued ? 1 : 0,
                         spike.sourceBusy ? 1 : 0,
                         spike.completed,

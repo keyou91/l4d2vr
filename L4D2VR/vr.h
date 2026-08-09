@@ -151,6 +151,26 @@ struct PendingOverlayTextureBindBatch
 	}
 };
 
+// Immutable stereo snapshot handed from Source's Present thread to the queued
+// compositor worker. The Vulkan descriptor handles remain valid while
+// m_QueuedCompositorSubmitPending is set; texture producers wait for the worker
+// before replacing or destroying the backing submit surfaces.
+struct QueuedCompositorSubmitJob
+{
+	vr::Texture_t leftTexture{};
+	vr::Texture_t rightTexture{};
+	vr::VRTextureBounds_t leftBounds{};
+	vr::VRTextureBounds_t rightBounds{};
+	vr::HmdMatrix34_t renderHmdPose{};
+	bool hasLeftBounds = false;
+	bool hasRightBounds = false;
+	bool useRenderPose = false;
+	bool explicitTiming = false;
+	uint32_t frameId = 0;
+	uint32_t poseToken = 0;
+	uint32_t compositorFrameIndex = 0;
+};
+
 struct CustomActionBinding
 {
 	std::string command;
@@ -1237,13 +1257,32 @@ public:
 	bool m_MenuBlankSubmitted = false;
 	// Cold startup has no previous VR scene to clear. Avoid submitting the menu blank texture
 	// until at least one real eye frame has reached the compositor.
-	bool m_HasSubmittedSceneFrame = false;
+	std::atomic<bool> m_HasSubmittedSceneFrame{ false };
 	// Guard against duplicate compositor submits in the same pose frame.
 	// Updated by UpdatePosesAndActions(), consumed by SubmitVRTextures().
 	std::atomic<uint32_t> m_SubmitPoseToken{ 0 };
 	std::atomic<uint32_t> m_LastSubmittedPoseToken{ 0 };
 	std::atomic<bool> m_SubmitInFlight{ false };
 	std::atomic<uint32_t> m_LastSubmittedCompositorFrameIndex{ 0 };
+	// Queued mode can move the final OpenVR eye Submit + PostPresentHandoff off
+	// the Source Present thread. A single pending job intentionally backpressures
+	// the producer of the stable submit RTs instead of allowing it to overwrite
+	// pixels that the compositor has not consumed yet.
+	bool m_QueuedAsyncCompositorSubmit = true;
+	std::atomic<bool> m_QueuedCompositorSubmitStarted{ false };
+	std::atomic<bool> m_QueuedCompositorSubmitPending{ false };
+	std::mutex m_QueuedCompositorSubmitJobMutex;
+	QueuedCompositorSubmitJob m_QueuedCompositorSubmitJob{};
+	HANDLE m_QueuedCompositorSubmitRequestEvent = NULL;
+	HANDLE m_QueuedCompositorSubmitDoneEvent = NULL;
+	std::atomic<uint32_t> m_QueuedCompositorSubmitQueuedCount{ 0 };
+	std::atomic<uint32_t> m_QueuedCompositorSubmitCompletedCount{ 0 };
+	std::atomic<uint32_t> m_QueuedCompositorSubmitErrorCount{ 0 };
+	std::atomic<uint64_t> m_QueuedCompositorSubmitTotalUsLast{ 0 };
+	std::atomic<uint64_t> m_QueuedCompositorSubmitSlotUsLast{ 0 };
+	std::atomic<uint64_t> m_QueuedCompositorSubmitQueueUsLast{ 0 };
+	std::atomic<uint64_t> m_QueuedCompositorSubmitEyesUsLast{ 0 };
+	std::atomic<uint64_t> m_QueuedCompositorSubmitHandoffUsLast{ 0 };
 	// Active compositor-slot gate counter. The gate preserves a fresh frame rather
 	// than entering an already occupied HMD slot and blocking in PostPresentHandoff.
 	std::atomic<uint32_t> m_CompositorFrameIndexDedupSkipCount{ 0 };
@@ -3788,6 +3827,9 @@ public:
 	void LogVAS(const char* tag);
 	void HandleMissingRenderContext(const char* location);
 	void SubmitVRTextures();
+	bool QueueQueuedCompositorSubmit(const QueuedCompositorSubmitJob& job);
+	bool WaitForQueuedCompositorSubmit(DWORD timeoutMs = INFINITE);
+	void QueuedCompositorSubmitThreadMain();
 	vr::EVROverlayError SetOverlayTextureSynchronized(
 		vr::IVROverlay* overlay,
 		vr::VROverlayHandle_t overlayHandle,

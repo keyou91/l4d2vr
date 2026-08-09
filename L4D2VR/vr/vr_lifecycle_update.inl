@@ -864,6 +864,10 @@ namespace
         if (!vr || !vr->m_Game || !vr->m_Game->m_MaterialSystem)
             return;
 
+        // A queued compositor job owns the stable submit descriptors until its
+        // handoff finishes. Never clear or recycle those RTs underneath it.
+        vr->WaitForQueuedCompositorSubmit();
+
         CRefPtr<IMatRenderContext> contextRef;
         contextRef = vr->m_Game->m_MaterialSystem->GetRenderContext();
         IMatRenderContext* const ctx = contextRef;
@@ -1725,6 +1729,7 @@ void VR::Update()
         }
         if (queueModeAfterAuto == 0)
         {
+            WaitForQueuedCompositorSubmit();
             m_LastSubmittedFrameId.store(completedFrameId, std::memory_order_release);
             m_RenderCompletedPoseToken.store(0, std::memory_order_release);
             m_RenderCompletedDuplicatePoseFrameId.store(0, std::memory_order_release);
@@ -2125,6 +2130,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     // D3D9 Reset requires all D3DPOOL_DEFAULT resources owned by the app to be released.
     // The VR render targets are created through Source's material system, but DXVK still
     // counts their backing D3D resources as reset-blocking default-pool resources.
+    WaitForQueuedCompositorSubmit();
     std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
 
     auto SafeReleaseD3D = [](auto*& ptr)
@@ -2268,6 +2274,7 @@ void VR::CreateVRTextures()
 {
     // CreateNamedRenderTargetTextureEx re-enters DXVK and populates m_VK* via m_CreatingTextureID.
     // Serialize the whole sequence so submit/update threads never observe partially rewritten Vulkan descriptors.
+    WaitForQueuedCompositorSubmit();
     std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
     if (m_CreatedVRTextures.load(std::memory_order_acquire))
         return;
@@ -2793,7 +2800,23 @@ void VR::PublishSourceQueueCompletedFrame(
 {
     // This mutex is the ownership token for both the submit surfaces and their
     // published frame/pose generation. Present holds it while consuming a pair.
-    std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+    // The async compositor worker consumes the previous stable pair under the
+    // same token. Wait before taking it so this producer cannot win the unlock
+    // race and overwrite the pair before PostPresentHandoff has consumed it.
+    std::unique_lock<TextureStateMutex> textureLock(m_TextureMutex, std::defer_lock);
+    for (;;)
+    {
+        while (m_QueuedCompositorSubmitPending.load(std::memory_order_acquire))
+            WaitForQueuedCompositorSubmit();
+
+        textureLock.lock();
+        if (!m_QueuedCompositorSubmitPending.load(std::memory_order_acquire))
+            break;
+
+        // Present can publish a job between the lock-free pending check and
+        // this producer taking the ownership token. Drop it and wait again.
+        textureLock.unlock();
+    }
 
     if (m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire) != sourceQueueEpoch)
         return;
@@ -3067,6 +3090,342 @@ vr::EVROverlayError VR::SetOverlayTextureSynchronized(
     return result;
 }
 
+bool VR::WaitForQueuedCompositorSubmit(DWORD timeoutMs)
+{
+    if (!m_QueuedCompositorSubmitPending.load(std::memory_order_acquire))
+        return true;
+
+    HANDLE const doneEvent = m_QueuedCompositorSubmitDoneEvent;
+    if (!doneEvent)
+        return false;
+
+    const DWORD waitResult = WaitForSingleObject(doneEvent, timeoutMs);
+    return waitResult == WAIT_OBJECT_0 &&
+        !m_QueuedCompositorSubmitPending.load(std::memory_order_acquire);
+}
+
+bool VR::QueueQueuedCompositorSubmit(const QueuedCompositorSubmitJob& job)
+{
+    if (!m_Compositor || !job.leftTexture.handle || !job.rightTexture.handle || job.frameId == 0)
+        return false;
+
+    if (!m_QueuedCompositorSubmitRequestEvent)
+        m_QueuedCompositorSubmitRequestEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (!m_QueuedCompositorSubmitDoneEvent)
+        m_QueuedCompositorSubmitDoneEvent = CreateEventA(nullptr, TRUE, TRUE, nullptr);
+    if (!m_QueuedCompositorSubmitRequestEvent || !m_QueuedCompositorSubmitDoneEvent)
+        return false;
+
+    if (!m_QueuedCompositorSubmitStarted.exchange(true, std::memory_order_acq_rel))
+    {
+        std::thread worker(&VR::QueuedCompositorSubmitThreadMain, this);
+        worker.detach();
+    }
+
+    {
+        std::lock_guard<std::mutex> jobLock(m_QueuedCompositorSubmitJobMutex);
+        if (m_QueuedCompositorSubmitPending.load(std::memory_order_acquire))
+            return false;
+
+        m_QueuedCompositorSubmitJob = job;
+        ResetEvent(m_QueuedCompositorSubmitDoneEvent);
+        m_QueuedCompositorSubmitPending.store(true, std::memory_order_release);
+    }
+
+    m_QueuedCompositorSubmitQueuedCount.fetch_add(1, std::memory_order_relaxed);
+    SetEvent(m_QueuedCompositorSubmitRequestEvent);
+    return true;
+}
+
+void VR::QueuedCompositorSubmitThreadMain()
+{
+    // PostPresentHandoff mostly sleeps inside the runtime. Normal priority avoids
+    // competing with Source's main/render workers while still waking promptly.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+
+    while (true)
+    {
+        HANDLE const requestEvent = m_QueuedCompositorSubmitRequestEvent;
+        if (!requestEvent)
+        {
+            Sleep(1);
+            continue;
+        }
+
+        if (WaitForSingleObject(requestEvent, INFINITE) != WAIT_OBJECT_0)
+            continue;
+
+        QueuedCompositorSubmitJob job{};
+        {
+            std::lock_guard<std::mutex> jobLock(m_QueuedCompositorSubmitJobMutex);
+            if (!m_QueuedCompositorSubmitPending.load(std::memory_order_acquire))
+                continue;
+            job = m_QueuedCompositorSubmitJob;
+        }
+
+        const auto totalStart = std::chrono::steady_clock::now();
+        uint64_t slotUs = 0;
+        uint64_t queueUs = 0;
+        uint64_t eyesUs = 0;
+        uint64_t handoffUs = 0;
+        bool submittedPair = false;
+        vr::EVRCompositorError lastError = vr::VRCompositorError_None;
+        uint32_t actualCompositorFrameIndex = job.compositorFrameIndex;
+
+        {
+            // This lock keeps the queued submit descriptors and backing submit RTs
+            // alive through both eye submits and the compositor handoff.
+            std::lock_guard<TextureStateMutex> textureLock(m_TextureMutex);
+
+            bool compositorSlotReady = true;
+            if (m_Compositor)
+            {
+                const auto slotStart = std::chrono::steady_clock::now();
+                auto readCompositorFrameIndex = [&]()
+                    {
+                        vr::Compositor_FrameTiming timing{};
+                        timing.m_nSize = sizeof(timing);
+                        if (!m_Compositor->GetFrameTiming(&timing, 0) || timing.m_nFrameIndex == 0)
+                            return false;
+                        actualCompositorFrameIndex = timing.m_nFrameIndex;
+                        return true;
+                    };
+
+                const uint32_t occupiedFrameIndex =
+                    m_LastSubmittedCompositorFrameIndex.load(std::memory_order_acquire);
+                bool haveFrameIndex = readCompositorFrameIndex();
+                if (haveFrameIndex && occupiedFrameIndex != 0 &&
+                    actualCompositorFrameIndex == occupiedFrameIndex)
+                {
+                    float hmdHz = GetHmdDisplayFrequencyHz();
+                    if (!std::isfinite(hmdHz) || hmdHz < 1.0f)
+                        hmdHz = 90.0f;
+                    const int waitBudgetUs = std::clamp(
+                        static_cast<int>(2000000.0f / hmdHz) + 1000,
+                        4000,
+                        25000);
+                    const auto deadline = slotStart + std::chrono::microseconds(waitBudgetUs);
+                    while (std::chrono::steady_clock::now() < deadline)
+                    {
+                        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+                            deadline - std::chrono::steady_clock::now()).count();
+                        if (remaining > 1500)
+                            Sleep(1);
+                        else
+                            SwitchToThread();
+
+                        haveFrameIndex = readCompositorFrameIndex();
+                        if (haveFrameIndex && actualCompositorFrameIndex != occupiedFrameIndex)
+                            break;
+                    }
+
+                    if (haveFrameIndex && actualCompositorFrameIndex == occupiedFrameIndex)
+                    {
+                        // Keep the immutable job pending and retry it on this worker.
+                        // Never release the producer merely because SteamVR paused its
+                        // frame index or this wakeup landed in the occupied slot.
+                        compositorSlotReady = false;
+                        lastError = vr::VRCompositorError_AlreadySubmitted;
+                    }
+                }
+                slotUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - slotStart).count());
+            }
+
+            bool queueLocked = false;
+            if (m_Compositor && compositorSlotReady &&
+                job.leftTexture.handle && job.rightTexture.handle)
+            {
+                const auto queueStart = std::chrono::steady_clock::now();
+                const HRESULT queueHr = g_D3DVR9
+                    ? g_D3DVR9->LockPreparedSubmissionQueue()
+                    : E_FAIL;
+                queueUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - queueStart).count());
+                queueLocked = SUCCEEDED(queueHr);
+
+                if (queueLocked)
+                {
+                    vr::Compositor_FrameTiming timing{};
+                    timing.m_nSize = sizeof(timing);
+                    if (m_Compositor->GetFrameTiming(&timing, 0) && timing.m_nFrameIndex != 0)
+                        actualCompositorFrameIndex = timing.m_nFrameIndex;
+
+                    if (job.explicitTiming)
+                    {
+                        const vr::EVRCompositorError timingError =
+                            m_Compositor->SubmitExplicitTimingData();
+                        if (timingError != vr::VRCompositorError_None)
+                        {
+                            lastError = timingError;
+                            LogCompositorError("AsyncSubmitExplicitTimingData", timingError);
+                        }
+                    }
+
+                    auto recordSubmit = [&](vr::EVRCompositorError error)
+                        {
+                            if (!m_RenderPipelineDebugLog)
+                                return;
+                            m_ActualCompositorSubmitCount.fetch_add(1, std::memory_order_relaxed);
+                            if (error == vr::VRCompositorError_None)
+                                m_SubmitEyeNoneCount.fetch_add(1, std::memory_order_relaxed);
+                            else if (error == vr::VRCompositorError_AlreadySubmitted)
+                                m_SubmitEyeAlreadySubmittedCount.fetch_add(1, std::memory_order_relaxed);
+                            else
+                                m_SubmitEyeOtherErrorCount.fetch_add(1, std::memory_order_relaxed);
+                        };
+
+                    auto submitEye = [&](vr::EVREye eye, const vr::Texture_t& texture,
+                        const vr::VRTextureBounds_t* bounds)
+                        {
+                            vr::VRTextureWithPose_t textureWithPose{};
+                            const vr::Texture_t* submitTexture = &texture;
+                            vr::EVRSubmitFlags submitFlags = vr::Submit_Default;
+                            if (job.useRenderPose)
+                            {
+                                textureWithPose.handle = texture.handle;
+                                textureWithPose.eType = texture.eType;
+                                textureWithPose.eColorSpace = texture.eColorSpace;
+                                textureWithPose.mDeviceToAbsoluteTracking = job.renderHmdPose;
+                                submitTexture = &textureWithPose;
+                                submitFlags = vr::Submit_TextureWithPose;
+                            }
+
+                            vr::EVRCompositorError error =
+                                m_Compositor->Submit(eye, submitTexture, bounds, submitFlags);
+                            recordSubmit(error);
+                            if (error != vr::VRCompositorError_None &&
+                                job.useRenderPose &&
+                                error != vr::VRCompositorError_AlreadySubmitted)
+                            {
+                                error = m_Compositor->Submit(
+                                    eye, &texture, bounds, vr::Submit_Default);
+                                recordSubmit(error);
+                            }
+                            return error;
+                        };
+
+                    const auto eyesStart = std::chrono::steady_clock::now();
+                    const vr::VRTextureBounds_t* leftBounds =
+                        job.hasLeftBounds ? &job.leftBounds : nullptr;
+                    const vr::VRTextureBounds_t* rightBounds =
+                        job.hasRightBounds ? &job.rightBounds : nullptr;
+                    const vr::EVRCompositorError leftError =
+                        submitEye(vr::Eye_Left, job.leftTexture, leftBounds);
+                    vr::EVRCompositorError rightError = vr::VRCompositorError_None;
+                    if (leftError == vr::VRCompositorError_None)
+                        rightError = submitEye(vr::Eye_Right, job.rightTexture, rightBounds);
+                    eyesUs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - eyesStart).count());
+
+                    lastError = leftError != vr::VRCompositorError_None ? leftError : rightError;
+                    submittedPair = leftError == vr::VRCompositorError_None &&
+                        rightError == vr::VRCompositorError_None;
+
+                    if (submittedPair && job.explicitTiming)
+                    {
+                        const auto handoffStart = std::chrono::steady_clock::now();
+                        m_Compositor->PostPresentHandoff();
+                        handoffUs = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - handoffStart).count());
+                    }
+
+                    g_D3DVR9->UnlockSubmissionQueue();
+                }
+                else
+                {
+                    lastError = vr::VRCompositorError_RequestFailed;
+                }
+            }
+            else if (compositorSlotReady)
+            {
+                lastError = vr::VRCompositorError_RequestFailed;
+            }
+
+            if (submittedPair)
+            {
+                m_LastSubmittedPoseToken.store(job.poseToken, std::memory_order_release);
+                if (actualCompositorFrameIndex != 0)
+                {
+                    m_LastSubmittedCompositorFrameIndex.store(
+                        actualCompositorFrameIndex,
+                        std::memory_order_release);
+                }
+                m_LastSubmittedFrameId.store(job.frameId, std::memory_order_release);
+                m_HasSubmittedSceneFrame.store(true, std::memory_order_release);
+                if (m_RenderCompletedFrameId.load(std::memory_order_acquire) == job.frameId)
+                    m_RenderedNewFrame.store(false, std::memory_order_release);
+                m_QueuedCompositorSubmitCompletedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                // Preserve RenderedNewFrame and all last-submitted generations. A
+                // transient AlreadySubmitted/error therefore retries this stable pair.
+                m_QueuedCompositorSubmitErrorCount.fetch_add(1, std::memory_order_relaxed);
+                if (lastError != vr::VRCompositorError_AlreadySubmitted)
+                    LogCompositorError("AsyncSubmit", lastError);
+            }
+        }
+
+        const uint64_t totalUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - totalStart).count());
+        m_QueuedCompositorSubmitTotalUsLast.store(totalUs, std::memory_order_release);
+        m_QueuedCompositorSubmitSlotUsLast.store(slotUs, std::memory_order_release);
+        m_QueuedCompositorSubmitQueueUsLast.store(queueUs, std::memory_order_release);
+        m_QueuedCompositorSubmitEyesUsLast.store(eyesUs, std::memory_order_release);
+        m_QueuedCompositorSubmitHandoffUsLast.store(handoffUs, std::memory_order_release);
+
+        if (m_RenderPipelineDebugLog)
+        {
+            static std::chrono::steady_clock::time_point s_lastAsyncSubmitLog{};
+            if (!ShouldThrottle(s_lastAsyncSubmitLog, m_RenderPipelineDebugLogHz))
+            {
+                Game::logMsg(
+                    "[VR][Queued][AsyncSubmit] tid=%lu ok=%d err=%d frame=%u pose=%u slot=%u totalUs=%llu slotUs=%llu queueUs=%llu eyesUs=%llu handoffUs=%llu queued=%u completed=%u errors=%u",
+                    GetCurrentThreadId(),
+                    submittedPair ? 1 : 0,
+                    static_cast<int>(lastError),
+                    job.frameId,
+                    job.poseToken,
+                    actualCompositorFrameIndex,
+                    static_cast<unsigned long long>(totalUs),
+                    static_cast<unsigned long long>(slotUs),
+                    static_cast<unsigned long long>(queueUs),
+                    static_cast<unsigned long long>(eyesUs),
+                    static_cast<unsigned long long>(handoffUs),
+                    m_QueuedCompositorSubmitQueuedCount.load(std::memory_order_relaxed),
+                    m_QueuedCompositorSubmitCompletedCount.load(std::memory_order_relaxed),
+                    m_QueuedCompositorSubmitErrorCount.load(std::memory_order_relaxed));
+            }
+        }
+
+        if (!submittedPair && lastError == vr::VRCompositorError_AlreadySubmitted)
+        {
+            // Mark only the occupied compositor slot, never the Source frame/pose.
+            // The same immutable job is retried after the frame index advances.
+            if (actualCompositorFrameIndex != 0)
+            {
+                m_LastSubmittedCompositorFrameIndex.store(
+                    actualCompositorFrameIndex,
+                    std::memory_order_release);
+            }
+            if (m_QueuedCompositorSubmitRequestEvent)
+                SetEvent(m_QueuedCompositorSubmitRequestEvent);
+            continue;
+        }
+
+        m_QueuedCompositorSubmitPending.store(false, std::memory_order_release);
+        m_SubmitInFlight.store(false, std::memory_order_release);
+        if (m_QueuedCompositorSubmitDoneEvent)
+            SetEvent(m_QueuedCompositorSubmitDoneEvent);
+    }
+}
+
 void VR::SubmitVRTextures()
 {
     const bool renderPipelineDiagnostics = m_RenderPipelineDebugLog;
@@ -3296,7 +3655,8 @@ void VR::SubmitVRTextures()
         m_PresentSpikeSubmitSlotIndex = compositorFrameIndex;
         m_PresentSpikeSubmitSlotLast = lastSubmittedCompositorFrameIndex;
 
-        if (haveCompositorFrameIndex &&
+        if (!m_QueuedAsyncCompositorSubmit &&
+            haveCompositorFrameIndex &&
             lastSubmittedCompositorFrameIndex != 0 &&
             compositorFrameIndex == lastSubmittedCompositorFrameIndex)
         {
@@ -3890,6 +4250,45 @@ void VR::SubmitVRTextures()
 
             if (queued)
             {
+                const bool asyncQueuedSceneSubmit =
+                    m_QueuedAsyncCompositorSubmit &&
+                    sceneReadyForStaleResubmit &&
+                    sceneEyePair &&
+                    preparedQueuedEyePair &&
+                    submitSnapshotFrameId != 0 &&
+                    submitSnapshotFrameId != m_LastSubmittedFrameId.load(std::memory_order_acquire);
+                if (asyncQueuedSceneSubmit)
+                {
+                    QueuedCompositorSubmitJob job{};
+                    job.leftTexture = *leftTexture;
+                    job.rightTexture = *rightTexture;
+                    if (leftBounds)
+                    {
+                        job.leftBounds = *leftBounds;
+                        job.hasLeftBounds = true;
+                    }
+                    if (rightBounds)
+                    {
+                        job.rightBounds = *rightBounds;
+                        job.hasRightBounds = true;
+                    }
+                    job.renderHmdPose = completedRenderHmdPose;
+                    job.useRenderPose = useRenderPoseTextureSubmit;
+                    job.explicitTiming = m_CompositorExplicitTiming;
+                    job.frameId = submitSnapshotFrameId;
+                    job.poseToken = poseToken;
+                    job.compositorFrameIndex = compositorFrameIndex;
+
+                    if (!QueueQueuedCompositorSubmit(job))
+                        return false;
+
+                    // The worker now owns the in-flight generation. Leave
+                    // RenderedNewFrame and LastSubmitted* untouched until both
+                    // eyes and PostPresentHandoff complete successfully.
+                    submitInFlightGuard.flag = nullptr;
+                    return true;
+                }
+
                 if (!submitEye(vr::Eye_Left, leftTexture, leftBounds))
                     return false;
 
@@ -3991,7 +4390,7 @@ void VR::SubmitVRTextures()
             submitStereoPair(&m_VKLeftEye.m_VRTexture, leftEyeSubmitBounds,
                 &m_VKRightEye.m_VRTexture, rightEyeSubmitBounds);
             if (successfulSubmit)
-                m_HasSubmittedSceneFrame = true;
+                m_HasSubmittedSceneFrame.store(true, std::memory_order_release);
 
             return;
         }
@@ -4017,7 +4416,7 @@ void VR::SubmitVRTextures()
 
         if (!sceneReadyForStaleResubmit)
         {
-            if (!m_HasSubmittedSceneFrame)
+            if (!m_HasSubmittedSceneFrame.load(std::memory_order_acquire))
             {
                 m_Compositor->ClearLastSubmittedFrame();
                 m_MenuBlankSubmitted = true;
@@ -4293,7 +4692,7 @@ void VR::SubmitVRTextures()
     submitStereoPair(&m_VKLeftEye.m_VRTexture, leftEyeSubmitBounds,
         &m_VKRightEye.m_VRTexture, rightEyeSubmitBounds);
     if (successfulSubmit)
-        m_HasSubmittedSceneFrame = true;
+        m_HasSubmittedSceneFrame.store(true, std::memory_order_release);
 
     if (!queued || successfulSubmit || frameHandled)
     {
