@@ -902,6 +902,7 @@ namespace
     inline bool HooksNativeViewmodelFullArmIkActive(VR* vr)
     {
         return HooksNativeViewmodelHandsOnlyActive(vr) &&
+            vr->m_FirstPersonControlReady.load(std::memory_order_acquire) &&
             !HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) &&
             !vr->m_NativeViewmodelArmCroppingEnabled;
     }

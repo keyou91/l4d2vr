@@ -173,6 +173,7 @@ namespace
     struct HooksFirstPersonBodyLocalState
     {
         int effects = 0x20;
+        int flags = 0x20;
         std::uint8_t lifeState = 2;
         bool incapacitated = false;
         std::uint16_t modelIndex = 0;
@@ -203,6 +204,7 @@ namespace
         {
             constexpr std::ptrdiff_t kModelIndexOffset = 0x140;
             constexpr std::ptrdiff_t kEffectsOffset = 0xE0;
+            constexpr std::ptrdiff_t kFlagsOffset = 0xF0;
             constexpr std::ptrdiff_t kTeamOffset = 0xE4;
             constexpr std::ptrdiff_t kLifeStateOffset = 0x147;
             constexpr std::ptrdiff_t kIncapacitatedOffset = 0x1EA9;
@@ -215,6 +217,8 @@ namespace
                 playerBytes + kModelIndexOffset);
             outState->effects =
                 *reinterpret_cast<const int*>(playerBytes + kEffectsOffset);
+            outState->flags =
+                *reinterpret_cast<const int*>(playerBytes + kFlagsOffset);
             outState->team =
                 *reinterpret_cast<const int*>(playerBytes + kTeamOffset);
             outState->lifeState = *(playerBytes + kLifeStateOffset);
@@ -633,6 +637,52 @@ namespace
 
         s_lastRenderable = renderable;
         s_visibilityOverrideActive = true;
+    }
+
+    void HooksUpdateFirstPersonControlReadyMainThread(
+        VR* vr,
+        Game* game,
+        C_BasePlayer* player,
+        bool hasRealUserCmd)
+    {
+        if (!vr ||
+            vr->m_FirstPersonControlReady.load(std::memory_order_acquire) ||
+            !hasRealUserCmd ||
+            !vr->m_IsVREnabled ||
+            !game ||
+            !game->m_EngineClient ||
+            !game->m_EngineClient->IsInGame() ||
+            !player ||
+            vr->IsThirdPersonMapLoadCooldownActive() ||
+            !g_FirstPersonBodyActualFirstPerson.load(std::memory_order_acquire))
+        {
+            return;
+        }
+
+        HooksFirstPersonBodyLocalState localState{};
+        if (!HooksFirstPersonBodyReadLocalStateSafe(player, &localState))
+            return;
+
+        constexpr int kFrozenFlag = 1 << 5; // FL_FROZEN
+        const bool controllableFirstPerson =
+            localState.team > 1 &&
+            localState.lifeState == 0 &&
+            localState.observerMode == 0 &&
+            !HooksFirstPersonBodyHandleValid(localState.viewEntity) &&
+            (localState.flags & kFrozenFlag) == 0;
+        if (!controllableFirstPerson)
+            return;
+
+        bool expected = false;
+        if (vr->m_FirstPersonControlReady.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire))
+        {
+            Game::logMsg(
+                "[VR][PoseActivation] first-person control ready; NativeViewmodelArm and WorldModelVR enabled");
+        }
     }
 
 }

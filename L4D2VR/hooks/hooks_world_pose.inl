@@ -2686,7 +2686,8 @@
     {
         if (!vr ||
             !game ||
-            !vr->m_WorldModelVRPoseEnabled)
+            !vr->m_WorldModelVRPoseEnabled ||
+            !vr->m_FirstPersonControlReady.load(std::memory_order_acquire))
         {
             return false;
         }
@@ -2781,6 +2782,7 @@
     {
         if (!vr ||
             !vr->m_WorldModelVRPoseEnabled ||
+            !vr->m_FirstPersonControlReady.load(std::memory_order_acquire) ||
             !game ||
             !renderable ||
             !boneToWorldOut ||
@@ -3247,7 +3249,8 @@
         outMatchMask = 0;
         if (!vr ||
             !game ||
-            !vr->m_WorldModelVRPoseEnabled)
+            !vr->m_WorldModelVRPoseEnabled ||
+            !vr->m_FirstPersonControlReady.load(std::memory_order_acquire))
         {
             return false;
         }
@@ -5963,6 +5966,7 @@
             !entity ||
             !sourceBonePointer ||
             !vr->m_WorldModelVRPoseEnabled ||
+            !vr->m_FirstPersonControlReady.load(std::memory_order_acquire) ||
             info.entity_index <= 0 ||
             !game->IsValidPlayerIndex(info.entity_index))
         {

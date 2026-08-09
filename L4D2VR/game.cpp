@@ -1551,6 +1551,7 @@ void Game::PublishLocalVRPose(VR* vr, C_BasePlayer* localPlayer)
         !localPlayer ||
         !vr->m_IsVREnabled ||
         !vr->m_WorldModelVRPoseEnabled ||
+        !vr->m_FirstPersonControlReady.load(std::memory_order_acquire) ||
         !m_EngineClient ||
         !m_EngineClient->IsInGame())
     {

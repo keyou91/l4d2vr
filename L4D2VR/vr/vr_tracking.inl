@@ -420,6 +420,7 @@ void VR::UpdateTracking()
     if (m_WasInGamePrev && !inGameNow && m_Game)
         m_Game->ResetVRPoseServerSession();
     if (!m_WasInGamePrev && inGameNow){
+        m_FirstPersonControlReady.store(false, std::memory_order_release);
         m_ThirdPersonMapLoadCooldownPending = true;
         Hooks::s_ServerUnderstandsVR = false;
         m_ServerHookFallbackPending = true;
@@ -434,6 +435,7 @@ void VR::UpdateTracking()
         ? (C_BasePlayer*)m_Game->GetClientEntity(playerIndex)
         : nullptr;
     if (!localPlayer) {
+        m_FirstPersonControlReady.store(false, std::memory_order_release);
         ClearPlayerModelMaterialsSnapshot();
         // Never let a reconnect/map transition publish tracking coordinates
         // anchored to the previous local player or map.
@@ -524,6 +526,7 @@ void VR::UpdateTracking()
     // Rising edge: local player pointer recovered (after connect/disconnect/map load).
     if (!m_HadLocalPlayerPrev)
     {
+        m_FirstPersonControlReady.store(false, std::memory_order_release);
         m_HadLocalPlayerPrev = true;
         m_PlayerModelMaterialsLogSession.fetch_add(1u, std::memory_order_acq_rel);
         if (m_ThirdPersonMapLoadCooldownPending && m_ThirdPersonMapLoadCooldownMs > 0)

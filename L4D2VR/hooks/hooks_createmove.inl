@@ -66,7 +66,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 	static int s_lastButtons = 0;
 
-	auto updateFirstPersonBodyLocalState = [&]()
+	auto updateFirstPersonBodyLocalState = [&](bool hasRealUserCmd)
 		{
 			C_BasePlayer* localPlayer = nullptr;
 			if (m_Game && m_Game->m_EngineClient)
@@ -81,6 +81,11 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 			if (m_VR)
 				m_VR->UpdateObjectPullClientTargetMainThread(localPlayer);
 			HooksFirstPersonBodyUpdateLocalStateMainThread(localPlayer);
+			HooksUpdateFirstPersonControlReadyMainThread(
+				m_VR,
+				m_Game,
+				localPlayer,
+				hasRealUserCmd);
 			HooksWorldPoseEnsureWeaponSetupBonesHookMainThread(
 				m_VR,
 				m_Game);
@@ -89,14 +94,14 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 	if (!cmd)
 	{
 		const bool result = hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
-		updateFirstPersonBodyLocalState();
+		updateFirstPersonBodyLocalState(false);
 		return result;
 	}
 
 	if (!cmd->command_number)
 	{
 		const bool result = hkCreateMove.fOriginal(ecx, flInputSampleTime, cmd);
-		updateFirstPersonBodyLocalState();
+		updateFirstPersonBodyLocalState(false);
 		return result;
 	}
 
@@ -111,7 +116,7 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 
 	// Keep lifecycle cleanup running even when Source emits command_number==0
 	// during loading, pause, disconnect, or menu transitions (handled above).
-	updateFirstPersonBodyLocalState();
+	updateFirstPersonBodyLocalState(true);
 
 	// Server-hook roomscale movement is applied after the originating CreateMove.
 	// Consume its accepted-vs-visual correction before this command uses cached VR poses.

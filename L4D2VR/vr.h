@@ -1672,6 +1672,11 @@ public:
 	bool m_WorldModelVRPoseEnabled = false;
 	bool m_WorldModelVRPoseLocalThirdPerson = false;
 	bool m_WorldModelVRPoseDebugLog = false;
+	// Per-map gameplay latch shared by world-model pose IK and native full-arm
+	// viewmodel IK. It is published only after a real user command is observed
+	// while Source reports an unfrozen, live local player in actual first person.
+	// Map/reconnect lifecycle code clears it before the next player generation.
+	std::atomic<bool> m_FirstPersonControlReady{ false };
 	// Local third-person switches replace the submitted survivor draw and its
 	// queued bone buffers. Delay IK takeover until that render state has
 	// settled before publishing the first analytic arm result.
