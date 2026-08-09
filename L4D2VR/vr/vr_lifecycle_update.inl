@@ -3602,8 +3602,11 @@ void VR::SubmitVRTextures()
             {
                 if (queued && submitError == vr::VRCompositorError_AlreadySubmitted)
                 {
-                    // Another submit already consumed this compositor frame.
-                    finalizeSubmitState(true);
+                    // This compositor slot is already occupied, but this fresh Source
+                    // frame was not displayed. Keep its frame/pose generation pending
+                    // so the next SubmitVRTextures call retries the same stable pair.
+                    // Retiring it here creates a one-frame hold followed by a locomotion
+                    // jump because LastSubmittedFrameId advances without a real submit.
                     return false;
                 }
                 LogCompositorError("Submit", submitError);
