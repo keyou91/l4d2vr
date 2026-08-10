@@ -850,7 +850,7 @@ public:
 	virtual void sub_10025440();
 	virtual void sub_100274A0();
 	virtual void sub_10016CA0();
-	virtual void sub_10016CD0();
+	virtual void DepthRange(float zNear, float zFar);
 	virtual void ClearBuffers(bool bClearColor, bool bClearDepth, bool bClearStencil = false);
 	virtual void sub_100240F0();
 	virtual void sub_100278F0();

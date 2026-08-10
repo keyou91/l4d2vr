@@ -17,7 +17,10 @@ namespace
     constexpr int kBoneConstantStart = 8;
     constexpr float kWorldDepthRangeMin = 0.0f;
     constexpr float kWorldDepthRangeMax = 1.0f;
-    constexpr float kViewmodelDepthRangeMax = 0.1f;
+    // VR hands and detached viewmodel components are placed in world space and
+    // share the eye scene projection. Keep their depth comparable with Source's
+    // world depth so nearby geometry can occlude them.
+    constexpr float kViewmodelDepthRangeMax = 1.0f;
     constexpr DWORD kVrHandOcclusionStencilBit = 0x80u;
 
     const char* kVertexShaderSource = R"HLSL(
@@ -468,9 +471,8 @@ bool VrHandRendererD3D9::Draw(
     device->SetRenderState(D3DRS_ZENABLE, TRUE);
     // The final color pass must write depth as well. Otherwise every triangle of the
     // same glove blends through the others, so folded fingers remain visible through
-    // the palm. The standalone magazine uses the same compressed depth range as
-    // Source viewmodels, but deliberately skips the VR-hand stencil test because it
-    // is a viewmodel component rather than a world-depth-masked glove.
+    // the palm. The standalone magazine skips the VR-hand stencil test because it is
+    // a viewmodel component, but it still uses the full world-comparable depth range.
     const bool writeDepth = drawPass == VrHandDrawPass::WorldDepth || viewmodelDepthPass;
     device->SetRenderState(D3DRS_ZWRITEENABLE, writeDepth ? TRUE : FALSE);
     device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);

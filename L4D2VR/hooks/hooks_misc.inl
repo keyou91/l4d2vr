@@ -22552,6 +22552,7 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
     QAngle magazineInteractionCalibrationPreviewAngles(0.0f, 0.0f, 0.0f);
     bool magazineInteractionCalibrationPreviewDrawnAsPrimary = false;
     bool drawEntityIsViewmodelClass = false;
+    bool drawUsesNativeViewmodelDepthHack = false;
     bool viewmodelAutoGripApplied = false;
 
     // Per-draw origin/angles override (used for multicore viewmodel stabilization).
@@ -22642,6 +22643,7 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
             (modelName.find("models/weapons/hands/") != std::string::npos) ||
             (modelName.find("/hands/") != std::string::npos) ||
             (modelName.find("v_hands") != std::string::npos);
+        drawUsesNativeViewmodelDepthHack = teleportSuppressibleViewmodel;
         const std::string lowerWorldPoseModelName =
             vr_vm_stabilize::ToLowerAscii(modelName);
         const bool looksLikeHeldWorldModel =
@@ -23384,6 +23386,26 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
         m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
         (drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
         !nativeViewmodelArmsOrHandsModel;
+
+    if (drawUsesNativeViewmodelDepthHack &&
+        !shadowDepthDraw &&
+        m_VR &&
+        m_VR->m_IsVREnabled &&
+        m_Game &&
+        m_Game->m_MaterialSystem)
+    {
+        CRefPtr<IMatRenderContext> viewmodelDepthContext;
+        viewmodelDepthContext =
+            m_Game->m_MaterialSystem->GetRenderContext();
+        if (viewmodelDepthContext)
+        {
+            // Source brackets the viewmodel list with DepthRange(0, 0.1) to
+            // force it over the world. Appending 0..1 immediately before each
+            // actual model submission preserves command order in queued mode;
+            // Source already restores 0..1 after the list completes.
+            viewmodelDepthContext->DepthRange(0.0f, 1.0f);
+        }
+    }
 
     if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
     {

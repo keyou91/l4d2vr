@@ -3341,10 +3341,20 @@ bool VR::ShouldShowAimLine(C_WeaponCSBase* weapon) const
     if (!weapon)
         return false;
 
-    // Manual throwing uses release velocity instead of a controller-forward ray.
-    // Hide every aim-line renderer for throwables while the feature is enabled.
+    // Manual throwing uses release velocity instead of a controller-forward ray,
+    // so its trajectory cannot use the stock pitch-based preview. ObjectPull can
+    // remain enabled while connected to a server that does not consume our VR
+    // usercmd payload, though; in that fallback the game performs its original
+    // throw and must keep the original arc visible.
     if (m_ManualThrowEnabled && IsThrowableWeapon(weapon))
-        return false;
+    {
+        const bool serverSupportsManualThrow =
+            m_EncodeVRUsercmd &&
+            Hooks::s_ServerUnderstandsVR &&
+            !m_ForceNonVRServerMovement;
+        if (!m_ObjectPullEnabled || serverSupportsManualThrow)
+            return false;
+    }
 
     switch (weapon->GetWeaponID())
     {

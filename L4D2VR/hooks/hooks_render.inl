@@ -2588,6 +2588,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			view.m_flAspectRatio = m_VR->m_Aspect;
 			view.zNear = 6;
 			view.zNearViewmodel = 6;
+			// Native Source viewmodels use a separate projection plus a compressed
+			// 0..0.1 depth range so they always draw over nearby world geometry.
+			// VR viewmodels are positioned in world space, so keep their Z projection
+			// identical to the eye scene; DrawModelExecute restores the full depth
+			// range and the existing eye depth buffer can then occlude them correctly.
+			view.zFarViewmodel = view.zFar;
 		};
 
 	NormalizeViewSetupForVREye(leftEyeView);
