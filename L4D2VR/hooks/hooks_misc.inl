@@ -10983,6 +10983,38 @@ namespace
         return true;
     }
 
+    inline bool HooksNativeViewmodelHandsOnlyFrozenAnchorLocalMatrixPlausible(
+        const vr_vm_stabilize::Mat3x4& matrix)
+    {
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(matrix))
+            return false;
+
+        // Frozen matrices are relative to the hand anchor, so every selected arm,
+        // wrist, helper, and finger bone must remain close to that hand. Some custom
+        // models expose helper bones with finite but world-sized transforms; replaying
+        // those transforms after a name-based layout remap stretches weighted vertices
+        // into giant spikes. Collapsed arm-cut matrices intentionally have a zero basis,
+        // so only reject an excessive basis rather than requiring an invertible matrix.
+        constexpr float kMaxAnchorLocalOffset = 256.0f;
+        constexpr float kMaxBasisComponent = 4.0f;
+        const Vector origin = vr_vm_stabilize::GetOrigin(matrix);
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(origin) ||
+            origin.LengthSqr() > (kMaxAnchorLocalOffset * kMaxAnchorLocalOffset))
+        {
+            return false;
+        }
+
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int col = 0; col < 3; ++col)
+            {
+                if (std::fabs(matrix.m[row][col]) > kMaxBasisComponent)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     inline bool HooksNativeViewmodelHandsOnlyPlaneFinite(const float plane[4])
     {
         if (!plane)
@@ -12250,6 +12282,7 @@ namespace
         int fileNumBones = 0;
         int fileHandBone = -1;
         int fileAnchorBone = -1;
+        int rejectedFrozenBones = 0;
         uint32_t fileSignature = 0;
         float loadedWristPlaneLocal[4]{};
         float loadedWristPlaneWorld[4]{};
@@ -12270,6 +12303,7 @@ namespace
                 fileNumBones = 0;
                 fileHandBone = -1;
                 fileAnchorBone = -1;
+                rejectedFrozenBones = 0;
                 fileSignature = 0;
                 memset(loadedWristPlaneLocal, 0, sizeof(loadedWristPlaneLocal));
                 memset(loadedWristPlaneWorld, 0, sizeof(loadedWristPlaneWorld));
@@ -12396,6 +12430,25 @@ namespace
                 if (currentBone < 0 || currentBone >= numBones)
                     continue;
 
+                if (!HooksNativeViewmodelHandsOnlyFrozenAnchorLocalMatrixPlausible(matrix))
+                {
+                    ++rejectedFrozenBones;
+                    if (rejectedFrozenBones <= 8)
+                    {
+                        const Vector origin = vr_vm_stabilize::GetOrigin(matrix);
+                        Game::logMsg(
+                            "[VR][NativeHandsOnly] ignored implausible %s-hand frozen bone model=%s bone=%d name=%s anchorLocal=(%.2f %.2f %.2f)",
+                            HooksNativeViewmodelHandsOnlyFreezePoseSideName(keepSide.side),
+                            lowerModel.c_str(),
+                            currentBone,
+                            fields[4].c_str(),
+                            origin.x,
+                            origin.y,
+                            origin.z);
+                    }
+                    continue;
+                }
+
                 freezeMask[static_cast<size_t>(currentBone)] = 1u;
                 frozenLocalBones[static_cast<size_t>(currentBone)] = matrix;
             }
@@ -12469,12 +12522,13 @@ namespace
         cache.frozenLocalBones.swap(frozenLocalBones);
 
         Game::logMsg(
-            "[VR][NativeHandsOnly] loaded %s-hand freeze pose config path=%s model=%s bones=%d frozen=%d remapped=%d sourceBones=%d sourceSignature=%u",
+            "[VR][NativeHandsOnly] loaded %s-hand freeze pose config path=%s model=%s bones=%d frozen=%d rejected=%d remapped=%d sourceBones=%d sourceSignature=%u",
             HooksNativeViewmodelHandsOnlyFreezePoseSideName(keepSide.side),
             path,
             lowerModel.c_str(),
             numBones,
             frozenBones,
+            rejectedFrozenBones,
             remappedLayout ? 1 : 0,
             haveNumBones ? fileNumBones : 0,
             haveSignature ? fileSignature : 0u);
@@ -12765,6 +12819,7 @@ namespace
         std::vector<uint8_t> freezeMask(static_cast<size_t>(numBones), 0u);
         std::vector<vr_vm_stabilize::Mat3x4> frozenLocalBones(static_cast<size_t>(numBones));
         int frozenBones = 0;
+        int rejectedFrozenBones = 0;
         for (int bone = 0; bone < numBones; ++bone)
         {
             if (!HooksNativeViewmodelHandsOnlyShouldFreezeSideHandBone(
@@ -12792,8 +12847,11 @@ namespace
 
             vr_vm_stabilize::Mat3x4 local{};
             vr_vm_stabilize::Mul(inverseAnchor, finalWorld, local);
-            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(local))
-                return false;
+            if (!HooksNativeViewmodelHandsOnlyFrozenAnchorLocalMatrixPlausible(local))
+            {
+                ++rejectedFrozenBones;
+                continue;
+            }
 
             freezeMask[static_cast<size_t>(bone)] = 1u;
             frozenLocalBones[static_cast<size_t>(bone)] = local;
@@ -12802,6 +12860,13 @@ namespace
 
         if (frozenBones <= 0)
             return false;
+        if (keepSide.hand < 0 || keepSide.hand >= numBones ||
+            keepSide.forearm < 0 || keepSide.forearm >= numBones ||
+            !freezeMask[static_cast<size_t>(keepSide.hand)] ||
+            !freezeMask[static_cast<size_t>(keepSide.forearm)])
+        {
+            return false;
+        }
 
         int neutralFingerBones = 0;
         if (static_cast<int>(frozenFingerDriveMask.size()) == numBones)
@@ -12903,11 +12968,12 @@ namespace
         if (vr->m_VrHandsDebugLog)
         {
             Game::logMsg(
-                "[VR][NativeHandsOnly] captured frozen %s-hand animation pose model=%s bones=%d frozen=%d neutralFingers=%d neutralArm=%d hand=%d plane=%d generation=%u",
+                "[VR][NativeHandsOnly] captured frozen %s-hand animation pose model=%s bones=%d frozen=%d rejected=%d neutralFingers=%d neutralArm=%d hand=%d plane=%d generation=%u",
                 (keepSide.side < 0) ? "left" : "right",
                 lowerModel.c_str(),
                 numBones,
                 frozenBones,
+                rejectedFrozenBones,
                 neutralFingerBones,
                 neutralArmBones,
                 keepSide.hand,
@@ -13109,10 +13175,27 @@ namespace
         }
 
         int frozenBones = 0;
-        for (uint8_t mask : cache.freezeMask)
+        int rejectedFrozenBones = 0;
+        for (int bone = 0; bone < numBones; ++bone)
         {
-            if (mask)
-                ++frozenBones;
+            if (!cache.freezeMask[static_cast<size_t>(bone)])
+                continue;
+            if (!HooksNativeViewmodelHandsOnlyFrozenAnchorLocalMatrixPlausible(
+                cache.frozenLocalBones[static_cast<size_t>(bone)]))
+            {
+                cache.freezeMask[static_cast<size_t>(bone)] = 0u;
+                ++rejectedFrozenBones;
+                continue;
+            }
+            ++frozenBones;
+        }
+        if (rejectedFrozenBones > 0)
+        {
+            Game::logMsg(
+                "[VR][NativeHandsOnly] discarded %d implausible cached %s-hand frozen bones model=%s",
+                rejectedFrozenBones,
+                HooksNativeViewmodelHandsOnlyFreezePoseSideName(keepSide.side),
+                lowerModel.c_str());
         }
         if (frozenBones <= 0)
             return false;
