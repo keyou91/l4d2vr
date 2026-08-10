@@ -411,3 +411,13 @@ FodyWeavers.xsd
 /L4D2VR/special_infected_featuresa.cpp
 /.vmt
 *.dll
+/l4d2_character_game_export.blend
+/l4d2_character_game_export.blend1
+/l4d2_character_nostretch_v2.blend
+/l4d2_character_nostretch_v2.blend1
+/l4d2_character_nostretch_v2_clothfix.blend
+/l4d2_character_nostretch_v2_clothfix.blend1
+/l4d2_character_rigged_working.blend
+/l4d2_character_unrigged_backup.blend
+/tools/finalize_clothfix_blend.py
+/tools/scale_smd_units.py

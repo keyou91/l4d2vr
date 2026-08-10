@@ -903,6 +903,10 @@ namespace
     {
         return HooksNativeViewmodelHandsOnlyActive(vr) &&
             vr->m_FirstPersonControlReady.load(std::memory_order_acquire) &&
+            (!vr->m_NativeViewmodelHandsOnly ||
+                vr->IsVrHandsTwoHandedGripPoseActive() ||
+                vr->m_NativeViewmodelLeftHandFreezeReady.load(
+                    std::memory_order_acquire) != 0u) &&
             !HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) &&
             !vr->m_NativeViewmodelArmCroppingEnabled;
     }
@@ -15258,10 +15262,20 @@ namespace
         return yaw;
     }
 
+    struct HooksTrackedBodyYawReference
+    {
+        const VR* owner = nullptr;
+        std::uint32_t poseLockGeneration = 0u;
+        bool poseLockReady = false;
+        bool valid = false;
+        float physicalYawAtPoseLock = 0.0f;
+    };
+
     // Resolve the local player's rendered torso yaw independently from HMD yaw.
     // Thumbstick/mouse turning rotates the body immediately through RotationOffset,
-    // while physical head yaw gets a comfort cone. Inside the cone the torso stays
-    // fixed; beyond it the torso follows only enough to keep the head at the edge.
+    // while physical head yaw gets a comfort cone around the direction captured
+    // at delayed pose lock. Inside the cone the torso stays fixed; beyond it the
+    // torso follows only enough to keep the head at the edge.
     // This is shared by first-person body anchoring and local third-person IK.
     inline float HooksTrackedBodyResolveVisualYaw(
         const VR* vr,
@@ -15279,14 +15293,55 @@ namespace
             return headWorldYaw;
         turnYaw = HooksTrackedBodyWrapYaw(turnYaw);
 
+        const std::uint32_t poseLockGeneration =
+            vr->m_NativeViewmodelLeftHandFreezeGeneration.load(
+                std::memory_order_acquire);
+        const bool poseLockReady =
+            vr->m_NativeViewmodelLeftHandFreezeReady.load(
+                std::memory_order_acquire) != 0u;
+        float physicalYawAtPoseLock = 0.0f;
+        {
+            static std::mutex s_referenceMutex;
+            static HooksTrackedBodyYawReference s_reference;
+            std::lock_guard<std::mutex> lock(s_referenceMutex);
+
+            const bool identityChanged =
+                s_reference.owner != vr ||
+                s_reference.poseLockGeneration != poseLockGeneration;
+            const bool poseLockBecameReady =
+                poseLockReady && !s_reference.poseLockReady;
+            if (identityChanged || !s_reference.valid || poseLockBecameReady)
+            {
+                s_reference.owner = vr;
+                s_reference.poseLockGeneration = poseLockGeneration;
+                s_reference.valid = true;
+                s_reference.physicalYawAtPoseLock =
+                    HooksTrackedBodyWrapYaw(headWorldYaw - turnYaw);
+                if (poseLockReady)
+                {
+                    Game::logMsg(
+                        "[VR][TrackedBodyYaw] pose-lock reference headYaw=%.1f turnYaw=%.1f physicalYaw=%.1f generation=%u",
+                        headWorldYaw,
+                        turnYaw,
+                        s_reference.physicalYawAtPoseLock,
+                        poseLockGeneration);
+                }
+            }
+            s_reference.poseLockReady = poseLockReady;
+            physicalYawAtPoseLock = s_reference.physicalYawAtPoseLock;
+        }
+
+        const float neutralBodyYaw = HooksTrackedBodyWrapYaw(
+            turnYaw + physicalYawAtPoseLock);
+
         const float deadzone = std::clamp(
             vr->m_WorldModelVRPoseBodyYawDeadzoneDeg,
             0.0f,
             90.0f);
         const float headRelativeYaw = HooksTrackedBodyWrapYaw(
-            headWorldYaw - turnYaw);
+            headWorldYaw - neutralBodyYaw);
         if (std::fabs(headRelativeYaw) <= deadzone)
-            return turnYaw;
+            return neutralBodyYaw;
 
         return HooksTrackedBodyWrapYaw(
             headWorldYaw - std::copysign(deadzone, headRelativeYaw));
@@ -17394,6 +17449,22 @@ namespace
         Vector anchorRotationOffsetDeg[2]{};
     };
 
+    struct HooksNativeViewmodelArmIkFrozenPlacement
+    {
+        VR* owner = nullptr;
+        uint32_t generation = 0;
+        bool valid = false;
+        Vector shoulderCenterOffsetMeters{};
+
+        void Reset()
+        {
+            owner = nullptr;
+            generation = 0;
+            valid = false;
+            shoulderCenterOffsetMeters = Vector{};
+        }
+    };
+
     inline int HooksNativeViewmodelArmIkSideSlot(int side)
     {
         return side < 0 ? 0 : 1;
@@ -17786,14 +17857,11 @@ namespace
             std::isfinite(vr->m_VRScale) && vr->m_VRScale > 1.0f
             ? vr->m_VRScale
             : 39.3701f;
-        const Vector shoulderCenter =
+        Vector shoulderCenter =
             viewOrigin - bodyForward * (0.08f * sourceUnitsPerMeter) -
             bodyUp * (0.24f * sourceUnitsPerMeter);
+        Vector shoulderLateralAxis = bodyRight;
         const float shoulderHalfWidth = 0.18f * sourceUnitsPerMeter;
-        Vector leftShoulder = shoulderCenter - bodyRight * shoulderHalfWidth;
-        Vector rightShoulder = shoulderCenter + bodyRight * shoulderHalfWidth;
-        bool leftShoulderValid = true;
-        bool rightShoulderValid = true;
 
         // When the first-person survivor body is being rendered, use the
         // animation-free rest-pose shoulder positions published by its body-anchor
@@ -17816,22 +17884,105 @@ namespace
         if (havePublishedBodyShoulders && publishedLeftValid && publishedRightValid)
         {
             // The survivor bind pose is not guaranteed to be perfectly mirrored.
-            // Import only its body-centred shoulder midpoint, then rebuild a
-            // symmetric left/right pair in the resolved torso frame. This keeps
-            // the arm roots attached to the torso without inheriting model-side
-            // forward/back asymmetry, native animation, or raw physical HMD yaw.
+            // Import only its body-centred shoulder midpoint. The shared delayed
+            // freeze below captures this once in torso-local metres, so a later
+            // survivor/viewmodel replacement cannot move both arm roots.
             const Vector publishedCenter =
                 (publishedLeftShoulder + publishedRightShoulder) * 0.5f;
             if (HooksNativeViewmodelHandsOnlyVectorFinite(publishedCenter))
+                shoulderCenter = publishedCenter;
+
+            // The published rest-pose shoulders have already received the same
+            // tracked upper-chest lean as the visible first-person body. Import
+            // their normalized lateral axis as well as their centre, otherwise
+            // the body shoulder line tilts while NativeViewmodelArm remains
+            // artificially horizontal.
+            Vector publishedShoulderLine =
+                publishedRightShoulder - publishedLeftShoulder;
+            if (HooksNativeViewmodelArmIkNormalize(
+                    publishedShoulderLine,
+                    publishedShoulderLine))
             {
-                const float symmetricShoulderHalfWidth =
-                    0.18f * sourceUnitsPerMeter;
-                leftShoulder =
-                    publishedCenter - armFrameRight * symmetricShoulderHalfWidth;
-                rightShoulder =
-                    publishedCenter + armFrameRight * symmetricShoulderHalfWidth;
+                shoulderLateralAxis = publishedShoulderLine;
             }
         }
+
+        // NativeViewmodelArm shares the cropped-hand map delay. Once that delay
+        // is ready, preserve the selected shoulder centre in the moving torso
+        // frame rather than keying it by StudioHdr/model. World movement and body
+        // yaw still follow tracking, while switching character or arm models can
+        // no longer resample a different bind-pose origin. Map/character changes
+        // advance the shared generation and deliberately allow one new capture.
+        const uint32_t placementGeneration =
+            vr->m_NativeViewmodelLeftHandFreezeGeneration.load(
+                std::memory_order_acquire);
+        static std::mutex s_frozenPlacementMutex;
+        static HooksNativeViewmodelArmIkFrozenPlacement s_frozenPlacement;
+        {
+            std::lock_guard<std::mutex> lock(s_frozenPlacementMutex);
+            if (s_frozenPlacement.owner != vr ||
+                s_frozenPlacement.generation != placementGeneration)
+            {
+                s_frozenPlacement.Reset();
+                s_frozenPlacement.owner = vr;
+                s_frozenPlacement.generation = placementGeneration;
+            }
+
+            const bool placementSourceReady =
+                !vr->m_FirstPersonBodyEnabled ||
+                (havePublishedBodyShoulders &&
+                    publishedLeftValid && publishedRightValid);
+            if (!s_frozenPlacement.valid &&
+                placementSourceReady &&
+                vr->m_NativeViewmodelLeftHandFreezeReady.load(
+                    std::memory_order_acquire) != 0u)
+            {
+                const Vector centerFromView = shoulderCenter - viewOrigin;
+                const float inverseUnitsPerMeter = 1.0f / sourceUnitsPerMeter;
+                const Vector capturedOffsetMeters(
+                    DotProduct(centerFromView, armFrameForward) * inverseUnitsPerMeter,
+                    DotProduct(centerFromView, armFrameRight) * inverseUnitsPerMeter,
+                    DotProduct(centerFromView, armFrameUp) * inverseUnitsPerMeter);
+                if (HooksNativeViewmodelHandsOnlyVectorFinite(
+                    capturedOffsetMeters))
+                {
+                    s_frozenPlacement.shoulderCenterOffsetMeters =
+                        capturedOffsetMeters;
+                    s_frozenPlacement.valid = true;
+                    if (vr->m_VrHandsDebugLog)
+                    {
+                        Game::logMsg(
+                            "[VR][ViewmodelArmIK] froze shared shoulder centre offset=(%.4f %.4f %.4f)m generation=%u model=%s",
+                            capturedOffsetMeters.x,
+                            capturedOffsetMeters.y,
+                            capturedOffsetMeters.z,
+                            placementGeneration,
+                            lowerModel.c_str());
+                    }
+                }
+            }
+
+            if (s_frozenPlacement.valid)
+            {
+                const Vector offsetMeters =
+                    s_frozenPlacement.shoulderCenterOffsetMeters;
+                shoulderCenter =
+                    viewOrigin +
+                    armFrameForward *
+                        (offsetMeters.x * sourceUnitsPerMeter) +
+                    armFrameRight *
+                        (offsetMeters.y * sourceUnitsPerMeter) +
+                    armFrameUp *
+                        (offsetMeters.z * sourceUnitsPerMeter);
+            }
+        }
+
+        Vector leftShoulder =
+            shoulderCenter - shoulderLateralAxis * shoulderHalfWidth;
+        Vector rightShoulder =
+            shoulderCenter + shoulderLateralAxis * shoulderHalfWidth;
+        bool leftShoulderValid = true;
+        bool rightShoulderValid = true;
 
         // User tuning is applied after the body-aligned shoulders have been
         // selected. Position offsets are independent per side and use the
@@ -18508,9 +18659,11 @@ namespace
         {
             HooksNativeViewmodelHandsOnlyResetFixedFreezePlaneLocks(vr);
         }
+        const bool hidePendingFreeze =
+            HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(vr);
         if (!HooksNativeViewmodelHandsOnlyActive(vr) ||
             HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) ||
-            !vr->m_NativeViewmodelArmCroppingEnabled ||
+            (!vr->m_NativeViewmodelArmCroppingEnabled && !hidePendingFreeze) ||
             !drawState || !pCustomBoneToWorld)
             return false;
 
@@ -18557,8 +18710,6 @@ namespace
             leftInfo.oppositeAnchorPos = rightInfo.anchorPos;
             leftInfo.oppositeForearmPos = rightInfo.forearmPos;
         }
-        const bool hidePendingFreeze =
-            HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(vr);
         if (HooksNativeViewmodelHandsOnlyShouldUseFixedFreezePlaneLock(vr))
         {
             float ignoredPlane[4]{};
@@ -23223,11 +23374,16 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
         pBonesToWorldFinal,
         viewmodelAutoGripApplied);
     const std::string lowerModelForCalibrationHide = vr_vm_stabilize::ToLowerAscii(modelName);
+    const bool nativeViewmodelArmsOrHandsModel =
+        HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
+    const bool nativeViewmodelPendingFreezeHide =
+        nativeViewmodelArmsOrHandsModel &&
+        HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(m_VR);
     const bool hideMagazineInteractionCalibrationOriginalViewmodel =
         m_VR &&
         m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
         (drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
-        !HooksModelNameIsArmsOrHands(lowerModelForCalibrationHide);
+        !nativeViewmodelArmsOrHandsModel;
 
     if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
     {
@@ -23381,7 +23537,7 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
                     magazineInteractionCalibrationPreviewDrawnAsPrimary = true;
                 }
             }
-            else
+            else if (!nativeViewmodelPendingFreezeHide)
             {
                 ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(
                     m_VR,
