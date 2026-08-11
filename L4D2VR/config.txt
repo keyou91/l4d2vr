@@ -1,4 +1,5 @@
 VRScale=43.2
+VRNearClip=1.0
 IPDScale=1.0
 TurnSpeed=0.3
 SnapTurning=false

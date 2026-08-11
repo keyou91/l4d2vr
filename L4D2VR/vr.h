@@ -352,6 +352,9 @@ public:
 	bool m_EyeRenderTargetMatchProjectionAspect = false;
 	float m_Aspect;
 	float m_Fov;
+	// Near clipping distance for both main VR eye projections, in game units.
+	// Keep this positive: a zero near plane makes the perspective projection invalid.
+	float m_VRNearClip = 1.0f;
 
 	vr::VRTextureBounds_t m_TextureBounds[2];
 	vr::TrackedDevicePose_t m_Poses[vr::k_unMaxTrackedDeviceCount];

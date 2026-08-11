@@ -2586,8 +2586,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			view.fov = m_VR->m_Fov;
 			view.fovViewmodel = m_VR->m_Fov;
 			view.m_flAspectRatio = m_VR->m_Aspect;
-			view.zNear = 6;
-			view.zNearViewmodel = 6;
+			view.zNear = std::clamp(m_VR->m_VRNearClip, 0.1f, 6.0f);
+			view.zNearViewmodel = view.zNear;
 			// Native Source viewmodels use a separate projection plus a compressed
 			// 0..0.1 depth range so they always draw over nearby world geometry.
 			// VR viewmodels are positioned in world space, so keep their Z projection
