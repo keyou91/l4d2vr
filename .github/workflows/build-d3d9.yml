@@ -1,0 +1,61 @@
+name: Build d3d9.dll
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-d3d9.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          "VS_INSTALL=$vs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build local d3dx9 proxy library
+        shell: cmd
+        run: |
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat"
+          if errorlevel 1 exit /b %errorlevel%
+          if not exist "thirdparty\directx\d3dx9\lib\x86" mkdir "thirdparty\directx\d3dx9\lib\x86"
+          cl /nologo /c /EHsc /std:c++17 /I"thirdparty\directx\d3dx9\include" "thirdparty\directx\d3dx9\src\d3dx9_proxy.cpp" /Fo"thirdparty\directx\d3dx9\lib\x86\d3dx9_proxy.obj"
+          if errorlevel 1 exit /b %errorlevel%
+          lib /nologo /OUT:"thirdparty\directx\d3dx9\lib\x86\d3dx9.lib" "thirdparty\directx\d3dx9\lib\x86\d3dx9_proxy.obj"
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Build d3d9.dll
+        shell: cmd
+        run: |
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat"
+          if errorlevel 1 exit /b %errorlevel%
+          msbuild "L4D2VR\l4d2vr.vcxproj" /m /t:Rebuild /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:PostBuildEventUseInBuild=false
+
+      - name: Collect d3d9.dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path . -Recurse -File -Filter d3d9.dll | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $dll) { throw "d3d9.dll was not produced" }
+          New-Item -ItemType Directory -Path artifact -Force | Out-Null
+          Copy-Item -LiteralPath $dll.FullName -Destination "artifact\d3d9.dll" -Force
+          Get-FileHash "artifact\d3d9.dll" -Algorithm SHA256
+
+      - name: Upload d3d9.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: d3d9
+          path: artifact/d3d9.dll
+          if-no-files-found: error
+          compression-level: 0
