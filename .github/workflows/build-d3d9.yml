@@ -28,7 +28,7 @@ jobs:
       - name: Build local d3dx9 proxy library
         shell: cmd
         run: |
-          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat"
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.29
           if errorlevel 1 exit /b %errorlevel%
           if not exist "thirdparty\directx\d3dx9\lib\x86" mkdir "thirdparty\directx\d3dx9\lib\x86"
           cl /nologo /c /EHsc /std:c++17 /I"thirdparty\directx\d3dx9\include" "thirdparty\directx\d3dx9\src\d3dx9_proxy.cpp" /Fo"thirdparty\directx\d3dx9\lib\x86\d3dx9_proxy.obj"
@@ -39,9 +39,18 @@ jobs:
       - name: Build d3d9.dll
         shell: cmd
         run: |
-          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat"
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.29
           if errorlevel 1 exit /b %errorlevel%
-          msbuild "l4d2vr.sln" /m /t:L4D2VR:Rebuild /p:Configuration=Release /p:Platform=x86 /p:PlatformToolset=v143 /p:PostBuildEventUseInBuild=false
+          msbuild "l4d2vr.sln" /m /t:L4D2VR:Rebuild /p:Configuration=Release /p:Platform=x86 /p:PlatformToolset=v142 /p:PostBuildEventUseInBuild=false /fl /flp:"logfile=build.log;verbosity=normal"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 1
 
       - name: Collect d3d9.dll
         shell: pwsh
