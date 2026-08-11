@@ -358,14 +358,21 @@ public:
 	// Adaptive mode keeps the normal, depth-stable near plane at ordinary distances
 	// and only publishes m_VRNearClip when the HMD enters a character's bounds.
 	bool m_VRNearClipAdaptive = true;
+	// Disables near-plane slicing only for the local first-person body draw. It
+	// never changes the main scene projection and does not control the viewmodel.
 	bool m_VRNearClipSelfBody = true;
-	float m_VRNearClipSelfBodyLookDownDegrees = 35.0f;
-	float m_VRNearClipSelfBodyNearClip = 0.8f;
+	// Re-renders only the native viewmodel segment in front of the scene near
+	// plane against a private depth buffer. This preserves clothing/skin depth
+	// ordering without changing the world projection or forcing the model on top.
+	bool m_VRNearClipViewmodel = true;
+	float m_VRNearClipViewmodelNearClip = 0.1f;
 	float m_VRNearClipEnterDistance = 18.0f;
 	float m_VRNearClipExitDistance = 26.0f;
 	bool m_VRNearClipCharacterContactActive = false;
-	bool m_VRNearClipSelfBodyActive = false;
 	std::atomic<int> m_RenderVRNearClipCharacterContactActive{ 0 };
+	std::atomic<int> m_ViewmodelNearOverlayRecordingActive{ 0 };
+	std::atomic<int> m_ViewmodelNearOverlayExecutionActive{ 0 };
+	std::atomic<int> m_ViewmodelNearOverlayDrawActive{ 0 };
 	std::atomic<float> m_VRNearClipEffective{ 0.8f };
 	std::atomic<float> m_VRNearClipClosestCharacterDistance{ -1.0f };
 
@@ -1227,6 +1234,7 @@ public:
 	IDirect3DSurface9* m_D9RightEyeSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeDepthSurface = nullptr;
+	IDirect3DSurface9* m_D9ViewmodelNearDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9HUDSurface = nullptr;

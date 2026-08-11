@@ -106,66 +106,6 @@ namespace
         return std::max(0.0f, axisDistance - kCapsuleRadius);
     }
 
-    bool AdaptiveNearClipViewHitsSelfBody(
-        const Vector& eyePosition,
-        const Vector& viewForward,
-        const Vector& playerOrigin,
-        float minimumLookDownSine,
-        bool expandedForExit)
-    {
-        const auto finiteVector = [](const Vector& value)
-            {
-                return std::isfinite(value.x) &&
-                    std::isfinite(value.y) &&
-                    std::isfinite(value.z);
-            };
-        if (!finiteVector(eyePosition) ||
-            !finiteVector(viewForward) ||
-            !finiteVector(playerOrigin) ||
-            -viewForward.z < std::clamp(minimumLookDownSine, 0.0f, 1.0f))
-        {
-            return false;
-        }
-
-        const float halfWidth = expandedForExit ? 30.0f : 24.0f;
-        const float bottomOffset = expandedForExit ? -4.0f : 0.0f;
-        const float topOffset = expandedForExit ? 60.0f : 56.0f;
-        const float maxDistance = expandedForExit ? 112.0f : 96.0f;
-        const Vector mins(
-            playerOrigin.x - halfWidth,
-            playerOrigin.y - halfWidth,
-            playerOrigin.z + bottomOffset);
-        const Vector maxs(
-            playerOrigin.x + halfWidth,
-            playerOrigin.y + halfWidth,
-            playerOrigin.z + topOffset);
-
-        float rayEnter = 0.0f;
-        float rayExit = maxDistance;
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            const float direction = viewForward[axis];
-            const float start = eyePosition[axis];
-            if (std::fabs(direction) <= 0.0001f)
-            {
-                if (start < mins[axis] || start > maxs[axis])
-                    return false;
-                continue;
-            }
-
-            float axisEnter = (mins[axis] - start) / direction;
-            float axisExit = (maxs[axis] - start) / direction;
-            if (axisEnter > axisExit)
-                std::swap(axisEnter, axisExit);
-            rayEnter = (std::max)(rayEnter, axisEnter);
-            rayExit = (std::min)(rayExit, axisExit);
-            if (rayEnter > rayExit)
-                return false;
-        }
-
-        return rayExit >= 0.0f && rayEnter <= maxDistance;
-    }
-
     bool VrHandsAimIsFinite(const Vector& v)
     {
         return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -577,13 +517,11 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
 {
     static int s_lastCandidateCount = -1;
     const float contactNear = std::clamp(m_VRNearClip, 0.1f, 6.0f);
-    const float selfBodyNear = std::clamp(m_VRNearClipSelfBodyNearClip, 0.1f, 6.0f);
 
     // Disabling adaptive mode preserves the old constant-near-plane behavior.
     if (!m_VRNearClipAdaptive)
     {
         m_VRNearClipCharacterContactActive = false;
-        m_VRNearClipSelfBodyActive = false;
         s_lastCandidateCount = -1;
         m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
         m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
@@ -599,7 +537,6 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
         !VrHandsAimIsFinite(m_HmdPosAbs))
     {
         m_VRNearClipCharacterContactActive = false;
-        m_VRNearClipSelfBodyActive = false;
         s_lastCandidateCount = -1;
         m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
         m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
@@ -673,56 +610,14 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
             m_VRNearClipCharacterContactActive ? contactNear : 6.0f);
     }
 
-    const bool wasSelfBodyActive = m_VRNearClipSelfBodyActive;
-    bool selfBodyViewHit = false;
-    Vector localPlayerOrigin{};
-    const bool selfBodyEligible =
-        m_VRNearClipSelfBody &&
-        m_FirstPersonBodyEnabled &&
-        !m_IsThirdPersonCamera &&
-        AdaptiveNearClipGetAbsOrigin(localPlayer, localPlayerOrigin);
-    if (selfBodyEligible)
-    {
-        const float configuredDegrees = std::clamp(
-            m_VRNearClipSelfBodyLookDownDegrees,
-            0.0f,
-            85.0f);
-        const float requiredDegrees = m_VRNearClipSelfBodyActive
-            ? std::max(0.0f, configuredDegrees - 10.0f)
-            : configuredDegrees;
-        constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
-        const float minimumLookDownSine = std::sin(requiredDegrees * kDegreesToRadians);
-        selfBodyViewHit = AdaptiveNearClipViewHitsSelfBody(
-            m_HmdPosAbs,
-            m_HmdForward,
-            localPlayerOrigin,
-            minimumLookDownSine,
-            m_VRNearClipSelfBodyActive);
-    }
-    m_VRNearClipSelfBodyActive = selfBodyEligible && selfBodyViewHit;
-    if (wasSelfBodyActive != m_VRNearClipSelfBodyActive)
-    {
-        Game::logMsg(
-            "[VR][NearClip] self-body %s effective=%.2f",
-            m_VRNearClipSelfBodyActive ? "entered" : "exited",
-            m_VRNearClipSelfBodyActive ? selfBodyNear :
-                (m_VRNearClipCharacterContactActive ? contactNear : 6.0f));
-    }
-
-    float effectiveNear = 6.0f;
-    if (m_VRNearClipCharacterContactActive)
-        effectiveNear = contactNear;
-    if (m_VRNearClipSelfBodyActive)
-        effectiveNear = m_VRNearClipCharacterContactActive
-            ? (std::min)(effectiveNear, selfBodyNear)
-            : selfBodyNear;
-
     m_VRNearClipClosestCharacterDistance.store(
         foundCharacter ? closestDistance : -1.0f,
         std::memory_order_relaxed);
-    m_VRNearClipEffective.store(effectiveNear, std::memory_order_relaxed);
+    m_VRNearClipEffective.store(
+        m_VRNearClipCharacterContactActive ? contactNear : 6.0f,
+        std::memory_order_relaxed);
     m_RenderVRNearClipCharacterContactActive.store(
-        (m_VRNearClipCharacterContactActive || m_VRNearClipSelfBodyActive) ? 1 : 0,
+        m_VRNearClipCharacterContactActive ? 1 : 0,
         std::memory_order_release);
 }
 

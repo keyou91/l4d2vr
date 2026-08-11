@@ -1,8 +1,8 @@
 VRScale=43.2
 VRNearClipAdaptive=true
 VRNearClipSelfBody=true
-VRNearClipSelfBodyLookDownDegrees=35.0
-VRNearClipSelfBodyNearClip=0.8
+VRNearClipViewmodel=true
+VRNearClipViewmodelNearClip=0.1
 VRNearClip=0.8
 VRNearClipEnterDistance=18.0
 VRNearClipExitDistance=26.0

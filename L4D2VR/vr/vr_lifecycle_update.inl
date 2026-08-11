@@ -2155,6 +2155,9 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     m_MenuBlankSubmitted = false;
     m_BackBufferTextureValid = false;
     m_CreatingTextureID = Texture_None;
+    m_ViewmodelNearOverlayRecordingActive.store(0, std::memory_order_release);
+    m_ViewmodelNearOverlayExecutionActive.store(0, std::memory_order_release);
+    m_ViewmodelNearOverlayDrawActive.store(0, std::memory_order_release);
 
     InvalidateSourceRenderQueueMarkers();
     m_RenderCompletedFrameId.store(0, std::memory_order_release);
@@ -2204,6 +2207,7 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
         dxvk::D3D9ReShadeVrInvalidateBinding();
     SafeReleaseD3D(m_D9LeftEyeDepthSurface);
     SafeReleaseD3D(m_D9RightEyeDepthSurface);
+    SafeReleaseD3D(m_D9ViewmodelNearDepthSurface);
     SafeReleaseD3D(m_D9LeftEyeSubmitSurface);
     SafeReleaseD3D(m_D9RightEyeSubmitSurface);
     SafeReleaseD3D(m_D9HUDSurface);
@@ -2449,6 +2453,47 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_None;
 
     m_Game->m_MaterialSystem->EndRenderTargetAllocation();
+
+    // The close-viewmodel pass writes into the normal eye color target but needs
+    // depth that is independent from the already-rendered world. Match the eye
+    // surface's size and MSAA so D3D9 can bind the pair directly.
+    if (m_VRNearClipViewmodel && m_D9LeftEyeSurface)
+    {
+        IDirect3DDevice9* device = nullptr;
+        D3DSURFACE_DESC eyeDesc{};
+        if (SUCCEEDED(m_D9LeftEyeSurface->GetDevice(&device)) && device &&
+            SUCCEEDED(m_D9LeftEyeSurface->GetDesc(&eyeDesc)))
+        {
+            HRESULT depthHr = device->CreateDepthStencilSurface(
+                eyeDesc.Width,
+                eyeDesc.Height,
+                D3DFMT_D24S8,
+                eyeDesc.MultiSampleType,
+                eyeDesc.MultiSampleQuality,
+                TRUE,
+                &m_D9ViewmodelNearDepthSurface,
+                nullptr);
+            if (FAILED(depthHr))
+            {
+                depthHr = device->CreateDepthStencilSurface(
+                    eyeDesc.Width,
+                    eyeDesc.Height,
+                    D3DFMT_D24X8,
+                    eyeDesc.MultiSampleType,
+                    eyeDesc.MultiSampleQuality,
+                    TRUE,
+                    &m_D9ViewmodelNearDepthSurface,
+                    nullptr);
+            }
+            if (FAILED(depthHr) || !m_D9ViewmodelNearDepthSurface)
+            {
+                Game::logMsg(
+                    "[VR][NearClip] failed to create private viewmodel depth surface hr=0x%08X",
+                    static_cast<unsigned int>(depthHr));
+            }
+            device->Release();
+        }
+    }
 
     // CreateNamedRenderTargetTextureEx can reuse video memory containing the last map's
     // HUD/eye pixels. Clear all VR RTs before they are ever submitted or exposed as overlays.

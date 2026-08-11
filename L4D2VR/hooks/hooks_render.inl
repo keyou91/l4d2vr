@@ -1,3 +1,225 @@
+namespace
+{
+	class HooksViewmodelNearOverlayPassState
+	{
+	public:
+		explicit HooksViewmodelNearOverlayPassState(VR* owner, int eyeIndex)
+			: m_VR(owner), m_EyeIndex(eyeIndex)
+		{
+		}
+
+		void AddRef()
+		{
+			m_Refs.fetch_add(1, std::memory_order_acq_rel);
+		}
+
+		void Release()
+		{
+			if (m_Refs.fetch_sub(1, std::memory_order_acq_rel) == 1)
+				delete this;
+		}
+
+		void Begin()
+		{
+			if (m_Active || !m_VR || !m_VR->m_D9ViewmodelNearDepthSurface)
+				return;
+
+			IDirect3DSurface9* const target = m_EyeIndex == 1
+				? m_VR->m_D9LeftEyeSurface
+				: m_VR->m_D9RightEyeSurface;
+			if (!target || FAILED(target->GetDevice(&m_Device)) || !m_Device)
+				return;
+
+			m_Device->GetRenderTarget(0, &m_OldRenderTarget);
+			m_Device->GetDepthStencilSurface(&m_OldDepthSurface);
+			m_HasOldViewport = SUCCEEDED(m_Device->GetViewport(&m_OldViewport));
+
+			D3DSURFACE_DESC targetDesc{};
+			D3DVIEWPORT9 overlayViewport{};
+			if (FAILED(target->GetDesc(&targetDesc)))
+			{
+				End();
+				return;
+			}
+			overlayViewport.X = 0;
+			overlayViewport.Y = 0;
+			overlayViewport.Width = targetDesc.Width;
+			overlayViewport.Height = targetDesc.Height;
+			overlayViewport.MinZ = 0.0f;
+			overlayViewport.MaxZ = 1.0f;
+
+			if (FAILED(m_Device->SetRenderTarget(0, target)) ||
+				FAILED(m_Device->SetDepthStencilSurface(m_VR->m_D9ViewmodelNearDepthSurface)) ||
+				FAILED(m_Device->SetViewport(&overlayViewport)) ||
+				FAILED(m_Device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0, 1.0f, 0)))
+			{
+				End();
+				return;
+			}
+
+			m_VR->m_ViewmodelNearOverlayDrawActive.store(0, std::memory_order_release);
+			m_VR->m_ViewmodelNearOverlayExecutionActive.store(1, std::memory_order_release);
+			m_Active = true;
+		}
+
+		void End()
+		{
+			if (m_VR)
+			{
+				m_VR->m_ViewmodelNearOverlayDrawActive.store(0, std::memory_order_release);
+				m_VR->m_ViewmodelNearOverlayExecutionActive.store(0, std::memory_order_release);
+			}
+
+			if (m_Device)
+			{
+				if (m_OldRenderTarget)
+					m_Device->SetRenderTarget(0, m_OldRenderTarget);
+				m_Device->SetDepthStencilSurface(m_OldDepthSurface);
+				if (m_HasOldViewport)
+					m_Device->SetViewport(&m_OldViewport);
+			}
+
+			if (m_OldRenderTarget)
+			{
+				m_OldRenderTarget->Release();
+				m_OldRenderTarget = nullptr;
+			}
+			if (m_OldDepthSurface)
+			{
+				m_OldDepthSurface->Release();
+				m_OldDepthSurface = nullptr;
+			}
+			if (m_Device)
+			{
+				m_Device->Release();
+				m_Device = nullptr;
+			}
+			m_HasOldViewport = false;
+			m_Active = false;
+		}
+
+	private:
+		~HooksViewmodelNearOverlayPassState()
+		{
+			End();
+		}
+
+		std::atomic<long> m_Refs{ 1 };
+		VR* m_VR = nullptr;
+		int m_EyeIndex = 0;
+		IDirect3DDevice9* m_Device = nullptr;
+		IDirect3DSurface9* m_OldRenderTarget = nullptr;
+		IDirect3DSurface9* m_OldDepthSurface = nullptr;
+		D3DVIEWPORT9 m_OldViewport{};
+		bool m_HasOldViewport = false;
+		bool m_Active = false;
+	};
+
+	class HooksViewmodelNearOverlayPassFunctor final : public CFunctor
+	{
+	public:
+		HooksViewmodelNearOverlayPassFunctor(
+			HooksViewmodelNearOverlayPassState* state,
+			bool begin)
+			: m_State(state), m_Begin(begin)
+		{
+			if (m_State)
+				m_State->AddRef();
+		}
+
+		~HooksViewmodelNearOverlayPassFunctor() override
+		{
+			if (m_State)
+				m_State->Release();
+		}
+
+		int AddRef() override
+		{
+			return static_cast<int>(m_Refs.fetch_add(1, std::memory_order_acq_rel) + 1);
+		}
+
+		int Release() override
+		{
+			const long remaining = m_Refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
+			if (remaining == 0)
+				delete this;
+			return static_cast<int>(remaining);
+		}
+
+		void operator()() override
+		{
+			if (!m_State)
+				return;
+			if (m_Begin)
+				m_State->Begin();
+			else
+				m_State->End();
+		}
+
+	private:
+		std::atomic<long> m_Refs{ 0 };
+		HooksViewmodelNearOverlayPassState* m_State = nullptr;
+		bool m_Begin = false;
+	};
+
+	class ScopedViewmodelNearOverlayPass
+	{
+	public:
+		ScopedViewmodelNearOverlayPass(
+			VR* vr,
+			int eyeIndex,
+			int queueMode,
+			ICallQueue* callQueue)
+			: m_CallQueue(queueMode != 0 ? callQueue : nullptr)
+		{
+			if (!vr)
+				return;
+			m_State = new HooksViewmodelNearOverlayPassState(vr, eyeIndex);
+			if (queueMode != 0)
+			{
+				if (!m_CallQueue)
+				{
+					m_State->Release();
+					m_State = nullptr;
+					return;
+				}
+				m_CallQueue->QueueFunctor(
+					new HooksViewmodelNearOverlayPassFunctor(m_State, true));
+			}
+			else
+			{
+				m_State->Begin();
+			}
+		}
+
+		~ScopedViewmodelNearOverlayPass()
+		{
+			if (!m_State)
+				return;
+			if (m_CallQueue)
+			{
+				m_CallQueue->QueueFunctor(
+					new HooksViewmodelNearOverlayPassFunctor(m_State, false));
+			}
+			else
+			{
+				m_State->End();
+			}
+			m_State->Release();
+			m_State = nullptr;
+		}
+
+		bool IsValid() const
+		{
+			return m_State != nullptr;
+		}
+
+	private:
+		ICallQueue* m_CallQueue = nullptr;
+		HooksViewmodelNearOverlayPassState* m_State = nullptr;
+	};
+}
+
 static DWORD TimedWaitForPoseEvent(HANDLE event, DWORD timeoutMs)
 {
 	VR* const vr = Hooks::m_VR;
@@ -2597,9 +2819,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					0.1f,
 					6.0f);
 			}
-			// Viewmodels share the scene projection so their depth values remain
-			// directly comparable with the world depth buffer. Their near-plane
-			// clipping is suppressed per draw when VRNearClipSelfBody is enabled.
+			// The normal viewmodel segment shares the scene projection and depth, so
+			// world geometry still occludes it correctly. A second private-depth pass
+			// below renders only the segment in front of this near plane.
 			view.zNearViewmodel = view.zNear;
 			// Native Source viewmodels use a separate projection plus a compressed
 			// 0..0.1 depth range so they always draw over nearby world geometry.
@@ -3256,6 +3478,76 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					firstPersonBodyActualFirstPerson,
 					!playerIncap);
 				callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
+			}
+
+			// Split the native viewmodel at the scene near plane. The normal pass
+			// above owns [sceneNear, sceneFar] and therefore keeps exact world-depth
+			// occlusion. This pass owns [viewmodelNear, sceneNear] on a private depth
+			// surface; every fragment in that interval is physically in front of all
+			// visible scene geometry, so compositing it directly cannot punch through
+			// a wall. Unlike depth clamping, layers of the arm/clothing retain their
+			// distinct depth values.
+			constexpr int kRenderViewDrawViewmodel = 1 << 0;
+			const float viewmodelNear = std::clamp(
+				m_VR->m_VRNearClipViewmodelNearClip,
+				0.1f,
+				6.0f);
+			const bool renderViewmodelNearOverlay =
+				m_VR->m_VRNearClipViewmodel &&
+				m_VR->m_D9ViewmodelNearDepthSurface &&
+				!renderThirdPerson &&
+				(whatToDraw & kRenderViewDrawViewmodel) != 0 &&
+				eyeView.zNear > viewmodelNear + 0.001f;
+			if (renderViewmodelNearOverlay)
+			{
+				ICallQueue* overlayCallQueue = nullptr;
+				if (queueMode != 0)
+				{
+					overlayCallQueue = rndrContext->GetCallQueue();
+					if (!overlayCallQueue)
+					{
+						static std::atomic<bool> s_loggedMissingOverlayQueue{ false };
+						if (!s_loggedMissingOverlayQueue.exchange(true, std::memory_order_acq_rel))
+						{
+							Game::logMsg(
+								"[VR][NearClip] close-viewmodel pass skipped: Source render call queue unavailable");
+						}
+					}
+				}
+
+				if (queueMode == 0 || overlayCallQueue)
+				{
+					CViewSetup overlayView = eyeView;
+					CViewSetup overlayHud = eyeHud;
+					overlayView.zNearViewmodel = viewmodelNear;
+					overlayView.zFarViewmodel = eyeView.zNear;
+					overlayHud.zNearViewmodel = viewmodelNear;
+					overlayHud.zFarViewmodel = eyeView.zNear;
+
+					ScopedViewmodelNearOverlayPass overlayPass(
+						m_VR,
+						eyeIndex,
+						queueMode,
+						overlayCallQueue);
+					if (overlayPass.IsValid())
+					{
+						const int previousRecording =
+							m_VR->m_ViewmodelNearOverlayRecordingActive.exchange(
+								1, std::memory_order_acq_rel);
+						// Never clear or post-process the eye a second time. DXVK freezes
+						// the eye color/private depth targets during this marked pass and
+						// accepts draw calls only while a native viewmodel submission is
+						// bracketed by dDrawModelExecute.
+						callOriginalRenderView(
+							overlayView,
+							overlayHud,
+							0,
+							whatToDraw);
+						m_VR->m_ViewmodelNearOverlayRecordingActive.store(
+							previousRecording,
+							std::memory_order_release);
+					}
+				}
 			}
 
 			if (m_VR->m_IsVREnabled)

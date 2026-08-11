@@ -1218,12 +1218,9 @@ void VR::ParseConfigFile()
     m_VRScale = getFloat("VRScale", m_VRScale);
     m_VRNearClipAdaptive = getBool("VRNearClipAdaptive", m_VRNearClipAdaptive);
     m_VRNearClipSelfBody = getBool("VRNearClipSelfBody", m_VRNearClipSelfBody);
-    m_VRNearClipSelfBodyLookDownDegrees = std::clamp(
-        getFloat("VRNearClipSelfBodyLookDownDegrees", m_VRNearClipSelfBodyLookDownDegrees),
-        0.0f,
-        85.0f);
-    m_VRNearClipSelfBodyNearClip = std::clamp(
-        getFloat("VRNearClipSelfBodyNearClip", m_VRNearClipSelfBodyNearClip),
+    m_VRNearClipViewmodel = getBool("VRNearClipViewmodel", m_VRNearClipViewmodel);
+    m_VRNearClipViewmodelNearClip = std::clamp(
+        getFloat("VRNearClipViewmodelNearClip", m_VRNearClipViewmodelNearClip),
         0.1f,
         6.0f);
     m_VRNearClip = std::clamp(
