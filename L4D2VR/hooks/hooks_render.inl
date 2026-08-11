@@ -2586,7 +2586,20 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			view.fov = m_VR->m_Fov;
 			view.fovViewmodel = m_VR->m_Fov;
 			view.m_flAspectRatio = m_VR->m_Aspect;
-			view.zNear = std::clamp(m_VR->m_VRNearClip, 0.1f, 6.0f);
+			// Preserve the original VR projection verbatim at ordinary distances.
+			view.zNear = 6;
+			// Entity proximity is sampled on the update thread. RenderView may run on
+			// Source's queued render thread, so it consumes only published atomics.
+			if (m_VR->m_RenderVRNearClipCharacterContactActive.load(std::memory_order_acquire) != 0)
+			{
+				view.zNear = std::clamp(
+					m_VR->m_VRNearClipEffective.load(std::memory_order_relaxed),
+					0.1f,
+					6.0f);
+			}
+			// Viewmodels share the scene projection so their depth values remain
+			// directly comparable with the world depth buffer. Their near-plane
+			// clipping is suppressed per draw when VRNearClipSelfBody is enabled.
 			view.zNearViewmodel = view.zNear;
 			// Native Source viewmodels use a separate projection plus a compressed
 			// 0..0.1 depth range so they always draw over nearby world geometry.

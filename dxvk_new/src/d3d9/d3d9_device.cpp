@@ -3593,6 +3593,7 @@ namespace dxvk {
             }
             case D3DRS_CULLMODE:
             case D3DRS_FILLMODE:
+            case D3DRS_CLIPPING:
                 m_flags.set(D3D9DeviceFlag::DirtyRasterizerState);
                 break;
 
@@ -8930,7 +8931,10 @@ namespace dxvk {
         DxvkRasterizerState state = { };
         state.setCullMode(DecodeCullMode(D3DCULL(rs[D3DRS_CULLMODE])));
         state.setDepthBias(IsDepthBiasEnabled());
-        state.setDepthClip(true);
+        // D3DRS_CLIPPING is normally TRUE. L4D2VR temporarily disables it for
+        // native viewmodel draws so Vulkan clamps near-plane depth instead of
+        // slicing the gun/arms, while retaining the scene's depth mapping.
+        state.setDepthClip(rs[D3DRS_CLIPPING] != FALSE);
         state.setFrontFace(VK_FRONT_FACE_CLOCKWISE);
         state.setPolygonMode(DecodeFillMode(D3DFILLMODE(rs[D3DRS_FILLMODE])));
         state.setFlatShading(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT);

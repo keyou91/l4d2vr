@@ -1216,10 +1216,28 @@ void VR::ParseConfigFile()
     m_LeftHanded = getBool("LeftHanded", m_LeftHanded);
     m_LeftHandedSwapInputActions = getBool("LeftHandedSwapInputActions", m_LeftHandedSwapInputActions);
     m_VRScale = getFloat("VRScale", m_VRScale);
+    m_VRNearClipAdaptive = getBool("VRNearClipAdaptive", m_VRNearClipAdaptive);
+    m_VRNearClipSelfBody = getBool("VRNearClipSelfBody", m_VRNearClipSelfBody);
+    m_VRNearClipSelfBodyLookDownDegrees = std::clamp(
+        getFloat("VRNearClipSelfBodyLookDownDegrees", m_VRNearClipSelfBodyLookDownDegrees),
+        0.0f,
+        85.0f);
+    m_VRNearClipSelfBodyNearClip = std::clamp(
+        getFloat("VRNearClipSelfBodyNearClip", m_VRNearClipSelfBodyNearClip),
+        0.1f,
+        6.0f);
     m_VRNearClip = std::clamp(
         getFloat("VRNearClip", m_VRNearClip),
         0.1f,
         6.0f);
+    m_VRNearClipEnterDistance = std::clamp(
+        getFloat("VRNearClipEnterDistance", m_VRNearClipEnterDistance),
+        0.0f,
+        128.0f);
+    m_VRNearClipExitDistance = std::clamp(
+        getFloat("VRNearClipExitDistance", m_VRNearClipExitDistance),
+        m_VRNearClipEnterDistance,
+        192.0f);
     m_IpdScale = getFloat("IPDScale", m_IpdScale);
     {
         auto clampVector = [](Vector value, float minValue, float maxValue)

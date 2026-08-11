@@ -352,9 +352,22 @@ public:
 	bool m_EyeRenderTargetMatchProjectionAspect = false;
 	float m_Aspect;
 	float m_Fov;
-	// Near clipping distance for both main VR eye projections, in game units.
+	// Near clipping distance used while the HMD is close to another character.
 	// Keep this positive: a zero near plane makes the perspective projection invalid.
-	float m_VRNearClip = 1.0f;
+	float m_VRNearClip = 0.8f;
+	// Adaptive mode keeps the normal, depth-stable near plane at ordinary distances
+	// and only publishes m_VRNearClip when the HMD enters a character's bounds.
+	bool m_VRNearClipAdaptive = true;
+	bool m_VRNearClipSelfBody = true;
+	float m_VRNearClipSelfBodyLookDownDegrees = 35.0f;
+	float m_VRNearClipSelfBodyNearClip = 0.8f;
+	float m_VRNearClipEnterDistance = 18.0f;
+	float m_VRNearClipExitDistance = 26.0f;
+	bool m_VRNearClipCharacterContactActive = false;
+	bool m_VRNearClipSelfBodyActive = false;
+	std::atomic<int> m_RenderVRNearClipCharacterContactActive{ 0 };
+	std::atomic<float> m_VRNearClipEffective{ 0.8f };
+	std::atomic<float> m_VRNearClipClosestCharacterDistance{ -1.0f };
 
 	vr::VRTextureBounds_t m_TextureBounds[2];
 	vr::TrackedDevicePose_t m_Poses[vr::k_unMaxTrackedDeviceCount];
@@ -3908,6 +3921,7 @@ public:
 	// Mouse-mode: compute the eye-center ray used for aiming (mouse pitch+yaw or HMD-based, optionally sensitivity-scaled).
 	void GetMouseModeEyeRay(Vector& eyeDirOut, QAngle* eyeAngOut = nullptr);
 	void UpdateSystemMouseInputSuppression(bool inGame, bool hasLocalPlayer);
+	void UpdateAdaptiveNearClip(C_BasePlayer* localPlayer);
 	void UpdateTracking();
 	void UpdateMotionGestures(C_BasePlayer* localPlayer);
 	void UpdateAutoFlashlight(C_BasePlayer* localPlayer);

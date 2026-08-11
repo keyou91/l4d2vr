@@ -19042,8 +19042,6 @@ namespace
                     return;
                 newClipEnable |= (1u << i);
             }
-            if (m_HasOldClipping)
-                m_Device->SetRenderState(D3DRS_CLIPPING, TRUE);
             if (FAILED(m_Device->SetRenderState(D3DRS_CLIPPLANEENABLE, newClipEnable)))
             {
                 if (m_HasOldClipping)
@@ -19225,8 +19223,6 @@ namespace
                 }
                 newClipEnable |= (1u << i);
             }
-            if (hasOldClipping)
-                device->SetRenderState(D3DRS_CLIPPING, TRUE);
             if (FAILED(device->SetRenderState(D3DRS_CLIPPLANEENABLE, newClipEnable)))
             {
                 End();
@@ -19342,6 +19338,226 @@ namespace
     private:
         std::atomic<long> m_RefCount{ 0 };
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
+    };
+
+    struct HooksQueuedNativeViewmodelDepthClampState
+    {
+        std::atomic<long> refs{ 1 };
+        VR* vr = nullptr;
+        IDirect3DDevice9* device = nullptr;
+        DWORD oldClipping = TRUE;
+        bool active = false;
+
+        explicit HooksQueuedNativeViewmodelDepthClampState(VR* inVr)
+            : vr(inVr)
+        {
+        }
+
+        void AddRef()
+        {
+            refs.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        void Release()
+        {
+            const long remaining = refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining == 0)
+                delete this;
+        }
+
+        void Begin()
+        {
+            if (active || !vr)
+                return;
+
+            device = HooksNativeViewmodelHandsOnlyGetD3DDevice(vr);
+            if (!device)
+                return;
+
+            if (FAILED(device->GetRenderState(D3DRS_CLIPPING, &oldClipping)) ||
+                FAILED(device->SetRenderState(D3DRS_CLIPPING, FALSE)))
+            {
+                device->Release();
+                device = nullptr;
+                return;
+            }
+            active = true;
+        }
+
+        void End()
+        {
+            if (!device)
+                return;
+
+            if (active)
+            {
+                device->SetRenderState(D3DRS_CLIPPING, oldClipping);
+                active = false;
+            }
+            device->Release();
+            device = nullptr;
+        }
+
+        ~HooksQueuedNativeViewmodelDepthClampState()
+        {
+            End();
+        }
+    };
+
+    class HooksQueuedNativeViewmodelDepthClampBeginFunctor final : public CFunctor
+    {
+    public:
+        explicit HooksQueuedNativeViewmodelDepthClampBeginFunctor(
+            HooksQueuedNativeViewmodelDepthClampState* state)
+            : m_State(state)
+        {
+            if (m_State)
+                m_State->AddRef();
+        }
+
+        ~HooksQueuedNativeViewmodelDepthClampBeginFunctor() override
+        {
+            if (m_State)
+                m_State->Release();
+        }
+
+        int AddRef() override
+        {
+            return static_cast<int>(m_RefCount.fetch_add(1, std::memory_order_acq_rel) + 1);
+        }
+
+        int Release() override
+        {
+            const long remaining = m_RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining == 0)
+                delete this;
+            return static_cast<int>(remaining);
+        }
+
+        void operator()() override
+        {
+            if (m_State)
+                m_State->Begin();
+        }
+
+    private:
+        std::atomic<long> m_RefCount{ 0 };
+        HooksQueuedNativeViewmodelDepthClampState* m_State = nullptr;
+    };
+
+    class HooksQueuedNativeViewmodelDepthClampEndFunctor final : public CFunctor
+    {
+    public:
+        explicit HooksQueuedNativeViewmodelDepthClampEndFunctor(
+            HooksQueuedNativeViewmodelDepthClampState* state)
+            : m_State(state)
+        {
+            if (m_State)
+                m_State->AddRef();
+        }
+
+        ~HooksQueuedNativeViewmodelDepthClampEndFunctor() override
+        {
+            if (m_State)
+                m_State->Release();
+        }
+
+        int AddRef() override
+        {
+            return static_cast<int>(m_RefCount.fetch_add(1, std::memory_order_acq_rel) + 1);
+        }
+
+        int Release() override
+        {
+            const long remaining = m_RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining == 0)
+                delete this;
+            return static_cast<int>(remaining);
+        }
+
+        void operator()() override
+        {
+            if (m_State)
+                m_State->End();
+        }
+
+    private:
+        std::atomic<long> m_RefCount{ 0 };
+        HooksQueuedNativeViewmodelDepthClampState* m_State = nullptr;
+    };
+
+    class ScopedNativeViewmodelDepthClamp
+    {
+    public:
+        ScopedNativeViewmodelDepthClamp(
+            bool enabled,
+            VR* vr,
+            int queueMode,
+            ICallQueue* callQueue)
+        {
+            if (!enabled || !vr)
+                return;
+
+            if (queueMode != 0)
+            {
+                if (!callQueue)
+                {
+                    static std::atomic<bool> s_loggedMissingQueue{ false };
+                    if (!s_loggedMissingQueue.exchange(true, std::memory_order_acq_rel))
+                    {
+                        Game::logMsg(
+                            "[VR][NearClip] viewmodel depth-clamp skipped: Source render call queue unavailable");
+                    }
+                    return;
+                }
+
+                m_CallQueue = callQueue;
+                m_QueuedState = new HooksQueuedNativeViewmodelDepthClampState(vr);
+                m_CallQueue->QueueFunctor(
+                    new HooksQueuedNativeViewmodelDepthClampBeginFunctor(m_QueuedState));
+                return;
+            }
+
+            m_Device = HooksNativeViewmodelHandsOnlyGetD3DDevice(vr);
+            if (!m_Device)
+                return;
+
+            if (FAILED(m_Device->GetRenderState(D3DRS_CLIPPING, &m_OldClipping)) ||
+                FAILED(m_Device->SetRenderState(D3DRS_CLIPPING, FALSE)))
+            {
+                m_Device->Release();
+                m_Device = nullptr;
+                return;
+            }
+            m_Active = true;
+        }
+
+        ~ScopedNativeViewmodelDepthClamp()
+        {
+            if (m_QueuedState)
+            {
+                m_CallQueue->QueueFunctor(
+                    new HooksQueuedNativeViewmodelDepthClampEndFunctor(m_QueuedState));
+                m_QueuedState->Release();
+                m_QueuedState = nullptr;
+                m_CallQueue = nullptr;
+            }
+
+            if (m_Device)
+            {
+                if (m_Active)
+                    m_Device->SetRenderState(D3DRS_CLIPPING, m_OldClipping);
+                m_Device->Release();
+                m_Device = nullptr;
+            }
+        }
+
+    private:
+        ICallQueue* m_CallQueue = nullptr;
+        HooksQueuedNativeViewmodelDepthClampState* m_QueuedState = nullptr;
+        IDirect3DDevice9* m_Device = nullptr;
+        DWORD m_OldClipping = TRUE;
+        bool m_Active = false;
     };
 
     inline bool HooksFirstPersonBodyGetModelNameSafe(
@@ -23470,6 +23686,16 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
         (drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
         !nativeViewmodelArmsOrHandsModel;
 
+    const bool protectNativeViewmodelNearClip =
+        drawUsesNativeViewmodelDepthHack &&
+        !shadowDepthDraw &&
+        m_VR &&
+        m_VR->m_IsVREnabled &&
+        m_VR->m_VRNearClipSelfBody;
+    const int viewmodelNearClipQueueMode =
+        (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+    CRefPtr<IMatRenderContext> viewmodelDepthContext;
+    ICallQueue* viewmodelNearClipCallQueue = nullptr;
     if (drawUsesNativeViewmodelDepthHack &&
         !shadowDepthDraw &&
         m_VR &&
@@ -23477,7 +23703,6 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
         m_Game &&
         m_Game->m_MaterialSystem)
     {
-        CRefPtr<IMatRenderContext> viewmodelDepthContext;
         viewmodelDepthContext =
             m_Game->m_MaterialSystem->GetRenderContext();
         if (viewmodelDepthContext)
@@ -23487,8 +23712,24 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
             // actual model submission preserves command order in queued mode;
             // Source already restores 0..1 after the list completes.
             viewmodelDepthContext->DepthRange(0.0f, 1.0f);
+
+            if (protectNativeViewmodelNearClip && viewmodelNearClipQueueMode != 0)
+            {
+                viewmodelNearClipCallQueue =
+                    HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
+                        viewmodelDepthContext);
+            }
         }
     }
+
+    // Keep the scene projection and depth mapping intact. D3DRS_CLIPPING=FALSE
+    // selects Vulkan depth clamping only around this native viewmodel's queued
+    // draw submissions; world geometry therefore still occludes it correctly.
+    ScopedNativeViewmodelDepthClamp viewmodelDepthClamp(
+        protectNativeViewmodelNearClip,
+        m_VR,
+        viewmodelNearClipQueueMode,
+        viewmodelNearClipCallQueue);
 
     if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
     {

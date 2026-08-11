@@ -2,6 +2,170 @@ static constexpr int kServerHookFallbackDefaultDelayMs = 250;
 
 namespace
 {
+    C_BaseEntity* AdaptiveNearClipGetClientEntity(IClientEntityList* entityList, int entityIndex)
+    {
+        if (!entityList || entityIndex <= 0)
+            return nullptr;
+
+#ifdef _MSC_VER
+        __try
+        {
+            return static_cast<C_BaseEntity*>(entityList->GetClientEntity(entityIndex));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return nullptr;
+        }
+#else
+        return static_cast<C_BaseEntity*>(entityList->GetClientEntity(entityIndex));
+#endif
+    }
+
+    bool AdaptiveNearClipIsConnectedPlayer(IEngineClient* engineClient, int entityIndex)
+    {
+        if (!engineClient || entityIndex <= 0)
+            return false;
+
+        player_info_t playerInfo{};
+#ifdef _MSC_VER
+        __try
+        {
+            return engineClient->GetPlayerInfo(entityIndex, &playerInfo);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        return engineClient->GetPlayerInfo(entityIndex, &playerInfo);
+#endif
+    }
+
+    bool AdaptiveNearClipGetPlayerTeam(C_BaseEntity* entity, int& outTeam)
+    {
+        outTeam = 0;
+        if (!entity)
+            return false;
+
+#ifdef _MSC_VER
+        __try
+        {
+            outTeam = *reinterpret_cast<const int*>(
+                reinterpret_cast<const unsigned char*>(entity) + VR::kTeamNumOffset);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            outTeam = 0;
+            return false;
+        }
+#else
+        outTeam = *reinterpret_cast<const int*>(
+            reinterpret_cast<const unsigned char*>(entity) + VR::kTeamNumOffset);
+        return true;
+#endif
+    }
+
+    bool AdaptiveNearClipGetAbsOrigin(C_BaseEntity* entity, Vector& outOrigin)
+    {
+        outOrigin = {};
+        if (!entity)
+            return false;
+
+#ifdef _MSC_VER
+        __try
+        {
+            outOrigin = entity->GetAbsOrigin();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+#else
+        outOrigin = entity->GetAbsOrigin();
+#endif
+        return
+            std::isfinite(outOrigin.x) &&
+            std::isfinite(outOrigin.y) &&
+            std::isfinite(outOrigin.z);
+    }
+
+    float AdaptiveNearClipDistanceToCharacterCapsule(const Vector& point, const Vector& origin)
+    {
+        // Player slots are reliable across stock and replacement survivor models,
+        // while network class strings and ICollideable bounds are not. Approximate
+        // the visible character with a generous vertical capsule instead.
+        constexpr float kCapsuleRadius = 24.0f;
+        constexpr float kCapsuleBottomZ = 12.0f;
+        constexpr float kCapsuleTopZ = 60.0f;
+        const float nearestZ = std::clamp(point.z, origin.z + kCapsuleBottomZ, origin.z + kCapsuleTopZ);
+        const float dx = point.x - origin.x;
+        const float dy = point.y - origin.y;
+        const float dz = point.z - nearestZ;
+        const float axisDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        return std::max(0.0f, axisDistance - kCapsuleRadius);
+    }
+
+    bool AdaptiveNearClipViewHitsSelfBody(
+        const Vector& eyePosition,
+        const Vector& viewForward,
+        const Vector& playerOrigin,
+        float minimumLookDownSine,
+        bool expandedForExit)
+    {
+        const auto finiteVector = [](const Vector& value)
+            {
+                return std::isfinite(value.x) &&
+                    std::isfinite(value.y) &&
+                    std::isfinite(value.z);
+            };
+        if (!finiteVector(eyePosition) ||
+            !finiteVector(viewForward) ||
+            !finiteVector(playerOrigin) ||
+            -viewForward.z < std::clamp(minimumLookDownSine, 0.0f, 1.0f))
+        {
+            return false;
+        }
+
+        const float halfWidth = expandedForExit ? 30.0f : 24.0f;
+        const float bottomOffset = expandedForExit ? -4.0f : 0.0f;
+        const float topOffset = expandedForExit ? 60.0f : 56.0f;
+        const float maxDistance = expandedForExit ? 112.0f : 96.0f;
+        const Vector mins(
+            playerOrigin.x - halfWidth,
+            playerOrigin.y - halfWidth,
+            playerOrigin.z + bottomOffset);
+        const Vector maxs(
+            playerOrigin.x + halfWidth,
+            playerOrigin.y + halfWidth,
+            playerOrigin.z + topOffset);
+
+        float rayEnter = 0.0f;
+        float rayExit = maxDistance;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const float direction = viewForward[axis];
+            const float start = eyePosition[axis];
+            if (std::fabs(direction) <= 0.0001f)
+            {
+                if (start < mins[axis] || start > maxs[axis])
+                    return false;
+                continue;
+            }
+
+            float axisEnter = (mins[axis] - start) / direction;
+            float axisExit = (maxs[axis] - start) / direction;
+            if (axisEnter > axisExit)
+                std::swap(axisEnter, axisExit);
+            rayEnter = (std::max)(rayEnter, axisEnter);
+            rayExit = (std::min)(rayExit, axisExit);
+            if (rayEnter > rayExit)
+                return false;
+        }
+
+        return rayExit >= 0.0f && rayEnter <= maxDistance;
+    }
+
     bool VrHandsAimIsFinite(const Vector& v)
     {
         return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -409,6 +573,159 @@ bool VR::ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot)
 }
 
 
+void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
+{
+    static int s_lastCandidateCount = -1;
+    const float contactNear = std::clamp(m_VRNearClip, 0.1f, 6.0f);
+    const float selfBodyNear = std::clamp(m_VRNearClipSelfBodyNearClip, 0.1f, 6.0f);
+
+    // Disabling adaptive mode preserves the old constant-near-plane behavior.
+    if (!m_VRNearClipAdaptive)
+    {
+        m_VRNearClipCharacterContactActive = false;
+        m_VRNearClipSelfBodyActive = false;
+        s_lastCandidateCount = -1;
+        m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
+        m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
+        m_RenderVRNearClipCharacterContactActive.store(1, std::memory_order_release);
+        return;
+    }
+
+    if (!localPlayer ||
+        !m_Game ||
+        !m_Game->m_EngineClient ||
+        !m_Game->m_ClientEntityList ||
+        !m_Game->m_EngineClient->IsInGame() ||
+        !VrHandsAimIsFinite(m_HmdPosAbs))
+    {
+        m_VRNearClipCharacterContactActive = false;
+        m_VRNearClipSelfBodyActive = false;
+        s_lastCandidateCount = -1;
+        m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
+        m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
+        m_RenderVRNearClipCharacterContactActive.store(0, std::memory_order_release);
+        return;
+    }
+
+    bool foundCharacter = false;
+    int candidateCount = 0;
+    float closestDistance = 1.0e30f;
+    for (int entityIndex = 1; entityIndex < static_cast<int>(Game::kMaxPlayers); ++entityIndex)
+    {
+        if (!AdaptiveNearClipIsConnectedPlayer(m_Game->m_EngineClient, entityIndex))
+            continue;
+
+        C_BaseEntity* character = AdaptiveNearClipGetClientEntity(
+            m_Game->m_ClientEntityList,
+            entityIndex);
+        // GetPlayerInfo distinguishes real player slots from weapons and props whose
+        // entity indices can also fall below Game::kMaxPlayers on small servers.
+        if (!character || character == localPlayer || !IsEntityAlive(character))
+            continue;
+
+        int team = 0;
+        if (!AdaptiveNearClipGetPlayerTeam(character, team) || (team != 2 && team != 3))
+            continue;
+
+        Vector characterOrigin{};
+        if (!AdaptiveNearClipGetAbsOrigin(character, characterOrigin))
+            continue;
+
+        const float distance = AdaptiveNearClipDistanceToCharacterCapsule(m_HmdPosAbs, characterOrigin);
+        if (!std::isfinite(distance))
+            continue;
+
+        foundCharacter = true;
+        ++candidateCount;
+        closestDistance = (std::min)(closestDistance, distance);
+    }
+
+    const float enterDistance = std::clamp(m_VRNearClipEnterDistance, 0.0f, 128.0f);
+    const float exitDistance = std::clamp(m_VRNearClipExitDistance, enterDistance, 192.0f);
+    const bool wasActive = m_VRNearClipCharacterContactActive;
+    if (m_VRNearClipCharacterContactActive)
+    {
+        if (!foundCharacter || closestDistance >= exitDistance)
+            m_VRNearClipCharacterContactActive = false;
+    }
+    else if (foundCharacter && closestDistance <= enterDistance)
+    {
+        m_VRNearClipCharacterContactActive = true;
+    }
+
+    if (candidateCount != s_lastCandidateCount)
+    {
+        Game::logMsg(
+            "[VR][NearClip] player-slot candidates=%d closest=%.2f enter=%.2f exit=%.2f clip=%.2f",
+            candidateCount,
+            foundCharacter ? closestDistance : -1.0f,
+            enterDistance,
+            exitDistance,
+            contactNear);
+        s_lastCandidateCount = candidateCount;
+    }
+    if (wasActive != m_VRNearClipCharacterContactActive)
+    {
+        Game::logMsg(
+            "[VR][NearClip] contact %s closest=%.2f effective=%.2f",
+            m_VRNearClipCharacterContactActive ? "entered" : "exited",
+            foundCharacter ? closestDistance : -1.0f,
+            m_VRNearClipCharacterContactActive ? contactNear : 6.0f);
+    }
+
+    const bool wasSelfBodyActive = m_VRNearClipSelfBodyActive;
+    bool selfBodyViewHit = false;
+    Vector localPlayerOrigin{};
+    const bool selfBodyEligible =
+        m_VRNearClipSelfBody &&
+        m_FirstPersonBodyEnabled &&
+        !m_IsThirdPersonCamera &&
+        AdaptiveNearClipGetAbsOrigin(localPlayer, localPlayerOrigin);
+    if (selfBodyEligible)
+    {
+        const float configuredDegrees = std::clamp(
+            m_VRNearClipSelfBodyLookDownDegrees,
+            0.0f,
+            85.0f);
+        const float requiredDegrees = m_VRNearClipSelfBodyActive
+            ? std::max(0.0f, configuredDegrees - 10.0f)
+            : configuredDegrees;
+        constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
+        const float minimumLookDownSine = std::sin(requiredDegrees * kDegreesToRadians);
+        selfBodyViewHit = AdaptiveNearClipViewHitsSelfBody(
+            m_HmdPosAbs,
+            m_HmdForward,
+            localPlayerOrigin,
+            minimumLookDownSine,
+            m_VRNearClipSelfBodyActive);
+    }
+    m_VRNearClipSelfBodyActive = selfBodyEligible && selfBodyViewHit;
+    if (wasSelfBodyActive != m_VRNearClipSelfBodyActive)
+    {
+        Game::logMsg(
+            "[VR][NearClip] self-body %s effective=%.2f",
+            m_VRNearClipSelfBodyActive ? "entered" : "exited",
+            m_VRNearClipSelfBodyActive ? selfBodyNear :
+                (m_VRNearClipCharacterContactActive ? contactNear : 6.0f));
+    }
+
+    float effectiveNear = 6.0f;
+    if (m_VRNearClipCharacterContactActive)
+        effectiveNear = contactNear;
+    if (m_VRNearClipSelfBodyActive)
+        effectiveNear = m_VRNearClipCharacterContactActive
+            ? (std::min)(effectiveNear, selfBodyNear)
+            : selfBodyNear;
+
+    m_VRNearClipClosestCharacterDistance.store(
+        foundCharacter ? closestDistance : -1.0f,
+        std::memory_order_relaxed);
+    m_VRNearClipEffective.store(effectiveNear, std::memory_order_relaxed);
+    m_RenderVRNearClipCharacterContactActive.store(
+        (m_VRNearClipCharacterContactActive || m_VRNearClipSelfBodyActive) ? 1 : 0,
+        std::memory_order_release);
+}
+
 void VR::UpdateTracking()
 {
     GetPoses();
@@ -458,6 +775,7 @@ void VR::UpdateTracking()
         m_StairStepCameraSmoothLastT = {};
         m_ThirdPersonMapLoadCooldownPending = true;
         m_ThirdPersonMapLoadCooldownEnd = {};
+        UpdateAdaptiveNearClip(nullptr);
         if (m_ServerHookFallbackPending)
             m_ServerHookFallbackCheckTime = {};
 
@@ -1295,6 +1613,10 @@ void VR::UpdateTracking()
 
     m_HmdPosAbsPrev = m_HmdPosAbs;
     m_SetupOriginPrev = m_SetupOrigin;
+
+    // Character proximity is sampled on this update thread. RenderView consumes
+    // only the published atomics, so queued rendering never dereferences entities.
+    UpdateAdaptiveNearClip(localPlayer);
 
     GetViewParameters();
     m_Ipd = m_EyeToHeadTransformPosRight.x * 2;
