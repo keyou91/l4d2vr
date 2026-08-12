@@ -2432,6 +2432,7 @@ namespace
     {
         { "2026-05-23_auto_mat_queue_mode_default_false", "AutoMatQueueMode", "false" },
         { "2026-06-12_vr_recommended_video_settings_default_false", "VrRecommendedVideoSettingsEnabled", "false" },
+        { "2026-08-12_vr_hands_gloves_disable_once", "VrHandsGlovesEnabled", "false" },
     };
 
     std::unordered_set<std::string> ReadAppliedConfigMigrationIds(const std::filesystem::path& statePath)
