@@ -1,8 +1,8 @@
 VRScale=43.2
 VRNearClipAdaptive=true
 VRNearClipSelfBody=true
-VRNearClipViewmodel=true
-VRNearClipViewmodelNearClip=0.1
+VRNearClipSelfBodyLookDownDegrees=35.0
+VRNearClipSelfBodyNearClip=0.8
 VRNearClip=0.8
 VRNearClipEnterDistance=18.0
 VRNearClipExitDistance=26.0
@@ -33,8 +33,8 @@ AntiAliasing=0
 ReShadeVRCompat=false
 EyeRenderTargetMatchProjectionAspect=false
 
-ThirdPersonCameraFollowHmd=false
-ThirdPersonVRCameraOffset=38,0,0
+ThirdPersonCameraFollowHmd=true
+ThirdPersonVRCameraOffset=38
 ThirdPersonFrontVRCameraOffset=80,30,-15
 ThirdPersonFrontViewOverlayWidthMeters=0.3
 ThirdPersonFrontViewOverlayFov=20

@@ -359,21 +359,14 @@ public:
 	// Adaptive mode keeps the normal, depth-stable near plane at ordinary distances
 	// and only publishes m_VRNearClip when the HMD enters a character's bounds.
 	bool m_VRNearClipAdaptive = true;
-	// Disables near-plane slicing only for the local first-person body draw. It
-	// never changes the main scene projection and does not control the viewmodel.
 	bool m_VRNearClipSelfBody = true;
-	// Re-renders only the native viewmodel segment in front of the scene near
-	// plane against a private depth buffer. This preserves clothing/skin depth
-	// ordering without changing the world projection or forcing the model on top.
-	bool m_VRNearClipViewmodel = true;
-	float m_VRNearClipViewmodelNearClip = 0.1f;
+	float m_VRNearClipSelfBodyLookDownDegrees = 35.0f;
+	float m_VRNearClipSelfBodyNearClip = 0.8f;
 	float m_VRNearClipEnterDistance = 18.0f;
 	float m_VRNearClipExitDistance = 26.0f;
 	bool m_VRNearClipCharacterContactActive = false;
+	bool m_VRNearClipSelfBodyActive = false;
 	std::atomic<int> m_RenderVRNearClipCharacterContactActive{ 0 };
-	std::atomic<int> m_ViewmodelNearOverlayRecordingActive{ 0 };
-	std::atomic<int> m_ViewmodelNearOverlayExecutionActive{ 0 };
-	std::atomic<int> m_ViewmodelNearOverlayDrawActive{ 0 };
 	std::atomic<float> m_VRNearClipEffective{ 0.8f };
 	std::atomic<float> m_VRNearClipClosestCharacterDistance{ -1.0f };
 
@@ -448,9 +441,9 @@ public:
 	// Only a small whitelist of explicitly-handled cases will remain first-person.
 	bool m_ThirdPersonDefault = false;
 	// If true, third-person camera placement/orbit follows HMD head turns.
-	// If false, the rendered view and tracked HMD translation remain fully active, but the
-	// third-person camera offset stays locked to the body-facing yaw captured on entry.
-	bool m_ThirdPersonCameraFollowHmd = false;
+	// If false, the rendered view still follows the HMD, but the third-person camera center/offset
+	// is placed using the engine/body camera basis so turning your head does not drag the whole camera.
+	bool m_ThirdPersonCameraFollowHmd = true;
 	// Optional front-observer mode for third-person rendering.
 	// When enabled, 3P camera is placed in front of the player and looks back at the player.
 	bool m_ThirdPersonFrontViewEnabled = false;
@@ -487,12 +480,8 @@ public:
 	// Used to keep aim line / overlays in sync when third-person camera is smoothed.
 	Vector m_ThirdPersonRenderCenter = { 0,0,0 };
 	bool m_ThirdPersonPoseInitialized = false;
-	float m_ThirdPersonPlacementYaw = 0.0f;
-	float m_ThirdPersonPlacementTurnOffsetPrev = 0.0f;
 	float m_ThirdPersonCameraSmoothing = 0.85f;
-	// Normal third-person camera local offset in the body-locked camera basis:
-	// x=back/forward (positive farther back), y=right/left, z=up/down.
-	Vector m_ThirdPersonVRCameraOffset = { 38.0f, 0.0f, 0.0f };
+	float m_ThirdPersonVRCameraOffset = 38.0f;
 	// Front-view third-person camera local offset in camera basis:
 	// x=front/back, y=left/right, z=up/down.
 	Vector m_ThirdPersonFrontVRCameraOffset = { 80.0f, 30.0f, -15.0f };
@@ -1259,7 +1248,6 @@ public:
 	IDirect3DSurface9* m_D9RightEyeSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeDepthSurface = nullptr;
-	IDirect3DSurface9* m_D9ViewmodelNearDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9NekoPostLinearInputSurface = nullptr;

@@ -67,23 +67,6 @@ namespace dxvk {
             D3DCOLOR color;
         };
 
-        static VR* VrGetViewmodelNearOverlayVr() {
-            return g_Game != nullptr ? g_Game->m_VR : nullptr;
-        }
-
-        static bool VrViewmodelNearOverlayExecutionActive() {
-            VR* const vr = VrGetViewmodelNearOverlayVr();
-            return vr != nullptr
-                && vr->m_ViewmodelNearOverlayExecutionActive.load(std::memory_order_acquire) != 0;
-        }
-
-        static bool VrSuppressViewmodelNearOverlayDraw() {
-            VR* const vr = VrGetViewmodelNearOverlayVr();
-            return vr != nullptr
-                && vr->m_ViewmodelNearOverlayExecutionActive.load(std::memory_order_acquire) != 0
-                && vr->m_ViewmodelNearOverlayDrawActive.load(std::memory_order_acquire) == 0;
-        }
-
         static bool VrAimLineColorVisible(uint32_t color) {
             return ((color >> 24) & 0xFFu) != 0u;
         }
@@ -2307,9 +2290,6 @@ namespace dxvk {
         IDirect3DSurface9* pDestSurface,
         const RECT* pDestRect,
         D3DTEXTUREFILTERTYPE Filter) {
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         D3D9Surface* dst = static_cast<D3D9Surface*>(pDestSurface);
@@ -2576,9 +2556,6 @@ namespace dxvk {
         IDirect3DSurface9* pSurface,
         const RECT* pRect,
         D3DCOLOR           Color) {
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         D3D9Surface* dst = static_cast<D3D9Surface*>(pSurface);
@@ -2731,9 +2708,6 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetRenderTarget(
         DWORD              RenderTargetIndex,
         IDirect3DSurface9* pRenderTarget) {
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         if (unlikely(pRenderTarget == nullptr && RenderTargetIndex == 0))
@@ -2878,9 +2852,6 @@ namespace dxvk {
 
 
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetDepthStencilSurface(IDirect3DSurface9* pNewZStencil) {
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         D3D9Surface* ds = static_cast<D3D9Surface*>(pNewZStencil);
@@ -2983,9 +2954,6 @@ namespace dxvk {
         D3DCOLOR Color,
         float    Z,
         DWORD    Stencil) {
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         if (unlikely(!Count && pRects))
             return D3D_OK;
 
@@ -3195,9 +3163,6 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetViewport(const D3DVIEWPORT9* pViewport) {
         if (pViewport == nullptr)
             return D3DERR_INVALIDCALL;
-
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
 
         // Main menu/native VGUI is sensitive to Source observing the adjusted viewport.
         // Preserve the known-good a4a712bf behavior exactly for !IsInGame(): mutate the
@@ -3990,13 +3955,10 @@ namespace dxvk {
 
 
     HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetScissorRect(const RECT* pRect) {
-        if (pRect == nullptr)
-            return D3DERR_INVALIDCALL;
-
-        if (VrViewmodelNearOverlayExecutionActive())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
+
+        if (unlikely(pRect == nullptr))
+            return D3DERR_INVALIDCALL;
 
         if (unlikely(ShouldRecord()))
             return m_recorder->SetScissorRect(pRect);
@@ -4060,9 +4022,6 @@ namespace dxvk {
         D3DPRIMITIVETYPE PrimitiveType,
         UINT             StartVertex,
         UINT             PrimitiveCount) {
-        if (VrSuppressViewmodelNearOverlayDraw())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         if (unlikely(m_state.vertexDecl == nullptr))
@@ -4116,9 +4075,6 @@ namespace dxvk {
         UINT             NumVertices,
         UINT             StartIndex,
         UINT             PrimitiveCount) {
-        if (VrSuppressViewmodelNearOverlayDraw())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         if (unlikely(m_state.vertexDecl == nullptr))
@@ -4171,9 +4127,6 @@ namespace dxvk {
         UINT             PrimitiveCount,
         const void* pVertexStreamZeroData,
         UINT             VertexStreamZeroStride) {
-        if (VrSuppressViewmodelNearOverlayDraw())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         if (unlikely(m_state.vertexDecl == nullptr))
@@ -4227,9 +4180,6 @@ namespace dxvk {
         D3DFORMAT        IndexDataFormat,
         const void* pVertexStreamZeroData,
         UINT             VertexStreamZeroStride) {
-        if (VrSuppressViewmodelNearOverlayDraw())
-            return D3D_OK;
-
         D3D9DeviceLock lock = LockDevice();
 
         if (unlikely(m_state.vertexDecl == nullptr))

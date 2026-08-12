@@ -58,6 +58,26 @@
         }
     };
 
+    struct HooksWorldPoseStableTransformSamples
+    {
+        std::uint32_t count = 0u;
+        bool hemisphereValid = false;
+        float hemisphereX = 0.0f;
+        float hemisphereY = 0.0f;
+        float hemisphereZ = 0.0f;
+        float hemisphereW = 1.0f;
+        float sumX = 0.0f;
+        float sumY = 0.0f;
+        float sumZ = 0.0f;
+        float sumW = 0.0f;
+        Vector originSum{};
+
+        void Reset()
+        {
+            *this = HooksWorldPoseStableTransformSamples{};
+        }
+    };
+
     struct HooksWorldPoseBoneLayout
     {
         const uint8_t* studioHdr = nullptr;
@@ -77,6 +97,7 @@
     {
         const C_BaseEntity* entity = nullptr;
         const uint8_t* studioHdr = nullptr;
+        std::uint32_t poseLockGeneration = 0u;
         bool hmdToHeadValid = false;
         bool leftBendBodyLocalValid = false;
         bool rightBendBodyLocalValid = false;
@@ -99,6 +120,16 @@
         float hmdReferenceBodyYaw = 0.0f;
         Vector hmdReferenceLocalPosition{};
         vr_vm_stabilize::Mat3x4 hmdToHead{};
+        std::uint64_t localThirdPersonWarmupToken = 0u;
+        std::uint64_t headCalibrationStartTickMs = 0u;
+        std::uint64_t headCalibrationLastSampleTickMs = 0u;
+        std::uint64_t headCalibrationLastStereoSceneGeneration = 0u;
+        std::uint64_t headCalibrationReadyTickMs = 0u;
+        std::uint32_t headCalibrationEyeSampleCount = 0u;
+        bool headCalibrationComplete = false;
+        HooksWorldPoseStableTransformSamples hmdToHeadSamples{};
+        HooksWorldPoseStableTransformSamples neckReferenceSamples{};
+        HooksWorldPoseStableTransformSamples headReferenceSamples{};
         Vector leftBendBodyLocal{};
         Vector rightBendBodyLocal{};
         Vector leftTargetDirectionBodyLocal{};
@@ -126,11 +157,40 @@
         float visualBodyYaw = 0.0f;
         std::uint64_t visualBodyYawTickMs = 0u;
         std::uint64_t lastStereoSceneGeneration = 0u;
-        void Reset(const C_BaseEntity* newEntity, const uint8_t* newStudioHdr)
+
+        void ResetHeadCalibration()
+        {
+            hmdToHeadValid = false;
+            hmdToHeadUsesSourceEyeAngles = false;
+            hmdToHead = {};
+            hmdReferenceLocalPositionValid = false;
+            hmdReferenceBodyYawValid = false;
+            hmdReferenceBodyYaw = 0.0f;
+            hmdReferenceLocalPosition = {};
+            neckReferenceLocalValid = false;
+            headReferenceLocalValid = false;
+            neckReferenceLocal = {};
+            headReferenceLocal = {};
+            headCalibrationStartTickMs = 0u;
+            headCalibrationLastSampleTickMs = 0u;
+            headCalibrationLastStereoSceneGeneration = 0u;
+            headCalibrationReadyTickMs = 0u;
+            headCalibrationEyeSampleCount = 0u;
+            headCalibrationComplete = false;
+            hmdToHeadSamples.Reset();
+            neckReferenceSamples.Reset();
+            headReferenceSamples.Reset();
+        }
+
+        void Reset(
+            const C_BaseEntity* newEntity,
+            const uint8_t* newStudioHdr,
+            std::uint32_t newPoseLockGeneration)
         {
             *this = HooksWorldPoseCalibration{};
             entity = newEntity;
             studioHdr = newStudioHdr;
+            poseLockGeneration = newPoseLockGeneration;
         }
     };
 
@@ -3589,43 +3649,38 @@
         return true;
     }
 
-    inline bool HooksWorldPoseEnsureHeadOrientationCalibration(
+    inline bool HooksWorldPoseBuildHmdToHeadCalibrationSample(
         const vr_vm_stabilize::Mat3x4& hmdWorld,
         const vr_vm_stabilize::Mat3x4& sourceHead,
-        bool& calibrationValid,
-        vr_vm_stabilize::Mat3x4& hmdToHead)
+        vr_vm_stabilize::Mat3x4& outHmdToHead)
     {
-        if (!calibrationValid)
+        vr_vm_stabilize::Mat3x4 sourceRigid{};
+        vr_vm_stabilize::Mat3x4 inverseHmd{};
+        if (!HooksWorldPoseBuildRigidBoneTransform(
+                sourceHead,
+                sourceRigid))
         {
-            vr_vm_stabilize::Mat3x4 sourceRigid{};
-            vr_vm_stabilize::Mat3x4 inverseHmd{};
-            if (!HooksWorldPoseBuildRigidBoneTransform(
-                    sourceHead,
-                    sourceRigid))
-            {
-                return false;
-            }
-
-            vr_vm_stabilize::InvertTR(
-                hmdWorld,
-                inverseHmd);
-            vr_vm_stabilize::Mul(
-                inverseHmd,
-                sourceRigid,
-                hmdToHead);
-            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
-                    hmdToHead))
-            {
-                return false;
-            }
-
-            // Head position is constrained separately against Source's native
-            // head. This matrix only retains the stable HMD-to-head rotation.
-            hmdToHead.m[0][3] = 0.0f;
-            hmdToHead.m[1][3] = 0.0f;
-            hmdToHead.m[2][3] = 0.0f;
-            calibrationValid = true;
+            return false;
         }
+
+        vr_vm_stabilize::InvertTR(
+            hmdWorld,
+            inverseHmd);
+        vr_vm_stabilize::Mul(
+            inverseHmd,
+            sourceRigid,
+            outHmdToHead);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(
+                outHmdToHead))
+        {
+            return false;
+        }
+
+        // Head position is constrained separately against Source's native
+        // head. This matrix only retains the HMD-to-head rotation sample.
+        outHmdToHead.m[0][3] = 0.0f;
+        outHmdToHead.m[1][3] = 0.0f;
+        outHmdToHead.m[2][3] = 0.0f;
         return true;
     }
 
@@ -4336,49 +4391,6 @@
             outLocal);
     }
 
-    inline bool HooksWorldPoseEnsureHeadChainReference(
-        const HooksWorldPoseBoneLayout& layout,
-        const vr_vm_stabilize::Mat3x4* sourceBones,
-        HooksWorldPoseCalibration& calibration)
-    {
-        if (calibration.neckReferenceLocalValid &&
-            calibration.headReferenceLocalValid)
-        {
-            return true;
-        }
-        if (layout.neck < 0 ||
-            layout.neck >= layout.numBones ||
-            layout.head < 0 ||
-            layout.head >= layout.numBones)
-        {
-            return false;
-        }
-
-        vr_vm_stabilize::Mat3x4 neckLocal{};
-        vr_vm_stabilize::Mat3x4 headLocal{};
-        if (!HooksWorldPoseCaptureBoneLocalTransform(
-                layout,
-                sourceBones,
-                layout.neck,
-                neckLocal) ||
-            !HooksWorldPoseCaptureBoneLocalTransform(
-                layout,
-                sourceBones,
-                layout.head,
-                headLocal))
-        {
-            return false;
-        }
-
-        calibration.neckReferenceLocal =
-            neckLocal;
-        calibration.headReferenceLocal =
-            headLocal;
-        calibration.neckReferenceLocalValid = true;
-        calibration.headReferenceLocalValid = true;
-        return true;
-    }
-
     inline bool HooksWorldPoseRestoreBoneLocalTransform(
         const HooksWorldPoseBoneLayout& layout,
         int bone,
@@ -5007,6 +5019,7 @@
     inline bool HooksWorldPoseRestoreHeadChain(
         const HooksWorldPoseBoneLayout& layout,
         const HooksWorldPoseCalibration& calibration,
+        float weight,
         vr_vm_stabilize::Mat3x4* bones)
     {
         if (!calibration.neckReferenceLocalValid ||
@@ -5015,19 +5028,41 @@
             return false;
         }
 
-        bool changed =
-            HooksWorldPoseRestoreBoneLocalTransform(
-                layout,
-                layout.neck,
-                calibration.neckReferenceLocal,
-                bones);
-        changed =
-            HooksWorldPoseRestoreBoneLocalTransform(
-                layout,
-                layout.head,
-                calibration.headReferenceLocal,
-                bones) ||
-            changed;
+        weight = std::clamp(weight, 0.0f, 1.0f);
+        bool changed = false;
+        const std::array<int, 2> chain{
+            layout.neck,
+            layout.head,
+        };
+        const std::array<const vr_vm_stabilize::Mat3x4*, 2> references{
+            &calibration.neckReferenceLocal,
+            &calibration.headReferenceLocal,
+        };
+        for (size_t index = 0; index < chain.size(); ++index)
+        {
+            vr_vm_stabilize::Mat3x4 currentLocal{};
+            vr_vm_stabilize::Mat3x4 blendedLocal{};
+            if (!HooksWorldPoseCaptureBoneLocalTransform(
+                    layout,
+                    bones,
+                    chain[index],
+                    currentLocal) ||
+                !HooksWorldPoseBlendLocalTransform(
+                    currentLocal,
+                    *references[index],
+                    weight,
+                    blendedLocal))
+            {
+                continue;
+            }
+            changed =
+                HooksWorldPoseRestoreBoneLocalTransform(
+                    layout,
+                    chain[index],
+                    blendedLocal,
+                    bones) ||
+                changed;
+        }
         return changed;
     }
 
@@ -5257,6 +5292,280 @@
         out.m[1][3] = origin.y;
         out.m[2][3] = origin.z;
         return out;
+    }
+
+    inline bool HooksWorldPoseAccumulateStableTransformSample(
+        const vr_vm_stabilize::Mat3x4& sample,
+        HooksWorldPoseStableTransformSamples& samples)
+    {
+        HooksWorldPoseQuaternion rotation{};
+        const Vector origin = vr_vm_stabilize::GetOrigin(sample);
+        if (!HooksWorldPoseMatrixQuaternion(sample, rotation) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(origin))
+        {
+            return false;
+        }
+
+        if (!samples.hemisphereValid)
+        {
+            samples.hemisphereX = rotation.x;
+            samples.hemisphereY = rotation.y;
+            samples.hemisphereZ = rotation.z;
+            samples.hemisphereW = rotation.w;
+            samples.hemisphereValid = true;
+        }
+        const float hemisphereDot =
+            rotation.x * samples.hemisphereX +
+            rotation.y * samples.hemisphereY +
+            rotation.z * samples.hemisphereZ +
+            rotation.w * samples.hemisphereW;
+        if (!std::isfinite(hemisphereDot))
+            return false;
+        if (hemisphereDot < 0.0f)
+        {
+            rotation.x = -rotation.x;
+            rotation.y = -rotation.y;
+            rotation.z = -rotation.z;
+            rotation.w = -rotation.w;
+        }
+
+        samples.sumX += rotation.x;
+        samples.sumY += rotation.y;
+        samples.sumZ += rotation.z;
+        samples.sumW += rotation.w;
+        samples.originSum += origin;
+        ++samples.count;
+        return std::isfinite(samples.sumX) &&
+            std::isfinite(samples.sumY) &&
+            std::isfinite(samples.sumZ) &&
+            std::isfinite(samples.sumW) &&
+            HooksNativeViewmodelHandsOnlyVectorFinite(samples.originSum);
+    }
+
+    inline bool HooksWorldPoseFinalizeStableTransformSamples(
+        const HooksWorldPoseStableTransformSamples& samples,
+        vr_vm_stabilize::Mat3x4& out)
+    {
+        if (samples.count == 0u)
+            return false;
+        HooksWorldPoseQuaternion averageRotation{};
+        averageRotation.x = samples.sumX;
+        averageRotation.y = samples.sumY;
+        averageRotation.z = samples.sumZ;
+        averageRotation.w = samples.sumW;
+        if (!HooksWorldPoseNormalizeQuaternion(averageRotation))
+            return false;
+
+        const float inverseCount =
+            1.0f / static_cast<float>(samples.count);
+        const Vector averageOrigin =
+            samples.originSum * inverseCount;
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(averageOrigin))
+            return false;
+        out = HooksWorldPoseQuaternionMatrix(
+            averageRotation,
+            averageOrigin);
+        return HooksNativeViewmodelHandsOnlyMatrixFinite(out);
+    }
+
+    inline bool HooksWorldPoseUpdateStableHeadCalibration(
+        const HooksWorldPoseBoneLayout& layout,
+        const vr_vm_stabilize::Mat3x4* sourceBones,
+        const vr_vm_stabilize::Mat3x4& hmdWorld,
+        bool sourceEyeAnglesValid,
+        const QAngle& sourceEyeAngles,
+        std::uint64_t stereoSceneGeneration,
+        std::uint64_t now,
+        HooksWorldPoseCalibration& calibration)
+    {
+        // Do not substitute raw mstudiobone bind rotations here. Workshop
+        // survivor replacements can retarget the runtime head basis, and
+        // applying their raw studio rotation directly can reverse the head.
+        // Averaging the already-retargeted runtime basis removes transient
+        // idle/fire/transition tilt without losing custom-model conventions.
+        if (calibration.headCalibrationComplete)
+        {
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+        if (!sourceBones ||
+            layout.neck < 0 ||
+            layout.neck >= layout.numBones ||
+            layout.head < 0 ||
+            layout.head >= layout.numBones ||
+            stereoSceneGeneration == 0u)
+        {
+            return false;
+        }
+        if (calibration.headCalibrationLastStereoSceneGeneration ==
+                stereoSceneGeneration)
+        {
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+
+        // Sample at a bounded rate so the averaging window represents time,
+        // rather than the user's render refresh rate. If tracking disappears
+        // during initial calibration, discard the incomplete window instead
+        // of combining poses from two unrelated transitions.
+        constexpr std::uint64_t kHeadCalibrationSampleIntervalMs = 33u;
+        constexpr std::uint64_t kHeadCalibrationGapResetMs = 500u;
+        if (calibration.headCalibrationLastSampleTickMs != 0u &&
+            now > calibration.headCalibrationLastSampleTickMs +
+                kHeadCalibrationGapResetMs)
+        {
+            calibration.ResetHeadCalibration();
+        }
+        if (calibration.headCalibrationLastSampleTickMs != 0u &&
+            now < calibration.headCalibrationLastSampleTickMs +
+                kHeadCalibrationSampleIntervalMs)
+        {
+            calibration.headCalibrationLastStereoSceneGeneration =
+                stereoSceneGeneration;
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+
+        vr_vm_stabilize::Mat3x4 neckLocal{};
+        vr_vm_stabilize::Mat3x4 headLocal{};
+        vr_vm_stabilize::Mat3x4 hmdToHeadSample{};
+        if (!HooksWorldPoseCaptureBoneLocalTransform(
+                layout,
+                sourceBones,
+                layout.neck,
+                neckLocal) ||
+            !HooksWorldPoseCaptureBoneLocalTransform(
+                layout,
+                sourceBones,
+                layout.head,
+                headLocal))
+        {
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+
+        bool usedSourceEyeAngles = false;
+        if (sourceEyeAnglesValid)
+        {
+            usedSourceEyeAngles =
+                HooksWorldPoseBuildEyeToHeadCalibration(
+                    sourceEyeAngles,
+                    sourceBones[layout.head],
+                    hmdToHeadSample);
+        }
+        if (!usedSourceEyeAngles &&
+            !HooksWorldPoseBuildHmdToHeadCalibrationSample(
+                hmdWorld,
+                sourceBones[layout.head],
+                hmdToHeadSample))
+        {
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+
+        HooksWorldPoseStableTransformSamples hmdSamples =
+            calibration.hmdToHeadSamples;
+        HooksWorldPoseStableTransformSamples neckSamples =
+            calibration.neckReferenceSamples;
+        HooksWorldPoseStableTransformSamples headSamples =
+            calibration.headReferenceSamples;
+        if (!HooksWorldPoseAccumulateStableTransformSample(
+                hmdToHeadSample,
+                hmdSamples) ||
+            !HooksWorldPoseAccumulateStableTransformSample(
+                neckLocal,
+                neckSamples) ||
+            !HooksWorldPoseAccumulateStableTransformSample(
+                headLocal,
+                headSamples))
+        {
+            return calibration.hmdToHeadValid &&
+                calibration.neckReferenceLocalValid &&
+                calibration.headReferenceLocalValid;
+        }
+
+        calibration.hmdToHeadSamples = hmdSamples;
+        calibration.neckReferenceSamples = neckSamples;
+        calibration.headReferenceSamples = headSamples;
+        if (usedSourceEyeAngles)
+            ++calibration.headCalibrationEyeSampleCount;
+        if (calibration.headCalibrationStartTickMs == 0u)
+            calibration.headCalibrationStartTickMs = now;
+        calibration.headCalibrationLastSampleTickMs = now;
+        calibration.headCalibrationLastStereoSceneGeneration =
+            stereoSceneGeneration;
+
+        const std::uint64_t elapsed =
+            now >= calibration.headCalibrationStartTickMs
+                ? now - calibration.headCalibrationStartTickMs
+                : 0u;
+        constexpr std::uint32_t kHeadCalibrationMinimumSamples = 10u;
+        constexpr std::uint64_t kHeadCalibrationMinimumMs = 300u;
+        constexpr std::uint64_t kHeadCalibrationRefineMs = 2000u;
+        if (hmdSamples.count >= kHeadCalibrationMinimumSamples &&
+            elapsed >= kHeadCalibrationMinimumMs)
+        {
+            vr_vm_stabilize::Mat3x4 stableHmdToHead{};
+            vr_vm_stabilize::Mat3x4 stableNeckLocal{};
+            vr_vm_stabilize::Mat3x4 stableHeadLocal{};
+            if (HooksWorldPoseFinalizeStableTransformSamples(
+                    hmdSamples,
+                    stableHmdToHead) &&
+                HooksWorldPoseFinalizeStableTransformSamples(
+                    neckSamples,
+                    stableNeckLocal) &&
+                HooksWorldPoseFinalizeStableTransformSamples(
+                    headSamples,
+                    stableHeadLocal))
+            {
+                const bool wasReady = calibration.hmdToHeadValid;
+                stableHmdToHead.m[0][3] = 0.0f;
+                stableHmdToHead.m[1][3] = 0.0f;
+                stableHmdToHead.m[2][3] = 0.0f;
+                calibration.hmdToHead = stableHmdToHead;
+                calibration.neckReferenceLocal = stableNeckLocal;
+                calibration.headReferenceLocal = stableHeadLocal;
+                calibration.hmdToHeadValid = true;
+                calibration.neckReferenceLocalValid = true;
+                calibration.headReferenceLocalValid = true;
+                calibration.hmdToHeadUsesSourceEyeAngles =
+                    calibration.headCalibrationEyeSampleCount * 2u >=
+                    hmdSamples.count;
+                if (!wasReady)
+                    calibration.headCalibrationReadyTickMs = now;
+                if (elapsed >= kHeadCalibrationRefineMs)
+                    calibration.headCalibrationComplete = true;
+            }
+        }
+
+        return calibration.hmdToHeadValid &&
+            calibration.neckReferenceLocalValid &&
+            calibration.headReferenceLocalValid;
+    }
+
+    inline float HooksWorldPoseHeadCalibrationBlendWeight(
+        const HooksWorldPoseCalibration& calibration,
+        std::uint64_t now)
+    {
+        if (!calibration.hmdToHeadValid ||
+            calibration.headCalibrationReadyTickMs == 0u ||
+            now < calibration.headCalibrationReadyTickMs)
+        {
+            return 0.0f;
+        }
+        constexpr float kHeadCalibrationBlendMs = 200.0f;
+        float weight = std::clamp(
+            static_cast<float>(
+                now - calibration.headCalibrationReadyTickMs) /
+                kHeadCalibrationBlendMs,
+            0.0f,
+            1.0f);
+        return weight * weight * (3.0f - 2.0f * weight);
     }
 
     inline bool HooksWorldPoseBlendLocalTransform(
@@ -6191,12 +6500,27 @@
         HooksWorldPoseCalibration& calibration =
             g_HooksWorldPoseCalibrations[
                 static_cast<size_t>(info.entity_index)];
+        const std::uint32_t poseLockGeneration =
+            vr->m_NativeViewmodelLeftHandFreezeGeneration.load(
+                std::memory_order_acquire);
         if (calibration.entity != entity ||
-            calibration.studioHdr != layout->studioHdr)
+            calibration.studioHdr != layout->studioHdr ||
+            calibration.poseLockGeneration != poseLockGeneration)
         {
             calibration.Reset(
                 entity,
-                layout->studioHdr);
+                layout->studioHdr,
+                poseLockGeneration);
+        }
+        if (localPlayer &&
+            vr->m_IsThirdPersonCamera &&
+            localThirdPersonWarmupUntil != 0u &&
+            calibration.localThirdPersonWarmupToken !=
+                localThirdPersonWarmupUntil)
+        {
+            calibration.ResetHeadCalibration();
+            calibration.localThirdPersonWarmupToken =
+                localThirdPersonWarmupUntil;
         }
         if (calibration.lastStereoSceneGeneration >
                 stereoSceneGeneration)
@@ -6205,11 +6529,7 @@
         }
         calibration.lastStereoSceneGeneration =
             stereoSceneGeneration;
-        const bool headChainReferenceValid =
-            HooksWorldPoseEnsureHeadChainReference(
-                *layout,
-                sourceBones,
-                calibration);
+        bool headChainReferenceValid = false;
 
         vr_vm_stabilize::Mat3x4 hmdWorld{};
         vr_vm_stabilize::Mat3x4 leftControllerWorld{};
@@ -6358,40 +6678,27 @@
                     game,
                     entity,
                     sourceEyeAngles);
-            if (!calibration.hmdToHeadValid)
-            {
-                if (sourceEyeAnglesValid &&
-                    HooksWorldPoseBuildEyeToHeadCalibration(
-                        sourceEyeAngles,
-                        sourceBones[layout->head],
-                        calibration.hmdToHead))
-                {
-                    calibration.hmdToHeadValid = true;
-                    calibration.hmdToHeadUsesSourceEyeAngles = true;
-                }
-                else
-                {
-                    // Guarded compatibility fallback for unusual servers
-                    // where m_angEyeAngles is unavailable. The supported L4D2
-                    // path above is deterministic and does not learn an
-                    // animated first-frame head pose.
-                    const bool calibrationReady =
-                        HooksWorldPoseEnsureHeadOrientationCalibration(
-                            hmdWorld,
-                            sourceBones[layout->head],
-                            calibration.hmdToHeadValid,
-                            calibration.hmdToHead);
-                    if (calibrationReady &&
-                        calibration.hmdToHeadValid)
-                    {
-                        calibration.hmdToHeadUsesSourceEyeAngles = false;
-                    }
-                }
-            }
+            headChainReferenceValid =
+                HooksWorldPoseUpdateStableHeadCalibration(
+                    *layout,
+                    sourceBones,
+                    hmdWorld,
+                    sourceEyeAnglesValid,
+                    sourceEyeAngles,
+                    stereoSceneGeneration,
+                    worldPoseNow,
+                    calibration);
         }
         const bool hmdPoseValid =
             hmdTransformValid &&
             calibration.hmdToHeadValid;
+        const float headTrackingWeight =
+            hmdPoseValid
+                ? trackingWeight *
+                    HooksWorldPoseHeadCalibrationBlendWeight(
+                        calibration,
+                        worldPoseNow)
+                : 0.0f;
         if (hmdPoseValid)
         {
             vr_vm_stabilize::Mul(
@@ -6624,6 +6931,7 @@
                     HooksWorldPoseRestoreHeadChain(
                         *layout,
                         calibration,
+                        headTrackingWeight,
                         bones) ||
                     changed;
                 // Let the stable neck absorb a modest share of the HMD
@@ -6637,7 +6945,8 @@
                         layout->neck,
                         layout->head,
                         headTarget,
-                        kHmdNeckRotationShare,
+                        kHmdNeckRotationShare *
+                            headTrackingWeight,
                         bones) ||
                     changed;
             }
@@ -6649,7 +6958,7 @@
                     *layout,
                     layout->head,
                     headTarget,
-                    trackingWeight,
+                    headTrackingWeight,
                     bones) ||
                 changed;
         }
@@ -7058,6 +7367,18 @@
                     headAnglesValid ? finalHeadAngles.x : 0.0f,
                     headAnglesValid ? finalHeadAngles.y : 0.0f,
                     headAnglesValid ? finalHeadAngles.z : 0.0f);
+                Game::logMsg(
+                    "[VR][WorldPose] IK head calibration samples=%u eyeSamples=%u complete=%d blend=%.2f token=%llu generation=%u",
+                    static_cast<unsigned int>(
+                        calibration.hmdToHeadSamples.count),
+                    static_cast<unsigned int>(
+                        calibration.headCalibrationEyeSampleCount),
+                    calibration.headCalibrationComplete ? 1 : 0,
+                    headTrackingWeight,
+                    static_cast<unsigned long long>(
+                        calibration.localThirdPersonWarmupToken),
+                    static_cast<unsigned int>(
+                        calibration.poseLockGeneration));
                 Game::logMsg(
                     "[VR][WorldPose] IK offsets rawLocal=(%.1f %.1f %.1f) leanM=(%.3f %.3f) leanMaxM=%.3f neck=%.2f->%.2f",
                     rawHmdLocalDelta.x,

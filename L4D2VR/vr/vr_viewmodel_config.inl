@@ -1218,9 +1218,12 @@ void VR::ParseConfigFile()
     m_VRScale = getFloat("VRScale", m_VRScale);
     m_VRNearClipAdaptive = getBool("VRNearClipAdaptive", m_VRNearClipAdaptive);
     m_VRNearClipSelfBody = getBool("VRNearClipSelfBody", m_VRNearClipSelfBody);
-    m_VRNearClipViewmodel = getBool("VRNearClipViewmodel", m_VRNearClipViewmodel);
-    m_VRNearClipViewmodelNearClip = std::clamp(
-        getFloat("VRNearClipViewmodelNearClip", m_VRNearClipViewmodelNearClip),
+    m_VRNearClipSelfBodyLookDownDegrees = std::clamp(
+        getFloat("VRNearClipSelfBodyLookDownDegrees", m_VRNearClipSelfBodyLookDownDegrees),
+        0.0f,
+        85.0f);
+    m_VRNearClipSelfBodyNearClip = std::clamp(
+        getFloat("VRNearClipSelfBodyNearClip", m_VRNearClipSelfBodyNearClip),
         0.1f,
         6.0f);
     m_VRNearClip = std::clamp(
@@ -1280,19 +1283,12 @@ void VR::ParseConfigFile()
     m_AutoRecenterHardDistance = std::max(
         m_AutoRecenterSoftStartDistance + 1.0f,
         getFloat("AutoRecenterHardDistance", m_AutoRecenterHardDistance));
-    {
-        // Backward-compatible parsing:
-        // - old form: ThirdPersonVRCameraOffset=38
-        // - new form: ThirdPersonVRCameraOffset=38,0,0
-        const float legacyBack = getFloat("ThirdPersonVRCameraOffset", m_ThirdPersonVRCameraOffset.x);
-        const Vector legacyDefault = { legacyBack, 0.0f, 0.0f };
-        m_ThirdPersonVRCameraOffset = getVector3("ThirdPersonVRCameraOffset", legacyDefault);
-    }
+    m_ThirdPersonVRCameraOffset = std::max(0.0f, getFloat("ThirdPersonVRCameraOffset", m_ThirdPersonVRCameraOffset));
     {
         // Backward-compatible parsing:
         // - old form: ThirdPersonFrontVRCameraOffset=80
         // - new form: ThirdPersonFrontVRCameraOffset=80,0,0
-        const float legacyForward = getFloat("ThirdPersonFrontVRCameraOffset", m_ThirdPersonFrontVRCameraOffset.x);
+        const float legacyForward = getFloat("ThirdPersonFrontVRCameraOffset", m_ThirdPersonVRCameraOffset);
         const Vector frontDefault = { legacyForward, 0.0f, 0.0f };
         m_ThirdPersonFrontVRCameraOffset = getVector3("ThirdPersonFrontVRCameraOffset", frontDefault);
         // Optional per-axis overrides for easier live tuning.

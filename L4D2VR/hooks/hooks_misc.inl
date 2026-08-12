@@ -19340,7 +19340,7 @@ namespace
         HooksQueuedNativeViewmodelHandsOnlyClipState* m_State = nullptr;
     };
 
-    struct HooksQueuedNearPlaneDepthClampState
+    struct HooksQueuedNativeViewmodelDepthClampState
     {
         std::atomic<long> refs{ 1 };
         VR* vr = nullptr;
@@ -19348,7 +19348,7 @@ namespace
         DWORD oldClipping = TRUE;
         bool active = false;
 
-        explicit HooksQueuedNearPlaneDepthClampState(VR* inVr)
+        explicit HooksQueuedNativeViewmodelDepthClampState(VR* inVr)
             : vr(inVr)
         {
         }
@@ -19398,24 +19398,24 @@ namespace
             device = nullptr;
         }
 
-        ~HooksQueuedNearPlaneDepthClampState()
+        ~HooksQueuedNativeViewmodelDepthClampState()
         {
             End();
         }
     };
 
-    class HooksQueuedNearPlaneDepthClampBeginFunctor final : public CFunctor
+    class HooksQueuedNativeViewmodelDepthClampBeginFunctor final : public CFunctor
     {
     public:
-        explicit HooksQueuedNearPlaneDepthClampBeginFunctor(
-            HooksQueuedNearPlaneDepthClampState* state)
+        explicit HooksQueuedNativeViewmodelDepthClampBeginFunctor(
+            HooksQueuedNativeViewmodelDepthClampState* state)
             : m_State(state)
         {
             if (m_State)
                 m_State->AddRef();
         }
 
-        ~HooksQueuedNearPlaneDepthClampBeginFunctor() override
+        ~HooksQueuedNativeViewmodelDepthClampBeginFunctor() override
         {
             if (m_State)
                 m_State->Release();
@@ -19442,21 +19442,21 @@ namespace
 
     private:
         std::atomic<long> m_RefCount{ 0 };
-        HooksQueuedNearPlaneDepthClampState* m_State = nullptr;
+        HooksQueuedNativeViewmodelDepthClampState* m_State = nullptr;
     };
 
-    class HooksQueuedNearPlaneDepthClampEndFunctor final : public CFunctor
+    class HooksQueuedNativeViewmodelDepthClampEndFunctor final : public CFunctor
     {
     public:
-        explicit HooksQueuedNearPlaneDepthClampEndFunctor(
-            HooksQueuedNearPlaneDepthClampState* state)
+        explicit HooksQueuedNativeViewmodelDepthClampEndFunctor(
+            HooksQueuedNativeViewmodelDepthClampState* state)
             : m_State(state)
         {
             if (m_State)
                 m_State->AddRef();
         }
 
-        ~HooksQueuedNearPlaneDepthClampEndFunctor() override
+        ~HooksQueuedNativeViewmodelDepthClampEndFunctor() override
         {
             if (m_State)
                 m_State->Release();
@@ -19483,13 +19483,13 @@ namespace
 
     private:
         std::atomic<long> m_RefCount{ 0 };
-        HooksQueuedNearPlaneDepthClampState* m_State = nullptr;
+        HooksQueuedNativeViewmodelDepthClampState* m_State = nullptr;
     };
 
-    class ScopedNearPlaneDepthClamp
+    class ScopedNativeViewmodelDepthClamp
     {
     public:
-        ScopedNearPlaneDepthClamp(
+        ScopedNativeViewmodelDepthClamp(
             bool enabled,
             VR* vr,
             int queueMode,
@@ -19506,15 +19506,15 @@ namespace
                     if (!s_loggedMissingQueue.exchange(true, std::memory_order_acq_rel))
                     {
                         Game::logMsg(
-                            "[VR][NearClip] local-body depth-clamp skipped: Source render call queue unavailable");
+                            "[VR][NearClip] viewmodel depth-clamp skipped: Source render call queue unavailable");
                     }
                     return;
                 }
 
                 m_CallQueue = callQueue;
-                m_QueuedState = new HooksQueuedNearPlaneDepthClampState(vr);
+                m_QueuedState = new HooksQueuedNativeViewmodelDepthClampState(vr);
                 m_CallQueue->QueueFunctor(
-                    new HooksQueuedNearPlaneDepthClampBeginFunctor(m_QueuedState));
+                    new HooksQueuedNativeViewmodelDepthClampBeginFunctor(m_QueuedState));
                 return;
             }
 
@@ -19532,12 +19532,12 @@ namespace
             m_Active = true;
         }
 
-        ~ScopedNearPlaneDepthClamp()
+        ~ScopedNativeViewmodelDepthClamp()
         {
             if (m_QueuedState)
             {
                 m_CallQueue->QueueFunctor(
-                    new HooksQueuedNearPlaneDepthClampEndFunctor(m_QueuedState));
+                    new HooksQueuedNativeViewmodelDepthClampEndFunctor(m_QueuedState));
                 m_QueuedState->Release();
                 m_QueuedState = nullptr;
                 m_CallQueue = nullptr;
@@ -19554,115 +19554,9 @@ namespace
 
     private:
         ICallQueue* m_CallQueue = nullptr;
-        HooksQueuedNearPlaneDepthClampState* m_QueuedState = nullptr;
+        HooksQueuedNativeViewmodelDepthClampState* m_QueuedState = nullptr;
         IDirect3DDevice9* m_Device = nullptr;
         DWORD m_OldClipping = TRUE;
-        bool m_Active = false;
-    };
-
-    class HooksViewmodelNearOverlayDrawFunctor final : public CFunctor
-    {
-    public:
-        HooksViewmodelNearOverlayDrawFunctor(VR* vr, bool begin)
-            : m_VR(vr), m_Begin(begin)
-        {
-        }
-
-        int AddRef() override
-        {
-            return static_cast<int>(m_Refs.fetch_add(1, std::memory_order_acq_rel) + 1);
-        }
-
-        int Release() override
-        {
-            const long remaining = m_Refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
-            if (remaining == 0)
-                delete this;
-            return static_cast<int>(remaining);
-        }
-
-        void operator()() override
-        {
-            if (!m_VR)
-                return;
-            if (m_Begin)
-            {
-                m_VR->m_ViewmodelNearOverlayDrawActive.fetch_add(
-                    1, std::memory_order_acq_rel);
-            }
-            else
-            {
-                int active = m_VR->m_ViewmodelNearOverlayDrawActive.load(
-                    std::memory_order_acquire);
-                while (active > 0 &&
-                    !m_VR->m_ViewmodelNearOverlayDrawActive.compare_exchange_weak(
-                        active,
-                        active - 1,
-                        std::memory_order_acq_rel))
-                {
-                }
-            }
-        }
-
-    private:
-        std::atomic<long> m_Refs{ 0 };
-        VR* m_VR = nullptr;
-        bool m_Begin = false;
-    };
-
-    class ScopedViewmodelNearOverlayDraw
-    {
-    public:
-        ScopedViewmodelNearOverlayDraw(
-            bool enabled,
-            VR* vr,
-            int queueMode,
-            ICallQueue* callQueue)
-            : m_VR(vr), m_CallQueue(queueMode != 0 ? callQueue : nullptr)
-        {
-            if (!enabled || !m_VR)
-                return;
-            if (queueMode != 0)
-            {
-                if (!m_CallQueue)
-                    return;
-                m_CallQueue->QueueFunctor(
-                    new HooksViewmodelNearOverlayDrawFunctor(m_VR, true));
-            }
-            else
-            {
-                m_VR->m_ViewmodelNearOverlayDrawActive.fetch_add(
-                    1, std::memory_order_acq_rel);
-            }
-            m_Active = true;
-        }
-
-        ~ScopedViewmodelNearOverlayDraw()
-        {
-            if (!m_Active || !m_VR)
-                return;
-            if (m_CallQueue)
-            {
-                m_CallQueue->QueueFunctor(
-                    new HooksViewmodelNearOverlayDrawFunctor(m_VR, false));
-            }
-            else
-            {
-                int active = m_VR->m_ViewmodelNearOverlayDrawActive.load(
-                    std::memory_order_acquire);
-                while (active > 0 &&
-                    !m_VR->m_ViewmodelNearOverlayDrawActive.compare_exchange_weak(
-                        active,
-                        active - 1,
-                        std::memory_order_acq_rel))
-                {
-                }
-            }
-        }
-
-    private:
-        VR* m_VR = nullptr;
-        ICallQueue* m_CallQueue = nullptr;
         bool m_Active = false;
     };
 
@@ -22925,29 +22819,6 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
                     anchoredBodyBones);
             }
 
-            // VRNearClipSelfBody protects only this local first-person body draw.
-            // Keep the eye projection and shared world depth buffer unchanged, but
-            // clamp geometry that crosses the eye near plane instead of slicing it.
-            const int localBodyNearClipQueueMode =
-                (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
-            CRefPtr<IMatRenderContext> localBodyNearClipContext;
-            ICallQueue* localBodyNearClipCallQueue = nullptr;
-            if (m_VR->m_VRNearClipSelfBody &&
-                localBodyNearClipQueueMode != 0 &&
-                m_Game->m_MaterialSystem)
-            {
-                localBodyNearClipContext =
-                    m_Game->m_MaterialSystem->GetRenderContext();
-                localBodyNearClipCallQueue =
-                    HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
-                        localBodyNearClipContext);
-            }
-            ScopedNearPlaneDepthClamp localBodyDepthClamp(
-                m_VR->m_VRNearClipSelfBody,
-                m_VR,
-                localBodyNearClipQueueMode,
-                localBodyNearClipCallQueue);
-
             hkDrawModelExecute.fOriginal(
                 ecx,
                 state,
@@ -23815,16 +23686,16 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
         (drawEntityIsViewmodelClass || HooksModelNameIsViewmodel(lowerModelForCalibrationHide)) &&
         !nativeViewmodelArmsOrHandsModel;
 
-    const bool viewmodelNearOverlayDraw =
+    const bool protectNativeViewmodelNearClip =
         drawUsesNativeViewmodelDepthHack &&
         !shadowDepthDraw &&
         m_VR &&
-        m_VR->m_ViewmodelNearOverlayRecordingActive.load(
-            std::memory_order_acquire) != 0;
-    const int viewmodelNearOverlayQueueMode =
+        m_VR->m_IsVREnabled &&
+        m_VR->m_VRNearClipSelfBody;
+    const int viewmodelNearClipQueueMode =
         (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
     CRefPtr<IMatRenderContext> viewmodelDepthContext;
-    ICallQueue* viewmodelNearOverlayCallQueue = nullptr;
+    ICallQueue* viewmodelNearClipCallQueue = nullptr;
     if (drawUsesNativeViewmodelDepthHack &&
         !shadowDepthDraw &&
         m_VR &&
@@ -23841,20 +23712,24 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
             // actual model submission preserves command order in queued mode;
             // Source already restores 0..1 after the list completes.
             viewmodelDepthContext->DepthRange(0.0f, 1.0f);
-            if (viewmodelNearOverlayDraw && viewmodelNearOverlayQueueMode != 0)
+
+            if (protectNativeViewmodelNearClip && viewmodelNearClipQueueMode != 0)
             {
-                viewmodelNearOverlayCallQueue =
+                viewmodelNearClipCallQueue =
                     HooksNativeViewmodelHandsOnlyGetSourceRenderCallQueue(
                         viewmodelDepthContext);
             }
         }
     }
 
-    ScopedViewmodelNearOverlayDraw viewmodelNearOverlayDrawScope(
-        viewmodelNearOverlayDraw,
+    // Keep the scene projection and depth mapping intact. D3DRS_CLIPPING=FALSE
+    // selects Vulkan depth clamping only around this native viewmodel's queued
+    // draw submissions; world geometry therefore still occludes it correctly.
+    ScopedNativeViewmodelDepthClamp viewmodelDepthClamp(
+        protectNativeViewmodelNearClip,
         m_VR,
-        viewmodelNearOverlayQueueMode,
-        viewmodelNearOverlayCallQueue);
+        viewmodelNearClipQueueMode,
+        viewmodelNearClipCallQueue);
 
     if (info.pModel && hideArms && !m_Game->m_CachedArmsModel)
     {

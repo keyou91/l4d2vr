@@ -1,229 +1,9 @@
 namespace
 {
-	class HooksViewmodelNearOverlayPassState
-	{
-	public:
-		explicit HooksViewmodelNearOverlayPassState(VR* owner, int eyeIndex)
-			: m_VR(owner), m_EyeIndex(eyeIndex)
-		{
-		}
-
-		void AddRef()
-		{
-			m_Refs.fetch_add(1, std::memory_order_acq_rel);
-		}
-
-		void Release()
-		{
-			if (m_Refs.fetch_sub(1, std::memory_order_acq_rel) == 1)
-				delete this;
-		}
-
-		void Begin()
-		{
-			if (m_Active || !m_VR || !m_VR->m_D9ViewmodelNearDepthSurface)
-				return;
-
-			IDirect3DSurface9* const target = m_EyeIndex == 1
-				? m_VR->m_D9LeftEyeSurface
-				: m_VR->m_D9RightEyeSurface;
-			if (!target || FAILED(target->GetDevice(&m_Device)) || !m_Device)
-				return;
-
-			m_Device->GetRenderTarget(0, &m_OldRenderTarget);
-			m_Device->GetDepthStencilSurface(&m_OldDepthSurface);
-			m_HasOldViewport = SUCCEEDED(m_Device->GetViewport(&m_OldViewport));
-
-			D3DSURFACE_DESC targetDesc{};
-			D3DVIEWPORT9 overlayViewport{};
-			if (FAILED(target->GetDesc(&targetDesc)))
-			{
-				End();
-				return;
-			}
-			overlayViewport.X = 0;
-			overlayViewport.Y = 0;
-			overlayViewport.Width = targetDesc.Width;
-			overlayViewport.Height = targetDesc.Height;
-			overlayViewport.MinZ = 0.0f;
-			overlayViewport.MaxZ = 1.0f;
-
-			if (FAILED(m_Device->SetRenderTarget(0, target)) ||
-				FAILED(m_Device->SetDepthStencilSurface(m_VR->m_D9ViewmodelNearDepthSurface)) ||
-				FAILED(m_Device->SetViewport(&overlayViewport)) ||
-				FAILED(m_Device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0, 1.0f, 0)))
-			{
-				End();
-				return;
-			}
-
-			m_VR->m_ViewmodelNearOverlayDrawActive.store(0, std::memory_order_release);
-			m_VR->m_ViewmodelNearOverlayExecutionActive.store(1, std::memory_order_release);
-			m_Active = true;
-		}
-
-		void End()
-		{
-			if (m_VR)
-			{
-				m_VR->m_ViewmodelNearOverlayDrawActive.store(0, std::memory_order_release);
-				m_VR->m_ViewmodelNearOverlayExecutionActive.store(0, std::memory_order_release);
-			}
-
-			if (m_Device)
-			{
-				if (m_OldRenderTarget)
-					m_Device->SetRenderTarget(0, m_OldRenderTarget);
-				m_Device->SetDepthStencilSurface(m_OldDepthSurface);
-				if (m_HasOldViewport)
-					m_Device->SetViewport(&m_OldViewport);
-			}
-
-			if (m_OldRenderTarget)
-			{
-				m_OldRenderTarget->Release();
-				m_OldRenderTarget = nullptr;
-			}
-			if (m_OldDepthSurface)
-			{
-				m_OldDepthSurface->Release();
-				m_OldDepthSurface = nullptr;
-			}
-			if (m_Device)
-			{
-				m_Device->Release();
-				m_Device = nullptr;
-			}
-			m_HasOldViewport = false;
-			m_Active = false;
-		}
-
-	private:
-		~HooksViewmodelNearOverlayPassState()
-		{
-			End();
-		}
-
-		std::atomic<long> m_Refs{ 1 };
-		VR* m_VR = nullptr;
-		int m_EyeIndex = 0;
-		IDirect3DDevice9* m_Device = nullptr;
-		IDirect3DSurface9* m_OldRenderTarget = nullptr;
-		IDirect3DSurface9* m_OldDepthSurface = nullptr;
-		D3DVIEWPORT9 m_OldViewport{};
-		bool m_HasOldViewport = false;
-		bool m_Active = false;
-	};
-
-	class HooksViewmodelNearOverlayPassFunctor final : public CFunctor
-	{
-	public:
-		HooksViewmodelNearOverlayPassFunctor(
-			HooksViewmodelNearOverlayPassState* state,
-			bool begin)
-			: m_State(state), m_Begin(begin)
-		{
-			if (m_State)
-				m_State->AddRef();
-		}
-
-		~HooksViewmodelNearOverlayPassFunctor() override
-		{
-			if (m_State)
-				m_State->Release();
-		}
-
-		int AddRef() override
-		{
-			return static_cast<int>(m_Refs.fetch_add(1, std::memory_order_acq_rel) + 1);
-		}
-
-		int Release() override
-		{
-			const long remaining = m_Refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
-			if (remaining == 0)
-				delete this;
-			return static_cast<int>(remaining);
-		}
-
-		void operator()() override
-		{
-			if (!m_State)
-				return;
-			if (m_Begin)
-				m_State->Begin();
-			else
-				m_State->End();
-		}
-
-	private:
-		std::atomic<long> m_Refs{ 0 };
-		HooksViewmodelNearOverlayPassState* m_State = nullptr;
-		bool m_Begin = false;
-	};
-
-	class ScopedViewmodelNearOverlayPass
-	{
-	public:
-		ScopedViewmodelNearOverlayPass(
-			VR* vr,
-			int eyeIndex,
-			int queueMode,
-			ICallQueue* callQueue)
-			: m_CallQueue(queueMode != 0 ? callQueue : nullptr)
-		{
-			if (!vr)
-				return;
-			m_State = new HooksViewmodelNearOverlayPassState(vr, eyeIndex);
-			if (queueMode != 0)
-			{
-				if (!m_CallQueue)
-				{
-					m_State->Release();
-					m_State = nullptr;
-					return;
-				}
-				m_CallQueue->QueueFunctor(
-					new HooksViewmodelNearOverlayPassFunctor(m_State, true));
-			}
-			else
-			{
-				m_State->Begin();
-			}
-		}
-
-		~ScopedViewmodelNearOverlayPass()
-		{
-			if (!m_State)
-				return;
-			if (m_CallQueue)
-			{
-				m_CallQueue->QueueFunctor(
-					new HooksViewmodelNearOverlayPassFunctor(m_State, false));
-			}
-			else
-			{
-				m_State->End();
-			}
-			m_State->Release();
-			m_State = nullptr;
-		}
-
-		bool IsValid() const
-		{
-			return m_State != nullptr;
-		}
-
-	private:
-		ICallQueue* m_CallQueue = nullptr;
-		HooksViewmodelNearOverlayPassState* m_State = nullptr;
-	};
-
 	enum class HooksNekoPostPass : int
 	{
 		Outside = 0,
 		MainEye,
-		NearOverlay,
 		Scope,
 		RearMirror,
 	};
@@ -248,7 +28,6 @@ namespace
 		switch (pass)
 		{
 		case HooksNekoPostPass::MainEye: return "main-eye";
-		case HooksNekoPostPass::NearOverlay: return "near-overlay";
 		case HooksNekoPostPass::Scope: return "scope";
 		case HooksNekoPostPass::RearMirror: return "rear-mirror";
 		default: return "outside";
@@ -4852,9 +4631,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				kWorldPoseThirdPersonWarmupMs,
 			std::memory_order_release);
 	}
-	if (!renderThirdPerson)
-		m_VR->m_ThirdPersonPoseInitialized = false;
-
 	// This is the only authoritative camera decision used by FirstPersonBody.
 	// Death first-person locks and in-eye observer modes deliberately make
 	// renderThirdPerson false, so life/observer/view-entity checks must remain
@@ -4980,9 +4756,9 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					0.1f,
 					6.0f);
 			}
-			// The normal viewmodel segment shares the scene projection and depth, so
-			// world geometry still occludes it correctly. A second private-depth pass
-			// below renders only the segment in front of this near plane.
+			// Viewmodels share the scene projection so their depth values remain
+			// directly comparable with the world depth buffer. Their near-plane
+			// clipping is suppressed per draw when VRNearClipSelfBody is enabled.
 			view.zNearViewmodel = view.zNear;
 			// Native Source viewmodels use a separate projection plus a compressed
 			// 0..0.1 depth range so they always draw over nearby world geometry.
@@ -5078,24 +4854,23 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			yaw -= 360.0f * std::floor((yaw + 180.0f) / 360.0f);
 			return yaw;
 		};
-	const float thirdPersonTurnOffset = wrapYawDeg((queueMode == 0)
-		? m_VR->m_RotationOffset
-		: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire));
-
 	// Recenter the VR anchors once per threshold when yaw turns left/right a lot.
 	// Requirement: if yaw turns beyond 60° (left or right), do a one-shot ResetPosition.
 	// Note: this now applies in both first-person and third-person rendering.
 	{
 		static bool s_yawResetInit = false;
 		static float s_yawResetBase = 0.0f;
+		const float bodyYaw = (queueMode == 0)
+			? m_VR->m_RotationOffset
+			: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire);
 		if (!s_yawResetInit)
 		{
-			s_yawResetBase = thirdPersonTurnOffset;
+			s_yawResetBase = bodyYaw;
 			s_yawResetInit = true;
 		}
 		else
 		{
-			float diff = thirdPersonTurnOffset - s_yawResetBase;
+			float diff = bodyYaw - s_yawResetBase;
 			// Normalize to [-180, 180] to handle wrap-around.
 			diff -= 360.0f * std::floor((diff + 180.0f) / 360.0f);
 			if (std::fabs(diff) >= 60.0f)
@@ -5110,7 +4885,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					// an atomic request instead of doing that from the render thread.
 					m_VR->m_ResetPositionDeferredPending.store(1u, std::memory_order_release);
 				}
-				s_yawResetBase = thirdPersonTurnOffset;
+				s_yawResetBase = bodyYaw;
 			}
 		}
 	}
@@ -5132,46 +4907,46 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		ResetTpWallColl();
 	if (renderThirdPerson)
 	{
-		// Third-person uses two independent angle bases:
-		//  1) renderCamAng is the HMD view orientation. It remains fully rotational.
-		//  2) cameraBasisAng places the camera offset. In body-locked mode it keeps the
-		//     yaw captured on third-person entry and only follows explicit turn-offset changes.
-		//     HMD/controller pitch and yaw therefore cannot translate the whole camera, while
-		//     the tracked HMD center still carries real positional 6DoF.
+		// Third-person uses two different angle bases:
+		//  1) renderCamAng: the orientation the user actually looks through this frame.
+		//     This should continue to follow the HMD so head turning still looks around naturally.
+		//  2) cameraBasisAng: the basis used to place the third-person camera center behind/in front of
+		//     the player. When decoupled from HMD, head turning no longer drags the whole camera
+		//     position/orbit, while roomscale translation still moves it.
 		QAngle renderCamAng(viewAngles.x, viewAngles.y, viewAngles.z);
 		if (m_VR->m_HmdForward.IsZero())
 			renderCamAng = engineCamAngles;
-		const QAngle trackedHmdAng = renderCamAng;
 
-		const bool preserveEngineCameraPlacement = stateIsDeadOrObserver || hasViewEntityOverride;
 		QAngle cameraBasisAng = renderCamAng;
-		if (preserveEngineCameraPlacement)
-		{
+		if (!m_VR->m_ThirdPersonCameraFollowHmd || m_VR->m_HmdForward.IsZero())
 			cameraBasisAng = engineCamAngles;
-			m_VR->m_ThirdPersonPoseInitialized = false;
-		}
-		else if (materialPreviewActive || !m_VR->m_ThirdPersonCameraFollowHmd)
+		static thread_local bool s_materialPreviewPlacementInitialized = false;
+		static thread_local float s_materialPreviewPlacementYaw = 0.0f;
+		static thread_local float s_materialPreviewTurnOffsetPrev = 0.0f;
+		if (materialPreviewActive)
 		{
-			if (!m_VR->m_ThirdPersonPoseInitialized)
+			const float materialPreviewTurnOffset = wrapYawDeg((queueMode == 0)
+				? m_VR->m_RotationOffset
+				: m_VR->m_RenderRotationOffset.load(std::memory_order_acquire));
+			if (!s_materialPreviewPlacementInitialized)
 			{
-				m_VR->m_ThirdPersonPlacementYaw = wrapYawDeg(viewAngles.y);
-				m_VR->m_ThirdPersonPlacementTurnOffsetPrev = thirdPersonTurnOffset;
-				m_VR->m_ThirdPersonPoseInitialized = true;
+				s_materialPreviewPlacementYaw = wrapYawDeg(viewAngles.y);
+				s_materialPreviewTurnOffsetPrev = materialPreviewTurnOffset;
+				s_materialPreviewPlacementInitialized = true;
 			}
 			else
 			{
 				const float turnDelta = wrapYawDeg(
-					thirdPersonTurnOffset - m_VR->m_ThirdPersonPlacementTurnOffsetPrev);
-				m_VR->m_ThirdPersonPlacementYaw = wrapYawDeg(
-					m_VR->m_ThirdPersonPlacementYaw + turnDelta);
-				m_VR->m_ThirdPersonPlacementTurnOffsetPrev = thirdPersonTurnOffset;
+					materialPreviewTurnOffset - s_materialPreviewTurnOffsetPrev);
+				s_materialPreviewPlacementYaw = wrapYawDeg(
+					s_materialPreviewPlacementYaw + turnDelta);
+				s_materialPreviewTurnOffsetPrev = materialPreviewTurnOffset;
 			}
-
-			cameraBasisAng.Init(0.0f, m_VR->m_ThirdPersonPlacementYaw, 0.0f);
+			cameraBasisAng.Init(0.0f, s_materialPreviewPlacementYaw, 0.0f);
 		}
 		else
 		{
-			m_VR->m_ThirdPersonPoseInitialized = false;
+			s_materialPreviewPlacementInitialized = false;
 		}
 
 		if (thirdPersonFrontViewActive)
@@ -5185,7 +4960,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			}
 			else
 			{
-				frontYaw = thirdPersonTurnOffset;
+				frontYaw = m_VR->m_RotationOffset;
+				frontYaw -= 360.0f * std::floor((frontYaw + 180.0f) / 360.0f);
 			}
 
 			frontYaw = wrapYawDeg(frontYaw + 180.0f);
@@ -5218,11 +4994,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		const float ipd = (m_VR->m_Ipd * m_VR->m_IpdScale * m_VR->m_VRScale);
 		const float eyeZ = (m_VR->m_EyeZ * m_VR->m_VRScale);
-		Vector trackedHmdForward;
-		QAngle::AngleVectors(trackedHmdAng, &trackedHmdForward, nullptr, nullptr);
-		const Vector trackedEyeCenter =
-			(m_VR->GetViewOriginLeft() + m_VR->GetViewOriginRight()) * 0.5f;
-		const Vector trackedHmdCenter = trackedEyeCenter + (trackedHmdForward * eyeZ);
 
 		// Treat camera origin as "head center", apply SteamVR eye-to-head offsets.
 		// If we're forcing third-person (state) while the engine is in first-person, use HMD position to synthesize a stable 3p camera.
@@ -5231,32 +5002,35 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 		// If stateWantsThirdPerson is true, always synthesize from HMD to avoid camera "jumping"
 		// between setup.origin and HmdPosAbs.
 		Vector baseCenter;
-		if (preserveEngineCameraPlacement)
+		bool baseCenterUsesTrackedAnchor = false;
+		if (materialPreviewActive)
 		{
-			// Death, observer and scripted cameras keep their authored engine position.
-			baseCenter = engineCamOrigin;
+			Vector trackedHmdForward;
+			QAngle::AngleVectors(renderCamAng, &trackedHmdForward, nullptr, nullptr);
+			const Vector trackedEyeCenter =
+				(m_VR->GetViewOriginLeft() + m_VR->GetViewOriginRight()) * 0.5f;
+			baseCenter = trackedEyeCenter + (trackedHmdForward * eyeZ);
+			baseCenterUsesTrackedAnchor = true;
 		}
-		else if (!materialPreviewActive &&
-			m_VR->m_ThirdPersonCameraFollowHmd &&
-			(engineThirdPersonNow || customWalkThirdPersonNow))
+		else if (stateWantsThirdPerson)
 		{
-			// Legacy follow mode keeps the engine's shoulder-camera origin.
-			baseCenter = engineCamOrigin;
+			// Dead/observer camera must follow engine view, not HMD position.
+			baseCenter = stateIsDeadOrObserver ? engineCamOrigin : m_VR->m_HmdPosAbs;
+			baseCenterUsesTrackedAnchor = !stateIsDeadOrObserver;
 		}
 		else
 		{
-			// Body-locked mode synthesizes the third-person camera from the current tracked HMD center.
-			// This retains render-rate HMD translation (leaning/approaching) without importing
-			// the engine camera orbit that can be driven by HMD or controller viewangles.
-			baseCenter = trackedHmdCenter;
-			if (queueMode != 0)
-			{
-				// Shift only the body/world part of the tracked pose into the Source scene
-				// frame. The OpenVR local pose remains untouched, so leaning, approaching,
-				// side-stepping and vertical HMD movement are still true 6DoF.
-				baseCenter += queuedThirdPersonBodyPhaseCorrection;
-			}
+			baseCenter = (engineThirdPersonNow || customWalkThirdPersonNow)
+				? engineCamOrigin
+				: m_VR->m_HmdPosAbs;
+			baseCenterUsesTrackedAnchor =
+				!engineThirdPersonNow && !customWalkThirdPersonNow;
 		}
+		// Keep the multicore model-jitter fix from be529d59: whenever the
+		// restored camera path uses a tracked render anchor, align its body/world
+		// phase with Source's queued scene without changing the camera policy.
+		if (queueMode != 0 && baseCenterUsesTrackedAnchor)
+			baseCenter += queuedThirdPersonBodyPhaseCorrection;
 		Vector camCenter = baseCenter + (basisFwd * (-eyeZ));
 		if (thirdPersonFrontViewActive)
 		{
@@ -5272,16 +5046,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				+ (basisRight * configuredOffset.y)
 				+ (basisUp * configuredOffset.z);
 		}
-		else
+		else if (m_VR->m_ThirdPersonVRCameraOffset > 0.0f)
 		{
-			const Vector& configuredOffset = m_VR->m_ThirdPersonVRCameraOffset;
-			camCenter = camCenter
-				+ (basisFwd * (-configuredOffset.x))
-				+ (basisRight * configuredOffset.y)
-				+ (basisUp * configuredOffset.z);
+			camCenter = camCenter +
+				(basisFwd * (-m_VR->m_ThirdPersonVRCameraOffset));
 		}
 		// Camera collision: clamp camera distance when something blocks the line from the anchor to the desired camera.
-		// This prevents the third-person render camera from going through walls when any local camera offset axis is used.
+		// This prevents the third-person render camera from going through walls (common when using ThirdPersonVRCameraOffset).
 		if (queueMode == 0 && m_Game && m_Game->m_EngineTrace && !hasViewEntityOverride)
 		{
 			const Vector desiredCamCenter = camCenter;
@@ -5531,18 +5302,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			if (m_VR->m_IsVREnabled)
 				m_VR->BeginVrHandsEyeRender(eyeView, eyeIndex == 1 ? 0 : 1);
 
-			constexpr int kRenderViewDrawViewmodel = 1 << 0;
-			const float viewmodelNear = std::clamp(
-				m_VR->m_VRNearClipViewmodelNearClip,
-				0.1f,
-				6.0f);
-			const bool renderViewmodelNearOverlay =
-				m_VR->m_VRNearClipViewmodel &&
-				m_VR->m_D9ViewmodelNearDepthSurface &&
-				!renderThirdPerson &&
-				(whatToDraw & kRenderViewDrawViewmodel) != 0 &&
-				eyeView.zNear > viewmodelNear + 0.001f;
-
 			struct FirstPersonBodyEyeSceneScope
 			{
 				LONG previousOverride = 0;
@@ -5659,73 +5418,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					firstPersonBodyActualFirstPerson,
 					!playerIncap);
 				callOriginalRenderView(eyeView, eyeHud, nClearFlags, whatToDraw);
-			}
-
-			// Split the native viewmodel at the scene near plane. The normal pass
-			// above owns [sceneNear, sceneFar] and therefore keeps exact world-depth
-			// occlusion. This pass owns [viewmodelNear, sceneNear] on a private depth
-			// surface; every fragment in that interval is physically in front of all
-			// visible scene geometry, so compositing it directly cannot punch through
-			// a wall. Unlike depth clamping, layers of the arm/clothing retain their
-			// distinct depth values.
-			if (renderViewmodelNearOverlay)
-			{
-				ICallQueue* overlayCallQueue = nullptr;
-				if (queueMode != 0)
-				{
-					overlayCallQueue = rndrContext->GetCallQueue();
-					if (!overlayCallQueue)
-					{
-						static std::atomic<bool> s_loggedMissingOverlayQueue{ false };
-						if (!s_loggedMissingOverlayQueue.exchange(true, std::memory_order_acq_rel))
-						{
-							Game::logMsg(
-								"[VR][NearClip] close-viewmodel pass skipped: Source render call queue unavailable");
-						}
-					}
-				}
-
-				if (queueMode == 0 || overlayCallQueue)
-				{
-					CViewSetup overlayView = eyeView;
-					CViewSetup overlayHud = eyeHud;
-					overlayView.zNearViewmodel = viewmodelNear;
-					overlayView.zFarViewmodel = eyeView.zNear;
-					overlayHud.zNearViewmodel = viewmodelNear;
-					overlayHud.zFarViewmodel = eyeView.zNear;
-
-					ScopedViewmodelNearOverlayPass overlayPass(
-						m_VR,
-						eyeIndex,
-						queueMode,
-						overlayCallQueue);
-					if (overlayPass.IsValid())
-					{
-						ScopedNekoPostProbePass nekoPostProbePass(
-							rndrContext,
-							queueMode,
-							nekoPostProbeFrameSerial,
-							HooksNekoPostPass::NearOverlay,
-							eyeIndex,
-							eyeTexture,
-							false);
-						const int previousRecording =
-							m_VR->m_ViewmodelNearOverlayRecordingActive.exchange(
-								1, std::memory_order_acq_rel);
-						// Never clear or post-process the eye a second time. DXVK freezes
-						// the eye color/private depth targets during this marked pass and
-						// accepts draw calls only while a native viewmodel submission is
-						// bracketed by dDrawModelExecute.
-						callOriginalRenderView(
-							overlayView,
-							overlayHud,
-							0,
-							whatToDraw);
-						m_VR->m_ViewmodelNearOverlayRecordingActive.store(
-							previousRecording,
-							std::memory_order_release);
-					}
-				}
 			}
 
 			if (m_VR->m_IsVREnabled)
