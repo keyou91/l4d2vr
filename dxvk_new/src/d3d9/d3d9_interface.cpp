@@ -330,8 +330,10 @@ namespace dxvk {
 
     if (SUCCEEDED(result)
      && ppReturnedDeviceInterface != nullptr
-     && *ppReturnedDeviceInterface != nullptr
-     && !noHmd)
+     && *ppReturnedDeviceInterface != nullptr)
+      // The private bridge only retains the already-created D3D9 device; it
+      // does not initialize OpenVR.  Keep it available in -nohmd as well so
+      // passive desktop diagnostics can inspect native sampler/RT state.
       Direct3DCreateVRImpl(*ppReturnedDeviceInterface, &g_D3DVR9);
 
     return result;

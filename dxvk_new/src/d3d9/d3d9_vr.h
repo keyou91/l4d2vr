@@ -40,6 +40,10 @@ IDirect3DVR9 : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE GetBackBufferData(SharedTextureHolder* backBufferData) = 0;
   virtual HRESULT STDMETHODCALLTYPE BeginSourceFrameOwnership() = 0;
   virtual HRESULT STDMETHODCALLTYPE EndSourceFrameOwnership() = 0;
+  // Diagnostics need the live D3D9 device even when -nohmd skips all VR
+  // render-target allocation.  Keep this at the end of the private interface
+  // so existing method indices remain stable.
+  virtual HRESULT STDMETHODCALLTYPE GetD3DDevice(IDirect3DDevice9** ppDevice) = 0;
 };
 
 #ifdef _MSC_VER

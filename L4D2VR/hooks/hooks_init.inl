@@ -181,6 +181,118 @@ namespace
 
 bool Hooks::s_ServerUnderstandsVR = false;
 
+bool Hooks::InitializeNoHmdNekoPostProbe()
+{
+	static std::atomic<bool> s_initializationAttempted{ false };
+	bool expected = false;
+	if (!s_initializationAttempted.compare_exchange_strong(
+		expected,
+		true,
+		std::memory_order_acq_rel,
+		std::memory_order_acquire))
+	{
+		return hkDrawScreenSpaceRectangle.pTarget != nullptr &&
+			hkDrawScreenSpaceRectangle.isEnabled;
+	}
+
+	Game::logMsg(
+		"[VR][NekoPostDesktopBaseline] init=1 mode=minimal-nohmd commandLine=%s",
+		GetCommandLineA() ? GetCommandLineA() : "<null>");
+
+	HMODULE materialModule = nullptr;
+	for (int attempt = 0; attempt < 600 && !materialModule; ++attempt)
+	{
+		materialModule = GetModuleHandleA("materialsystem.dll");
+		if (!materialModule)
+			Sleep(50);
+	}
+	if (!materialModule)
+	{
+		Game::logMsg(
+			"[VR][NekoPostDesktopBaseline] init=0 reason=materialsystem-timeout");
+		return false;
+	}
+
+	using CreateInterfaceFn = void* (__cdecl*)(const char*, int*);
+	const auto createInterface = reinterpret_cast<CreateInterfaceFn>(
+		GetProcAddress(materialModule, "CreateInterface"));
+	if (!createInterface)
+	{
+		Game::logMsg(
+			"[VR][NekoPostDesktopBaseline] init=0 reason=create-interface-missing module=%p",
+			materialModule);
+		return false;
+	}
+
+	int returnCode = 0;
+	IMaterialSystem* materialSystem = nullptr;
+	IMatRenderContext* context = nullptr;
+	for (int attempt = 0; attempt < 600 && !context; ++attempt)
+	{
+		if (!materialSystem)
+		{
+			materialSystem = static_cast<IMaterialSystem*>(
+				createInterface("VMaterialSystem080", &returnCode));
+		}
+		if (materialSystem)
+			context = materialSystem->GetRenderContext();
+		if (!context)
+			Sleep(50);
+	}
+	if (!materialSystem)
+	{
+		Game::logMsg(
+			"[VR][NekoPostDesktopBaseline] init=0 reason=material-interface-missing code=%d",
+			returnCode);
+		return false;
+	}
+
+	if (!context)
+	{
+		Game::logMsg(
+			"[VR][NekoPostDesktopBaseline] init=0 reason=render-context-missing");
+		return false;
+	}
+
+	void** const liveVtable = *reinterpret_cast<void***>(context);
+	DWORD vtableRva = 0;
+	DWORD targetRva = 0;
+	void* const pristineTarget = HooksResolvePristineVtableTarget(
+		materialModule,
+		liveVtable,
+		104,
+		&vtableRva,
+		&targetRva);
+	void* const liveTarget = liveVtable ? liveVtable[104] : nullptr;
+
+	const MH_STATUS initializeStatus = MH_Initialize();
+	const bool minHookReady =
+		initializeStatus == MH_OK ||
+		initializeStatus == MH_ERROR_ALREADY_INITIALIZED;
+	const bool created =
+		minHookReady &&
+		pristineTarget &&
+		hkDrawScreenSpaceRectangle.createHook(
+			pristineTarget,
+			reinterpret_cast<LPVOID>(&dDrawScreenSpaceRectangle)) == 0;
+	const bool enabled = created &&
+		hkDrawScreenSpaceRectangle.enableHook() == 0;
+
+	Game::logMsg(
+		"[VR][NekoPostDesktopBaseline] init=%d mh=%d live=%p raw=%p vtableRva=%08lX targetRva=%08lX hookCreated=%d hookEnabled=%d",
+		enabled ? 1 : 0,
+		static_cast<int>(initializeStatus),
+		liveTarget,
+		pristineTarget,
+		static_cast<unsigned long>(vtableRva),
+		static_cast<unsigned long>(targetRva),
+		created ? 1 : 0,
+		enabled ? 1 : 0);
+
+	context->Release();
+	return enabled;
+}
+
 Hooks::Hooks(Game* game)
 {
 	if (MH_Initialize() != MH_OK)

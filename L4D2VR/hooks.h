@@ -225,6 +225,11 @@ public:
 
 	~Hooks();
 
+	// -nohmd exits before Game/VR/Hooks construction.  Install only the raw
+	// DrawScreenSpaceRectangle detour needed for the passive Neko desktop
+	// baseline probe, without starting OpenVR or enabling any gameplay hooks.
+	static bool InitializeNoHmdNekoPostProbe();
+
 	int initSourceHooks();
 
 	// Detour functions

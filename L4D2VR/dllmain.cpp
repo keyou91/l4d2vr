@@ -2648,6 +2648,10 @@ DWORD WINAPI InitL4D2VR(HMODULE hModule)
     if (IsNoHmdLaunchArgPresent())
     {
         EnsureNoHmdAutoexecCrosshair();
+		// The normal Game constructor immediately initializes OpenVR, so -nohmd
+		// intentionally skips it.  Keep a passive, material-only Neko probe alive
+		// for desktop/VR output comparison without changing desktop rendering.
+		Hooks::InitializeNoHmdNekoPostProbe();
         return 0;
     }
 

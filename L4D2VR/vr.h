@@ -806,10 +806,10 @@ public:
 	// Diagnostic escape hatch only. The per-eye full/small inputs are now valid,
 	// so disabling this combo would intentionally diverge from desktop Neko.
 	bool  m_NekoEnginePostVRDisableNekoBloom = false;
-	// Diagnostic fallback: keep Left4Neko's native _rt_FullFrameFB source. In VR
-	// that FP16 copy contains gamma-encoded LDR eye values, while Neko's tonemappers
-	// expect a linear source and therefore lift blacks/midtones severely.
-	bool  m_NekoEnginePostVRUseNativeFullFrameSource = false;
+	// Preserve Left4Neko's native dual-input contract: _rt_smallfb0 plus the FP16
+	// _rt_FullFrameFB. The passive -nohmd baseline confirms both are intentional;
+	// VR should take over the output target without rewriting these inputs.
+	bool  m_NekoEnginePostVRUseNativeFullFrameSource = true;
 	// Preserve the desktop Neko pipeline's F16 HDR scene until its final
 	// tonemap/sRGB pass. OpenVR still receives a separate LDR submit pair.
 	bool  m_NekoEnginePostVRHDRSceneInput = true;

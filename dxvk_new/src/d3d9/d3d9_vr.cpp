@@ -208,6 +208,15 @@ namespace dxvk {
       return m_device->EndSourceFrameOwnership() ? D3D_OK : D3DERR_INVALIDCALL;
     }
 
+    HRESULT STDMETHODCALLTYPE GetD3DDevice(IDirect3DDevice9** ppDevice) {
+      if (unlikely(ppDevice == nullptr))
+        return E_POINTER;
+
+      *ppDevice = m_device;
+      m_device->AddRef();
+      return D3D_OK;
+    }
+
   private:
 
     D3D9DeviceEx* m_device;

@@ -261,10 +261,13 @@ namespace
 		IDirect3DDevice9* device,
 		IDirect3DSurface9* source)
 	{
-		if (!stageBit || !device || !source)
+		if (!device || !source)
 			return;
-		if (g_NekoPostLumaProbeMask.fetch_or(
-			stageBit, std::memory_order_acq_rel) & stageBit)
+		// stageBit==0 is reserved for the bounded temporal probe. It deliberately
+		// bypasses the one-shot mask; its own cadence and lifetime are controlled by
+		// HooksNekoPostProbeTemporalState below.
+		if (stageBit && (g_NekoPostLumaProbeMask.fetch_or(
+			stageBit, std::memory_order_acq_rel) & stageBit))
 		{
 			return;
 		}
@@ -487,6 +490,107 @@ namespace
 				texture->Release();
 			base->Release();
 		}
+	}
+
+	void HooksNekoPostProbeTemporalState(
+		IDirect3DDevice9* device,
+		IDirect3DSurface9* outputSurface)
+	{
+		if (!device || !outputSurface ||
+			g_NekoPostProbeState.pass != HooksNekoPostPass::MainEye ||
+			(g_NekoPostProbeState.eyeIndex != 1 &&
+				g_NekoPostProbeState.eyeIndex != 2))
+		{
+			return;
+		}
+
+		// Capture paired eyes at 10 Hz for six seconds. The synchronous readback is
+		// intentionally short-lived and only active when NekoEnginePostProbeLog is
+		// enabled, so normal play does not retain this diagnostic cost.
+		static std::atomic<ULONGLONG> s_firstTick{ 0 };
+		static std::atomic<ULONGLONG> s_lastPairTick{ 0 };
+		static std::atomic<unsigned int> s_nextSequence{ 0 };
+		static std::atomic<unsigned int> s_pendingRightSequence{ 0 };
+		const ULONGLONG now = GetTickCount64();
+		ULONGLONG firstTick = s_firstTick.load(std::memory_order_acquire);
+		if (firstTick == 0)
+		{
+			s_firstTick.compare_exchange_strong(
+				firstTick, now, std::memory_order_acq_rel, std::memory_order_acquire);
+			firstTick = s_firstTick.load(std::memory_order_acquire);
+		}
+		const ULONGLONG elapsedMs = now >= firstTick ? now - firstTick : 0;
+		if (elapsedMs > 6000)
+			return;
+
+		unsigned int sequence = 0;
+		if (g_NekoPostProbeState.eyeIndex == 1)
+		{
+			ULONGLONG lastTick = s_lastPairTick.load(std::memory_order_acquire);
+			if (lastTick != 0 && now < lastTick + 100)
+				return;
+			if (!s_lastPairTick.compare_exchange_strong(
+				lastTick, now, std::memory_order_acq_rel, std::memory_order_acquire))
+			{
+				return;
+			}
+			sequence = s_nextSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+			s_pendingRightSequence.store(sequence, std::memory_order_release);
+		}
+		else
+		{
+			sequence = s_pendingRightSequence.exchange(0, std::memory_order_acq_rel);
+			if (sequence == 0)
+				return;
+		}
+
+		Game::logMsg(
+			"[VR][NekoPostTemporal] seq=%u elapsedMs=%llu frame=%llu eye=%d adaptedLum=%.6f tid=%lu",
+			sequence,
+			static_cast<unsigned long long>(elapsedMs),
+			static_cast<unsigned long long>(g_NekoPostProbeState.frameSerial),
+			g_NekoPostProbeState.eyeIndex,
+			Hooks::m_Game
+				? Hooks::m_Game->GetConVarFloat(
+					"mat_neko_engine_post_adapted_lum", -9999.0f)
+				: -9999.0f,
+			GetCurrentThreadId());
+
+		for (DWORD stage = 3; stage <= 4; ++stage)
+		{
+			IDirect3DBaseTexture9* base = nullptr;
+			if (FAILED(device->GetTexture(stage, &base)) || !base)
+				continue;
+			IDirect3DTexture9* texture = nullptr;
+			if (SUCCEEDED(base->QueryInterface(
+				__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&texture))) &&
+				texture)
+			{
+				IDirect3DSurface9* surface = nullptr;
+				if (SUCCEEDED(texture->GetSurfaceLevel(0, &surface)) && surface)
+				{
+					char stageName[64]{};
+					sprintf_s(
+						stageName,
+						"temporal-%u-eye%d-sampler%lu",
+						sequence,
+						g_NekoPostProbeState.eyeIndex,
+						static_cast<unsigned long>(stage));
+					HooksNekoPostProbeSurfaceLuma(0, stageName, device, surface);
+					surface->Release();
+				}
+				texture->Release();
+			}
+			base->Release();
+		}
+
+		char outputName[64]{};
+		sprintf_s(
+			outputName,
+			"temporal-%u-eye%d-output",
+			sequence,
+			g_NekoPostProbeState.eyeIndex);
+		HooksNekoPostProbeSurfaceLuma(0, outputName, device, outputSurface);
 	}
 
 	int HooksNekoPostReadMaterialInt(
@@ -1375,6 +1479,25 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 	int xDice,
 	int yDice)
 {
+	static std::atomic<ULONGLONG> s_desktopNekoFirstCandidateTick{ 0 };
+	static std::atomic<bool> s_desktopNekoBaselineCaptured{ false };
+	constexpr ULONGLONG kDesktopNekoBaselineDelayMs = 20000;
+	const char* const processCommandLine = GetCommandLineA();
+	const bool noHmdLaunch =
+		processCommandLine &&
+		HooksNekoPostContainsI(processCommandLine, "-nohmd");
+	if (noHmdLaunch)
+	{
+		static std::atomic<bool> s_loggedDesktopProbeArmed{ false };
+		if (!s_loggedDesktopProbeArmed.exchange(true, std::memory_order_acq_rel))
+		{
+			Game::logMsg(
+				"[VR][NekoPostDesktopBaseline] armed=1 trigger=-nohmd vr=%p game=%p tid=%lu",
+				m_VR,
+				m_Game,
+				GetCurrentThreadId());
+		}
+	}
 	const bool probeActive =
 		g_NekoPostProbeState.frameSerial != 0 &&
 		m_VR &&
@@ -1385,7 +1508,15 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 		m_VR &&
 		m_VR->m_IsVREnabled &&
 		m_VR->m_NekoEnginePostVRTakeover;
-	if (!probeActive && !takeoverPassActive)
+	// -nohmd keeps this DLL and Left4Neko active but intentionally allocates no
+	// eye surfaces.  Observe the native final Neko draw in that mode so its real
+	// sampler inputs can be compared with the VR substitutions.  Wait a few
+	// seconds after the first in-game candidate so startup/default CVar values do
+	// not win the one-shot capture before the persisted filter settings settle.
+	const bool desktopBaselinePending =
+		noHmdLaunch &&
+		!s_desktopNekoBaselineCaptured.load(std::memory_order_acquire);
+	if (!probeActive && !takeoverPassActive && !desktopBaselinePending)
 	{
 		if (hkDrawScreenSpaceRectangle.fOriginal)
 		{
@@ -1433,14 +1564,54 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 		HooksNekoPostContainsI(materialName, "dev/engine_post") ||
 		HooksNekoPostContainsI(materialName, "neko_engine_post") ||
 		HooksNekoPostContainsI(shaderName, "neko_engine_post");
+	bool desktopBaseline = false;
+	if (desktopBaselinePending && candidate)
+	{
+		const ULONGLONG now = GetTickCount64();
+		ULONGLONG firstCandidate =
+			s_desktopNekoFirstCandidateTick.load(std::memory_order_acquire);
+		if (firstCandidate == 0)
+		{
+			s_desktopNekoFirstCandidateTick.compare_exchange_strong(
+				firstCandidate,
+				now,
+				std::memory_order_acq_rel,
+				std::memory_order_acquire);
+			firstCandidate =
+				s_desktopNekoFirstCandidateTick.load(std::memory_order_acquire);
+			if (firstCandidate == now)
+			{
+				Game::logMsg(
+					"[VR][NekoPostDesktopBaseline] candidate=1 waitingMs=%llu mat=%s shader=%s tid=%lu",
+					static_cast<unsigned long long>(kDesktopNekoBaselineDelayMs),
+					materialName,
+					shaderName,
+					GetCurrentThreadId());
+			}
+		}
+		if (now >= firstCandidate + kDesktopNekoBaselineDelayMs)
+		{
+			bool expected = false;
+			desktopBaseline =
+				s_desktopNekoBaselineCaptured.compare_exchange_strong(
+					expected,
+					true,
+					std::memory_order_acq_rel,
+					std::memory_order_acquire);
+		}
+	}
 	const bool sampled = probeActive && candidate;
 	const bool takeover = takeoverPassActive && candidate;
-	const unsigned int callIndex = (sampled || takeover)
+	const unsigned int callIndex = desktopBaseline
+		? 1u
+		: (sampled || takeover)
 		? ++g_NekoPostProbeState.candidateCalls
 		: 0;
-	if (takeover && material && callIndex == 1 &&
-		g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
-		g_NekoPostProbeState.eyeIndex == 1)
+	if ((desktopBaseline ||
+		(takeover &&
+			g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+			g_NekoPostProbeState.eyeIndex == 1)) &&
+		material && callIndex == 1)
 	{
 		static std::atomic<bool> s_loggedNekoParameters{ false };
 		if (!s_loggedNekoParameters.exchange(true, std::memory_order_acq_rel))
@@ -1450,7 +1621,8 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			ITexture* const framebufferTexture =
 				HooksNekoPostReadMaterialTexture(material, "$FBTEXTURE");
 			Game::logMsg(
-				"[VR][NekoPostParams][Material] base=%s fb=%s allowAfter=%d allowVignette=%d allowNoise=%d allowLocal=%d aa=%d bloom=%d nekoBloom=%d after=%d local=%d vignette=%d blurredVignette=%d noise=%d vomit=%d fade=%d desaturate=%d lookups=%d linearWrite=%d linearBase=%d linear1=%d tvGamma=%.4f noiseScale=%.4f",
+				"[VR][NekoPostParams][Material] mode=%s base=%s fb=%s allowAfter=%d allowVignette=%d allowNoise=%d allowLocal=%d aa=%d bloom=%d nekoBloom=%d after=%d local=%d vignette=%d blurredVignette=%d noise=%d vomit=%d fade=%d desaturate=%d lookups=%d linearWrite=%d linearBase=%d linear1=%d tvGamma=%.4f noiseScale=%.4f",
+				desktopBaseline ? "desktop-nohmd" : "vr-takeover",
 				DebugTextureName(baseTexture),
 				DebugTextureName(framebufferTexture),
 				HooksNekoPostReadMaterialInt(material, "$ALLOW_AFTER"),
@@ -1478,7 +1650,8 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			if (m_Game)
 			{
 				Game::logMsg(
-					"[VR][NekoPostParams][CVar] gamma=%.4f tonemap=%d forceLinear=%d allowInvert=%d preTonemap=%d after=%d adaptedLum=%.4f lumCompareScale=%.4f lumAllowTonemap=%d bloomMode=%d bloomScale=%.4f localScale=%.4f localEdge=%.4f vignette=%d colorCorrection=%d",
+					"[VR][NekoPostParams][CVar] mode=%s gamma=%.4f tonemap=%d forceLinear=%d allowInvert=%d preTonemap=%d after=%d adaptedLum=%.4f lumCompareScale=%.4f lumAllowTonemap=%d bloomMode=%d bloomScale=%.4f localScale=%.4f localEdge=%.4f vignette=%d colorCorrection=%d",
+					desktopBaseline ? "desktop-nohmd" : "vr-takeover",
 					m_Game->GetConVarFloat("mat_neko_gamma", -9999.0f),
 					m_Game->GetConVarInt("mat_neko_tonemapping_algorithm", -9999),
 					m_Game->GetConVarInt("mat_neko_tonemapping_force_linear", -9999),
@@ -1508,7 +1681,7 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 	int beforeVpW = 0;
 	int beforeVpH = 0;
 	bool haveBeforeViewport = false;
-	if (sampled && context)
+	if ((sampled || desktopBaseline) && context)
 	{
 		haveBeforeViewport = DebugGetViewport(
 			context, beforeVpX, beforeVpY, beforeVpW, beforeVpH);
@@ -1560,9 +1733,13 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 	void* takeoverBaseTextureVar = nullptr;
 	ITexture* takeoverPreviousBaseTexture = nullptr;
 	bool takeoverReboundBaseTexture = false;
+	void* takeoverBloomEnableVar = nullptr;
+	int takeoverPreviousBloomEnable = 0;
+	bool takeoverDisabledStandardBloom = false;
 	void* takeoverNekoBloomVar = nullptr;
 	int takeoverPreviousNekoBloom = 0;
-	bool takeoverDisabledNekoBloom = false;
+	int takeoverDrawNekoBloom = 0;
+	bool takeoverOverrodeNekoBloom = false;
 	bool takeoverTargetCleared = false;
 	IDirect3DDevice9* takeoverDevice = nullptr;
 	HRESULT takeoverGetActualTargetHr = E_FAIL;
@@ -1671,10 +1848,11 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 					SUCCEEDED(takeoverDevice->GetRenderState(
 						D3DRS_ALPHABLENDENABLE, &takeoverBlendBefore));
 
-				// The fallback path replaces L4N's full-frame source with the VR eye.
-				// Decode that LDR eye into a private linear RT before the native draw.
-				// The normal path keeps L4N's own _rt_FullFrameFB untouched so every
-				// tonemapper sees the same pre-final-pass domain as desktop mode.
+				// The fallback path replaces L4N's two native post inputs with copies
+				// derived from the VR eye.  The desktop baseline proves the native pair
+				// is intentional: sampler0 remains _rt_smallfb0 (a nearly constant
+				// auxiliary texture) while sampler1 is the FP16 _rt_fullframefb.  Do not
+				// rebuild either input when native-source mode is selected.
 				IDirect3DSurface9* const eyeSourceSurface =
 					g_NekoPostProbeState.eyeIndex == 1
 					? m_VR->m_D9LeftEyeSurface
@@ -1682,7 +1860,8 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 						? m_VR->m_D9RightEyeSurface
 						: nullptr);
 				D3DSURFACE_DESC eyeSourceDesc{};
-				if (eyeSourceSurface &&
+				if (!takeoverUseNativeFullFrameSource &&
+					eyeSourceSurface &&
 					SUCCEEDED(eyeSourceSurface->GetDesc(&eyeSourceDesc)) &&
 					eyeSourceDesc.Format == D3DFMT_A16B16G16R16F)
 				{
@@ -1724,19 +1903,16 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 					}
 				}
 
-				// Source's desktop post chain refreshes _rt_smallfb0 from the same
-				// frame before this draw. In VR that material variable was still bound
-				// to a stale 1010x1010 allocation (the sampler probe saw a constant
-				// yellow/green image). Recreate that dependency from the current eye.
-				// Keep it LDR, matching native _rt_smallfb0, while StretchRect performs
-				// the same quarter-resolution bilinear reduction on the GPU.
+				// Diagnostic fallback only: synthesize the small input from the eye.
+				// Native-source mode deliberately preserves L4N's _rt_smallfb0 exactly.
 				IDirect3DSurface9* const smallInputSource =
 					takeoverHdrSceneInput
 					? eyeSourceSurface
 					: (takeoverDecodedInput && m_VR->m_D9NekoPostLinearInputSurface
 					? m_VR->m_D9NekoPostLinearInputSurface
 					: eyeSourceSurface);
-				if (smallInputSource &&
+				if (!takeoverUseNativeFullFrameSource &&
+					smallInputSource &&
 					m_VR->m_NekoPostSmallInputTexture &&
 					m_VR->m_D9NekoPostSmallInputSurface)
 				{
@@ -1830,13 +2006,16 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			// native-source mode, and only substitute it for the fallback path.
 			if (material)
 			{
-				// Bind the freshly downsampled eye as the auxiliary small-frame input.
-				// This changes only the missing VR dependency; all L4N tonemap/gamma
-				// constants and the native full-frame input remain untouched.
+				// Bind the synthetic small-frame input only on the diagnostic fallback.
 				bool foundBaseTexture = false;
 				takeoverBaseTextureVar = material->FindVar(
 					"$BASETEXTURE", &foundBaseTexture, false);
-				if (SUCCEEDED(takeoverRefreshSmallInputHr) &&
+				// S_FALSE is the native-path sentinel: no private small texture was
+				// refreshed. SUCCEEDED(S_FALSE) is true, so using SUCCEEDED here used
+				// to replace L4N's valid _rt_smallfb0 with an uninitialised black
+				// nekopostsmallinput0 even while nativeSource=1.
+				if (!takeoverUseNativeFullFrameSource &&
+					takeoverRefreshSmallInputHr == S_OK &&
 					foundBaseTexture && takeoverBaseTextureVar &&
 					m_VR->m_NekoPostSmallInputTexture)
 				{
@@ -1853,6 +2032,40 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 							takeoverBaseTextureVar,
 							m_VR->m_NekoPostSmallInputTexture);
 						takeoverReboundBaseTexture = true;
+					}
+				}
+
+				// The passive desktop baseline observes $BLOOMENABLE=0 and
+				// $NEKO_BLOOM=1.  L4N's VR invocation can arrive with the standard
+				// bloom combo set to 1, which is a real material divergence and lifts
+				// midtones.  Match the desktop combo for the raw draw, then restore it;
+				// NekoBloom remains enabled and untouched.
+				if (takeover)
+				{
+					bool foundBloomEnable = false;
+					takeoverBloomEnableVar = material->FindVar(
+						"$BLOOMENABLE", &foundBloomEnable, false);
+					if (foundBloomEnable && takeoverBloomEnableVar)
+					{
+						void** const bloomEnableVtable =
+							*reinterpret_cast<void***>(takeoverBloomEnableVar);
+						if (bloomEnableVtable &&
+							bloomEnableVtable[4] && bloomEnableVtable[26])
+						{
+							using GetIntValueFn = int(__thiscall*)(void*);
+							using SetIntValueFn = void(__thiscall*)(void*, int);
+							takeoverPreviousBloomEnable =
+								reinterpret_cast<GetIntValueFn>(
+									bloomEnableVtable[26])(takeoverBloomEnableVar);
+							if (takeoverPreviousBloomEnable != 0)
+							{
+								reinterpret_cast<SetIntValueFn>(
+									bloomEnableVtable[4])(
+										takeoverBloomEnableVar,
+										0);
+								takeoverDisabledStandardBloom = true;
+							}
+						}
 					}
 				}
 
@@ -1885,13 +2098,11 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 					}
 				}
 
-				// L4N builds its NekoBloom auxiliary chain before this raw final draw.
-				// That chain still uses the desktop-sized full-frame source while the
-				// main sampler above has been replaced by a 4040x4040 eye.  Screen-mode
-				// bloom (the user's current blend mode 2) therefore lifts the complete
-				// image.  Gate only the final NEKO_BLOOM combo for VR until the auxiliary
-				// chain is redirected per-eye; preserve all tonemap/gamma parameters.
-				if (!takeoverUseNativeFullFrameSource &&
+				// Desktop L4N reaches this draw with NEKO_BLOOM=1. In VR the wrapper can
+				// leave the same shared material at 0 even though the native auxiliary
+				// inputs are present. Match the desktop snapshot in native mode. The
+				// explicit fallback diagnostic may still force it off.
+				if (takeoverUseNativeFullFrameSource ||
 					m_VR->m_NekoEnginePostVRDisableNekoBloom)
 				{
 					bool foundNekoBloom = false;
@@ -1908,10 +2119,16 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 							takeoverPreviousNekoBloom =
 								reinterpret_cast<GetIntValueFn>(bloomVarVtable[26])(
 									takeoverNekoBloomVar);
-							reinterpret_cast<SetIntValueFn>(bloomVarVtable[4])(
-								takeoverNekoBloomVar,
-								0);
-							takeoverDisabledNekoBloom = true;
+							takeoverDrawNekoBloom = takeoverUseNativeFullFrameSource
+								? 1
+								: 0;
+							if (takeoverPreviousNekoBloom != takeoverDrawNekoBloom)
+							{
+								reinterpret_cast<SetIntValueFn>(bloomVarVtable[4])(
+									takeoverNekoBloomVar,
+									takeoverDrawNekoBloom);
+								takeoverOverrodeNekoBloom = true;
+							}
 						}
 					}
 				}
@@ -1951,6 +2168,47 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			yDice);
 	}
 
+	if (desktopBaseline)
+	{
+		IDirect3DDevice9* desktopDevice = nullptr;
+		const HRESULT getDeviceHr = g_D3DVR9
+			? g_D3DVR9->GetD3DDevice(&desktopDevice)
+			: E_NOINTERFACE;
+		if (SUCCEEDED(getDeviceHr) && desktopDevice)
+		{
+			HooksNekoPostProbeBoundSamplers(desktopDevice);
+			IDirect3DSurface9* desktopOutput = nullptr;
+			const HRESULT getOutputHr =
+				desktopDevice->GetRenderTarget(0, &desktopOutput);
+			if (SUCCEEDED(getOutputHr) && desktopOutput)
+			{
+				HooksNekoPostProbeSurfaceLuma(
+					2048u,
+					"desktop-raw-neko-output",
+					desktopDevice,
+					desktopOutput);
+				desktopOutput->Release();
+			}
+			Game::logMsg(
+				"[VR][NekoPostDesktopBaseline] captured=1 getDevice=0x%08lx getOutput=0x%08lx mat=%s shader=%s tid=%lu",
+				static_cast<unsigned long>(getDeviceHr),
+				static_cast<unsigned long>(getOutputHr),
+				materialName,
+				shaderName,
+				GetCurrentThreadId());
+			desktopDevice->Release();
+		}
+		else
+		{
+			Game::logMsg(
+				"[VR][NekoPostDesktopBaseline] captured=0 getDevice=0x%08lx mat=%s shader=%s tid=%lu",
+				static_cast<unsigned long>(getDeviceHr),
+				materialName,
+				shaderName,
+				GetCurrentThreadId());
+		}
+	}
+
 	if (takeoverUseBackBufferCapture && takeoverDevice && m_VR &&
 		m_VR->m_NekoEnginePostProbeLog &&
 		g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
@@ -1964,6 +2222,20 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			HooksNekoPostProbeSurfaceLuma(
 				2u, "raw-neko-output", takeoverDevice, rawOutput);
 			rawOutput->Release();
+		}
+	}
+
+	if (takeoverUseBackBufferCapture && takeoverDevice && m_VR &&
+		m_VR->m_NekoEnginePostProbeLog &&
+		g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+		callIndex == 1)
+	{
+		IDirect3DSurface9* temporalOutput = nullptr;
+		if (SUCCEEDED(takeoverDevice->GetRenderTarget(0, &temporalOutput)) &&
+			temporalOutput)
+		{
+			HooksNekoPostProbeTemporalState(takeoverDevice, temporalOutput);
+			temporalOutput->Release();
 		}
 	}
 
@@ -1989,6 +2261,39 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			{
 				Game::logMsg(
 					"[VR][NekoPostTakeover] $BASETEXTURE restore fault");
+			}
+		}
+	}
+
+	// In native takeover mode this is a shared queued material, not draw-local
+	// state. Restoring 1 immediately after recording the draw races the render
+	// worker and makes successive eyes/frames alternate between the desktop
+	// combination (0/1) and L4N's pre-draw combination (1/0). Keep the verified
+	// desktop value stable between native draws. The diagnostic fallback still
+	// restores its temporary override.
+	if (takeoverDisabledStandardBloom && takeoverBloomEnableVar &&
+		!takeoverUseNativeFullFrameSource)
+	{
+		__try
+		{
+			void** const bloomEnableVtable =
+				*reinterpret_cast<void***>(takeoverBloomEnableVar);
+			if (bloomEnableVtable && bloomEnableVtable[4])
+			{
+				using SetIntValueFn = void(__thiscall*)(void*, int);
+				reinterpret_cast<SetIntValueFn>(bloomEnableVtable[4])(
+					takeoverBloomEnableVar,
+					takeoverPreviousBloomEnable);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedBloomEnableRestoreFault{ false };
+			if (!s_loggedBloomEnableRestoreFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] $BLOOMENABLE restore fault");
 			}
 		}
 	}
@@ -2046,7 +2351,8 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 		}
 	}
 
-	if (takeoverDisabledNekoBloom && takeoverNekoBloomVar)
+	if (takeoverOverrodeNekoBloom && takeoverNekoBloomVar &&
+		!takeoverUseNativeFullFrameSource)
 	{
 		__try
 		{
@@ -2056,8 +2362,8 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 			{
 				using SetIntValueFn = void(__thiscall*)(void*, int);
 				reinterpret_cast<SetIntValueFn>(bloomVarVtable[4])(
-					takeoverNekoBloomVar,
-					takeoverPreviousNekoBloom);
+						takeoverNekoBloomVar,
+						takeoverPreviousNekoBloom);
 			}
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -2132,7 +2438,7 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 		if (remaining > 0)
 		{
 			Game::logMsg(
-				"[VR][NekoPostTakeover] applied=%d captured=%d deferred=%d nativeSource=%d hdrScene=%d decoded=%d decodeHr=0x%08lx source=%s smallHr=0x%08lx reboundBase=%d base=%s->%s reboundFB0=%d fb0=%s->%s reboundFBTex=%d fbTex=%s->%s nekoBloom=%d->%d gated=%d cleared=%d actualRT=%ux%u fmt=%d getRT=0x%08lx getDesc=0x%08lx clear=0x%08lx pass=%s eye=%d target=%s restoredRT=%s viewport=%d,%d %dx%d d3d=%d srgb=%lu->%lu blend=%lu->%lu src=%lu dst=%lu op=%lu sampSrgb=%lu/%lu tid=%lu",
+				"[VR][NekoPostTakeover] applied=%d captured=%d deferred=%d nativeSource=%d hdrScene=%d decoded=%d decodeHr=0x%08lx source=%s smallHr=0x%08lx reboundBase=%d base=%s->%s stdBloom=%d->%d stdBloomGated=%d reboundFB0=%d fb0=%s->%s reboundFBTex=%d fbTex=%s->%s nekoBloom=%d->%d gated=%d cleared=%d actualRT=%ux%u fmt=%d getRT=0x%08lx getDesc=0x%08lx clear=0x%08lx pass=%s eye=%d target=%s restoredRT=%s viewport=%d,%d %dx%d d3d=%d srgb=%lu->%lu blend=%lu->%lu src=%lu dst=%lu op=%lu sampSrgb=%lu/%lu tid=%lu",
 				takeoverApplied ? 1 : 0,
 				takeoverCapturedBackBuffer ? 1 : 0,
 				takeoverUseBackBufferCapture ? 1 : 0,
@@ -2145,6 +2451,11 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 				takeoverReboundBaseTexture ? 1 : 0,
 				DebugTextureName(takeoverPreviousBaseTexture),
 				DebugTextureName(m_VR ? m_VR->m_NekoPostSmallInputTexture : nullptr),
+				takeoverPreviousBloomEnable,
+				takeoverDisabledStandardBloom
+					? 0
+					: takeoverPreviousBloomEnable,
+				takeoverDisabledStandardBloom ? 1 : 0,
 				takeoverReboundFramebufferCopy0 ? 1 : 0,
 				DebugTextureName(takeoverPreviousFramebufferCopy0),
 				DebugTextureName(takeoverFramebufferSource),
@@ -2152,8 +2463,10 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 				DebugTextureName(takeoverPreviousFramebufferTexture),
 				DebugTextureName(takeoverFramebufferSource),
 				takeoverPreviousNekoBloom,
-				takeoverDisabledNekoBloom ? 0 : takeoverPreviousNekoBloom,
-				takeoverDisabledNekoBloom ? 1 : 0,
+				takeoverOverrodeNekoBloom
+					? takeoverDrawNekoBloom
+					: takeoverPreviousNekoBloom,
+				takeoverOverrodeNekoBloom ? 1 : 0,
 				takeoverTargetCleared ? 1 : 0,
 				takeoverActualTargetDesc.Width,
 				takeoverActualTargetDesc.Height,
@@ -2183,7 +2496,7 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 		}
 	}
 
-	if (!sampled || !context)
+	if ((!sampled && !desktopBaseline) || !context)
 		return;
 
 	ITexture* afterRt = nullptr;
