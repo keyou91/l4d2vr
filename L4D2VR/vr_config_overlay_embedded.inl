@@ -151,17 +151,7 @@ namespace
 
     static const CfgOptionSpec kCfgOptionSpecs[] =
     {
-        { "ConfigOverlayDistanceMeters", CfgOptionType::Float, "\351\205\215\347\275\256\351\235\242\346\235\277", "\351\205\215\347\275\256\351\235\242\346\235\277\350\267\235\347\246\273", 0.6f, 3.0f, "1.35" },
-        { "ConfigOverlaySizeMeters", CfgOptionType::Float, "\351\205\215\347\275\256\351\235\242\346\235\277", "\351\205\215\347\275\256\351\235\242\346\235\277\345\244\247\345\260\217", 0.8f, 4.0f, "2.05" },
-        
         { "VRScale", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "\xE4\xB8\x96\xE7\x95\x8C\xE7\xBC\xA9\xE6\x94\xBE", 30.0f, 55.0f, "43.2" },
-        { "VRNearClipAdaptive", CfgOptionType::Bool, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Adaptive Character Near Clip", 0.0f, 0.0f, "true" },
-        { "VRNearClipSelfBody", CfgOptionType::Bool, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Protect Own Body Near Clip", 0.0f, 0.0f, "true" },
-        { "VRNearClipViewmodel", CfgOptionType::Bool, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Protect Viewmodel Near Clip", 0.0f, 0.0f, "true" },
-        { "VRNearClipViewmodelNearClip", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Viewmodel Near Clip", 0.1f, 6.0f, "0.1" },
-        { "VRNearClip", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Character Contact Near Clip", 0.1f, 6.0f, "0.8" },
-        { "VRNearClipEnterDistance", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Character Contact Enter Distance", 0.0f, 128.0f, "18.0" },
-        { "VRNearClipExitDistance", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "Character Contact Exit Distance", 0.0f, 192.0f, "26.0" },
         { "IPDScale", CfgOptionType::Float, "\xE8\xA7\x86\xE8\xA7\x92 / \xE5\xB0\xBA\xE5\xBA\xA6", "\xE7\x9E\xB3\xE8\xB7\x9D\xE7\xBC\xA9\xE6\x94\xBE", 0.8f, 1.2f, "1.0" },
         
         { "Roomscale1To1Movement", CfgOptionType::Bool, "\346\210\277\351\227\264\347\247\273\345\212\250", "1:1\347\247\273\345\212\250", 0.0f, 0.0f, "false" },
@@ -420,17 +410,7 @@ namespace
     static const CfgOptionTextSpec kCfgOptionTextSpecs[] =
     {
         { "WeaponAimPitchOffsetDeg", "Weapons / Fire", "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "Weapon Vertical Angle", "\xE6\xAD\xA6\xE5\x99\xA8\xE5\x9E\x82\xE7\x9B\xB4\xE8\xA7\x92\xE5\xBA\xA6", "Adjusts the weapon-hand grip pitch in degrees. The gun model, aim line, scope, and shots stay aligned.", "\xE4\xBB\xA5\xE5\xBA\xA6\xE4\xB8\xBA\xE5\x8D\x95\xE4\xBD\x8D\xE8\xB0\x83\xE6\x95\xB4\xE6\x8C\x81\xE6\x9E\xAA\xE6\x89\x8B\xE7\x9A\x84\xE6\x8F\xA1\xE6\x8C\x81\xE4\xBF\xAF\xE4\xBB\xB0\xE8\xA7\x92\xE3\x80\x82\xE6\x9E\xAA\xE6\xA2\xB0\xE6\xA8\xA1\xE5\x9E\x8B\xE3\x80\x81\xE7\x9E\x84\xE5\x87\x86\xE7\xBA\xBF\xE3\x80\x81\xE7\x9E\x84\xE5\x87\x86\xE9\x95\x9C\xE5\x92\x8C\xE5\xB0\x84\xE5\x87\xBB\xE6\x96\xB9\xE5\x90\x91\xE4\xBC\x9A\xE4\xBF\x9D\xE6\x8C\x81\xE5\xAF\xB9\xE9\xBD\x90\xE3\x80\x82", "More-negative values tilt the weapon farther downward. Default -45 preserves the original behavior.", "\xE6\x9B\xB4\xE5\xB0\x8F\xE7\x9A\x84\xE8\xB4\x9F\xE5\x80\xBC\xE4\xBC\x9A\xE8\xAE\xA9\xE6\xAD\xA6\xE5\x99\xA8\xE8\xBF\x9B\xE4\xB8\x80\xE6\xAD\xA5\xE5\x90\x91\xE4\xB8\x8B\xE5\x80\xBE\xE6\x96\x9C\xE3\x80\x82\xE9\xBB\x98\xE8\xAE\xA4\xE5\x80\xBC -45 \xE4\xBF\x9D\xE6\x8C\x81\xE5\x8E\x9F\xE6\x9C\x89\xE8\xA1\x8C\xE4\xB8\xBA\xE3\x80\x82" },
-        { "ConfigOverlayDistanceMeters", "Config Overlay", "\351\205\215\347\275\256\351\235\242\346\235\277", "Panel Distance", "\351\205\215\347\275\256\351\235\242\346\235\277\350\267\235\347\246\273", "Distance from the HMD to the built-in config panel (meters).", "\351\205\215\347\275\256\351\235\242\346\235\277\347\233\270\345\257\271\345\244\264\346\230\276\347\232\204\345\211\215\346\226\271\350\267\235\347\246\273\357\274\210\347\261\263\357\274\211\343\200\202", "Increase it if the panel is too close; decrease it if the panel is too far.", "\351\235\242\346\235\277\345\244\252\350\264\264\350\204\270\345\260\261\350\260\203\345\244\247\357\274\214\345\244\252\350\277\234\345\260\261\350\260\203\345\260\217\343\200\202" },
-        { "ConfigOverlaySizeMeters", "Config Overlay", "\351\205\215\347\275\256\351\235\242\346\235\277", "Panel Size", "\351\205\215\347\275\256\351\235\242\346\235\277\345\244\247\345\260\217", "Physical width of the built-in config panel (meters). Height follows the panel aspect ratio.", "\351\205\215\347\275\256\351\235\242\346\235\277\347\232\204\347\211\251\347\220\206\345\256\275\345\272\246\357\274\210\347\261\263\357\274\211\357\274\214\351\253\230\345\272\246\344\274\232\346\214\211\351\235\242\346\235\277\346\257\224\344\276\213\350\207\252\345\212\250\350\256\241\347\256\227\343\200\202", "Increase it if the text is too small; decrease it if the panel blocks too much view.", "\346\226\207\345\255\227\345\244\252\345\260\217\345\260\261\350\260\203\345\244\247\357\274\214\351\201\256\346\214\241\345\244\252\345\244\232\345\260\261\350\260\203\345\260\217\343\200\202" },
-        
         { "VRScale", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "World Scale", "\344\270\226\347\225\214\347\274\251\346\224\276", "Adjusts overall world scale (distance and size perception).", "\350\260\203\346\225\264\346\225\264\344\275\223\344\270\226\347\225\214\345\260\272\345\272\246\357\274\210\350\267\235\347\246\273\344\270\216\345\244\247\345\260\217\346\204\237\347\237\245\357\274\211\343\200\202", "Keep close to real-world meter scale. 43.2 covers most play spaces.", "\345\260\275\351\207\217\344\277\235\346\214\201\344\270\216\347\234\237\345\256\236\344\270\226\347\225\214\346\216\245\350\277\221\343\200\20243.2\344\270\200\350\210\254\346\234\200\345\220\210\351\200\202\343\200\202" },
-        { "VRNearClipAdaptive", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Adaptive Character Near Clip", "Adaptive Character Near Clip", "Uses the low near plane only while the HMD is close to another character.", "Uses the low near plane only while the HMD is close to another character.", "Leave enabled to preserve normal-distance depth precision.", "Leave enabled to preserve normal-distance depth precision." },
-        { "VRNearClipSelfBody", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Protect Own Body Near Clip", "Protect Own Body Near Clip", "Always suppresses near-plane slicing only for the local first-person body draw.", "Always suppresses near-plane slicing only for the local first-person body draw.", "It never changes the main scene projection and no longer controls native viewmodel rendering.", "It never changes the main scene projection and no longer controls native viewmodel rendering." },
-        { "VRNearClipViewmodel", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Protect Viewmodel Near Clip", "Protect Viewmodel Near Clip", "Draws only the viewmodel segment in front of the scene near plane a second time with a private depth buffer.", "Draws only the viewmodel segment in front of the scene near plane a second time with a private depth buffer.", "This preserves arm, skin and clothing depth ordering while the normal viewmodel segment still uses world depth occlusion.", "This preserves arm, skin and clothing depth ordering while the normal viewmodel segment still uses world depth occlusion." },
-        { "VRNearClipViewmodelNearClip", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Viewmodel Near Clip", "Viewmodel Near Clip", "Near plane used only by the private close-viewmodel segment.", "Near plane used only by the private close-viewmodel segment.", "0.1 maximizes close visibility without reducing scene depth precision. Do not use zero.", "0.1 maximizes close visibility without reducing scene depth precision. Do not use zero." },
-        { "VRNearClip", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Character Contact Near Clip", "Character Contact Near Clip", "Near plane used only after entering a character's contact range.", "Near plane used only after entering a character's contact range.", "0.8 is the recommended starting value. Do not use zero.", "0.8 is the recommended starting value. Do not use zero." },
-        { "VRNearClipEnterDistance", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Character Contact Enter Distance", "Character Contact Enter Distance", "Distance from the HMD to character collision bounds that enables the contact near plane.", "Distance from the HMD to character collision bounds that enables the contact near plane.", "Increase only if character geometry clips before contact mode activates.", "Increase only if character geometry clips before contact mode activates." },
-        { "VRNearClipExitDistance", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "Character Contact Exit Distance", "Character Contact Exit Distance", "Distance that restores the normal near plane after contact.", "Distance that restores the normal near plane after contact.", "Keep above the enter distance to prevent threshold flicker.", "Keep above the enter distance to prevent threshold flicker." },
         { "IPDScale", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "IPD Scale", "\347\236\263\350\267\235\347\274\251\346\224\276", "Multiplies headset IPD to fine-tune stereo separation.", "\346\214\211\346\257\224\344\276\213\350\260\203\346\225\264\345\244\264\346\230\276\347\236\263\350\267\235\344\273\245\345\276\256\350\260\203\347\253\213\344\275\223\345\210\206\347\246\273\345\272\246\343\200\202", "Use for small comfort tweaks only.", "\344\273\205\347\224\250\344\272\216\345\260\217\345\271\205\350\210\222\351\200\202\345\272\246\345\276\256\350\260\203\343\200\202" },
         
         { "Roomscale1To1Movement", "Roomscale Movement", "\346\210\277\351\227\264\347\247\273\345\212\250", "Enable 1:1 Roomscale Movement", "\345\220\257\347\224\2501:1\346\210\277\351\227\264\347\247\273\345\212\250", "Converts physical HMD movement into normal in-game movement commands.", "\346\212\212\345\244\264\346\230\276\347\216\260\345\256\236\347\247\273\345\212\250\350\275\254\346\215\242\346\210\220\346\270\270\346\210\217\345\206\205\346\240\207\345\207\206\347\247\273\345\212\250\346\214\207\344\273\244\343\200\202", "Works on normal servers because it sends standard movement input.", "\345\217\221\351\200\201\347\232\204\346\230\257\346\240\207\345\207\206\347\247\273\345\212\250\350\276\223\345\205\245\357\274\214\346\211\200\344\273\245\345\217\257\344\273\245\347\224\250\345\234\250\346\231\256\351\200\232\346\234\215\345\212\241\345\231\250\343\200\202" },
@@ -1685,8 +1665,6 @@ namespace
     {
         static constexpr const char* kSimpleKeys[] =
         {
-            "ConfigOverlayDistanceMeters",
-            "ConfigOverlaySizeMeters",
             "VRScale",
             "IPDScale",
             "Roomscale1To1Movement",
@@ -2100,13 +2078,6 @@ namespace
     // Release config template used by the Reset Settings action. Keep this as the
     // authoritative sample so resetting does not depend on the user's already-edited VR\config.txt.
     static constexpr char kCfgSampleConfigText0[] = R"L4D2VR0(VRScale=43.2
-VRNearClipAdaptive=true
-VRNearClipSelfBody=true
-VRNearClipViewmodel=true
-VRNearClipViewmodelNearClip=0.1
-VRNearClip=0.8
-VRNearClipEnterDistance=18.0
-VRNearClipExitDistance=26.0
 IPDScale=1.0
 TurnSpeed=0.3
 SnapTurning=false
