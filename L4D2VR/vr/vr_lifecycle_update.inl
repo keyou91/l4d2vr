@@ -2342,14 +2342,10 @@ void VR::CreateVRTextures()
     // Neko ever sees them; decoding that LDR image into an FP16 scratch cannot
     // recover the lost range. Match the desktop producer format when takeover is
     // enabled, then convert the completed post result into the LDR submit pair.
-    const char* const processCommandLine = GetCommandLineA();
-    const bool l4nNekoPostRequested =
-        processCommandLine &&
-        std::strstr(processCommandLine, "-l4n_use_neko_engine_post") != nullptr;
     const bool useNekoHdrSceneInput =
+        m_L4NNekoEnginePostLaunchEnabled &&
         m_NekoEnginePostVRTakeover &&
-        m_NekoEnginePostVRHDRSceneInput &&
-        l4nNekoPostRequested;
+        m_NekoEnginePostVRHDRSceneInput;
     const ImageFormat eyeFormat = useNekoHdrSceneInput
         ? IMAGE_FORMAT_RGBA16161616F
         : backBufferFormat;
@@ -2384,12 +2380,12 @@ void VR::CreateVRTextures()
         m_D9RightEyeSubmitSurface = nullptr;
     }
 
-    if (m_NekoEnginePostVRTakeover)
+    if (m_L4NNekoEnginePostLaunchEnabled)
     {
         Game::logMsg(
             "[VR][NekoPostHDR] enabled=%d commandLine=%d eyeFormat=%d submitFormat=%d dedicatedSubmit=%d",
             useNekoHdrSceneInput ? 1 : 0,
-            l4nNekoPostRequested ? 1 : 0,
+            m_L4NNekoEnginePostLaunchEnabled ? 1 : 0,
             static_cast<int>(eyeFormat),
             static_cast<int>(backBufferFormat),
             useDedicatedEyeSubmitTextures ? 1 : 0);
@@ -2401,16 +2397,24 @@ void VR::CreateVRTextures()
     // A single surface is sufficient because queued material work executes eye
     // post passes serially; unlike the submit pair this texture is never exposed
     // to OpenVR or the compositor thread.
-    m_CreatingTextureID = Texture_NekoPostLinearInput;
-    m_NekoPostLinearInputTexture =
-        m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
-            "nekoPostLinearInput0",
-            m_RenderWidth,
-            m_RenderHeight,
-            RT_SIZE_NO_CHANGE,
-            IMAGE_FORMAT_RGBA16161616F,
-            MATERIAL_RT_DEPTH_NONE,
-            TEXTUREFLAGS_NOMIP);
+    if (m_L4NNekoEnginePostLaunchEnabled)
+    {
+        m_CreatingTextureID = Texture_NekoPostLinearInput;
+        m_NekoPostLinearInputTexture =
+            m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
+                "nekoPostLinearInput0",
+                m_RenderWidth,
+                m_RenderHeight,
+                RT_SIZE_NO_CHANGE,
+                IMAGE_FORMAT_RGBA16161616F,
+                MATERIAL_RT_DEPTH_NONE,
+                TEXTUREFLAGS_NOMIP);
+    }
+    else
+    {
+        m_NekoPostLinearInputTexture = nullptr;
+        m_D9NekoPostLinearInputSurface = nullptr;
+    }
 
     // Neko_Engine_Post binds _rt_smallfb0 as $BASETEXTURE alongside the
     // full-frame sampler. Source normally refreshes that quarter-size image
@@ -2418,16 +2422,24 @@ void VR::CreateVRTextures()
     // instance pointing at a stale allocation. Keep a per-eye scratch with the
     // exact native small-frame dimensions and LDR format; it is refreshed from
     // the current eye immediately before Neko's final draw.
-    m_CreatingTextureID = Texture_NekoPostSmallInput;
-    m_NekoPostSmallInputTexture =
-        m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
-            "nekoPostSmallInput0",
-            std::max(1, static_cast<int>((m_RenderWidth + 3u) / 4u)),
-            std::max(1, static_cast<int>((m_RenderHeight + 3u) / 4u)),
-            RT_SIZE_NO_CHANGE,
-            useNekoHdrSceneInput ? IMAGE_FORMAT_RGBA16161616F : eyeFormat,
-            MATERIAL_RT_DEPTH_NONE,
-            TEXTUREFLAGS_NOMIP);
+    if (m_L4NNekoEnginePostLaunchEnabled)
+    {
+        m_CreatingTextureID = Texture_NekoPostSmallInput;
+        m_NekoPostSmallInputTexture =
+            m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
+                "nekoPostSmallInput0",
+                std::max(1, static_cast<int>((m_RenderWidth + 3u) / 4u)),
+                std::max(1, static_cast<int>((m_RenderHeight + 3u) / 4u)),
+                RT_SIZE_NO_CHANGE,
+                useNekoHdrSceneInput ? IMAGE_FORMAT_RGBA16161616F : eyeFormat,
+                MATERIAL_RT_DEPTH_NONE,
+                TEXTUREFLAGS_NOMIP);
+    }
+    else
+    {
+        m_NekoPostSmallInputTexture = nullptr;
+        m_D9NekoPostSmallInputSurface = nullptr;
+    }
 
     const bool createDesktopMirrorCleanTarget =
         m_DesktopMirrorEnabled &&

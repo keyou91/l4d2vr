@@ -37,6 +37,28 @@ namespace dxvk {
 #endif
   }
 
+  static bool IsL4NNekoEnginePostLaunchArgPresent() {
+#ifdef _WIN32
+    int nArgs = 0;
+    LPWSTR* argList = CommandLineToArgvW(GetCommandLineW(), &nArgs);
+    if (!argList)
+      return false;
+
+    bool enabled = false;
+    for (int i = 0; i < nArgs; i++) {
+      if (_wcsicmp(argList[i], L"-l4n_use_neko_engine_post") == 0) {
+        enabled = true;
+        break;
+      }
+    }
+
+    LocalFree(argList);
+    return enabled;
+#else
+    return false;
+#endif
+  }
+
   Singleton<DxvkInstance> g_dxvkInstance;
 
   D3D9InterfaceEx::D3D9InterfaceEx(bool bExtended)
@@ -330,10 +352,10 @@ namespace dxvk {
 
     if (SUCCEEDED(result)
      && ppReturnedDeviceInterface != nullptr
-     && *ppReturnedDeviceInterface != nullptr)
-      // The private bridge only retains the already-created D3D9 device; it
-      // does not initialize OpenVR.  Keep it available in -nohmd as well so
-      // passive desktop diagnostics can inspect native sampler/RT state.
+     && *ppReturnedDeviceInterface != nullptr
+     && (!noHmd || IsL4NNekoEnginePostLaunchArgPresent()))
+      // -nohmd only needs the private device bridge for the explicitly gated
+      // L4N desktop baseline probe. Other desktop paths retain legacy behavior.
       Direct3DCreateVRImpl(*ppReturnedDeviceInterface, &g_D3DVR9);
 
     return result;

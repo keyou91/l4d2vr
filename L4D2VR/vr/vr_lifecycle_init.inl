@@ -1026,6 +1026,23 @@ VR::VR(Game* game)
 {
     m_Game = game;
 
+    // Use exact argv matching: a config entry or a similarly named argument
+    // must never activate the Left4Neko-specific render pipeline.
+    int launchArgCount = 0;
+    LPWSTR* launchArgs = CommandLineToArgvW(GetCommandLineW(), &launchArgCount);
+    if (launchArgs)
+    {
+        for (int i = 0; i < launchArgCount; ++i)
+        {
+            if (_wcsicmp(launchArgs[i], L"-l4n_use_neko_engine_post") == 0)
+            {
+                m_L4NNekoEnginePostLaunchEnabled = true;
+                break;
+            }
+        }
+        LocalFree(launchArgs);
+    }
+
     char errorString[MAX_STR_LEN];
 
     vr::HmdError error = vr::VRInitError_None;

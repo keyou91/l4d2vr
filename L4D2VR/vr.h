@@ -789,6 +789,9 @@ public:
 	// Render/HUD/multicore pipeline diagnostics. Default off; logs key frame boundaries only.
 	bool  m_RenderPipelineDebugLog = false;
 	float m_RenderPipelineDebugLogHz = 2.0f;
+	// Hard launch gate for every Left4Neko-specific render path. Config values
+	// below are only preferences inside this gate and cannot enable it.
+	bool  m_L4NNekoEnginePostLaunchEnabled = false;
 	bool  m_NekoEnginePostVRTakeover = true;
 	bool  m_NekoEnginePostVRCaptureBackBuffer = true;
 	bool  m_NekoEnginePostVRClearTarget = true;

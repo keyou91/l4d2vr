@@ -183,6 +183,24 @@ bool Hooks::s_ServerUnderstandsVR = false;
 
 bool Hooks::InitializeNoHmdNekoPostProbe()
 {
+	int launchArgCount = 0;
+	LPWSTR* launchArgs = CommandLineToArgvW(GetCommandLineW(), &launchArgCount);
+	bool l4nNekoPostEnabled = false;
+	if (launchArgs)
+	{
+		for (int i = 0; i < launchArgCount; ++i)
+		{
+			if (_wcsicmp(launchArgs[i], L"-l4n_use_neko_engine_post") == 0)
+			{
+				l4nNekoPostEnabled = true;
+				break;
+			}
+		}
+		LocalFree(launchArgs);
+	}
+	if (!l4nNekoPostEnabled)
+		return false;
+
 	static std::atomic<bool> s_initializationAttempted{ false };
 	bool expected = false;
 	if (!s_initializationAttempted.compare_exchange_strong(
@@ -329,7 +347,8 @@ Hooks::Hooks(Game* game)
 	hkAdjustEngineViewport.enableHook();
 	hkViewport.enableHook();
 	hkGetViewport.enableHook();
-	if (hkDrawScreenSpaceRectangle.pTarget)
+	if (m_VR && m_VR->m_L4NNekoEnginePostLaunchEnabled &&
+		hkDrawScreenSpaceRectangle.pTarget)
 		hkDrawScreenSpaceRectangle.enableHook();
 	hkCreateMove.enableHook();
 	hkTestMeleeSwingCollisionClient.enableHook();
@@ -475,7 +494,8 @@ int Hooks::initSourceHooks()
 	LPVOID pGetRenderTargetVFunc = (LPVOID)(m_Game->m_Offsets->GetRenderTarget.address);
 	hkGetRenderTarget.createHook(pGetRenderTargetVFunc, &dGetRenderTarget);
 
-	if (m_Game->m_MaterialSystem)
+	if (m_VR && m_VR->m_L4NNekoEnginePostLaunchEnabled &&
+		m_Game->m_MaterialSystem)
 	{
 		void** materialVTable = *reinterpret_cast<void***>(m_Game->m_MaterialSystem);
 		if (materialVTable)

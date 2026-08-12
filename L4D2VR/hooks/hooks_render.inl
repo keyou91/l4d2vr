@@ -665,6 +665,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0
 			g_NekoPostProbeState.candidateCalls != 0 &&
 			Hooks::m_VR &&
 			Hooks::m_VR->m_IsVREnabled &&
+			Hooks::m_VR->m_L4NNekoEnginePostLaunchEnabled &&
 			Hooks::m_VR->m_NekoEnginePostVRTakeover &&
 			Hooks::m_VR->m_NekoEnginePostVRCaptureBackBuffer)
 		{
@@ -1020,7 +1021,8 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0
 
 	std::uint64_t HooksNekoPostProbeSampleFrame(VR* vr)
 	{
-		if (!vr || !vr->m_NekoEnginePostProbeLog ||
+		if (!vr || !vr->m_L4NNekoEnginePostLaunchEnabled ||
+			!vr->m_NekoEnginePostProbeLog ||
 			vr->m_NekoEnginePostProbeLogHz <= 0.0f)
 		{
 			return 0;
@@ -1258,6 +1260,22 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 	int xDice,
 	int yDice)
 {
+	// This detour is installed only for the explicit L4N launch mode. Keep a
+	// second runtime guard so a partially initialized/tearing-down VR object can
+	// never apply Neko material, RT, framebuffer-copy, or diagnostic behavior to
+	// an unrelated post-processing path.
+	if (m_VR && !m_VR->m_L4NNekoEnginePostLaunchEnabled)
+	{
+		if (hkDrawScreenSpaceRectangle.fOriginal)
+		{
+			hkDrawScreenSpaceRectangle.fOriginal(
+				ecx, material, destX, destY, width, height,
+				srcX0, srcY0, srcX1, srcY1, srcWidth, srcHeight,
+				clientRenderable, xDice, yDice);
+		}
+		return;
+	}
+
 	static std::atomic<ULONGLONG> s_desktopNekoFirstCandidateTick{ 0 };
 	static std::atomic<bool> s_desktopNekoBaselineCaptured{ false };
 	constexpr ULONGLONG kDesktopNekoBaselineDelayMs = 20000;
@@ -1280,12 +1298,14 @@ void __fastcall Hooks::dDrawScreenSpaceRectangle(
 	const bool probeActive =
 		g_NekoPostProbeState.frameSerial != 0 &&
 		m_VR &&
+		m_VR->m_L4NNekoEnginePostLaunchEnabled &&
 		m_VR->m_NekoEnginePostProbeLog;
 	const bool takeoverPassActive =
 		g_NekoPostProbeState.takeoverEnabled &&
 		g_NekoPostProbeState.takeoverTarget != nullptr &&
 		m_VR &&
 		m_VR->m_IsVREnabled &&
+		m_VR->m_L4NNekoEnginePostLaunchEnabled &&
 		m_VR->m_NekoEnginePostVRTakeover;
 	// -nohmd keeps this DLL and Left4Neko active but intentionally allocates no
 	// eye surfaces.  Observe the native final Neko draw in that mode so its real
@@ -2595,8 +2615,13 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	};
 	RenderContextStateGuard renderContextStateGuard(rndrContext);
 	const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
-	const std::uint64_t nekoPostProbeFrameSerial =
-		HooksNekoPostProbeSampleFrame(m_VR);
+	const bool l4nNekoPostEnabled =
+		m_VR->m_L4NNekoEnginePostLaunchEnabled;
+	const bool l4nNekoTakeoverEnabled =
+		l4nNekoPostEnabled && m_VR->m_NekoEnginePostVRTakeover;
+	const std::uint64_t nekoPostProbeFrameSerial = l4nNekoPostEnabled
+		? HooksNekoPostProbeSampleFrame(m_VR)
+		: 0;
 	if (nekoPostProbeFrameSerial != 0)
 	{
 		Game::logMsg(
@@ -5409,7 +5434,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					HooksNekoPostPass::MainEye,
 					eyeIndex,
 					eyeTexture,
-					m_VR->m_NekoEnginePostVRTakeover);
+					l4nNekoTakeoverEnabled);
 				FirstPersonBodyEyeSceneScope firstPersonBodyScope(
 					m_VR,
 					eyeView,
@@ -5559,7 +5584,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					nekoPostPass,
 					0,
 					target,
-					m_VR->m_NekoEnginePostVRTakeover);
+					l4nNekoTakeoverEnabled);
 				callOriginalRenderView(view, hud, nClearFlags, whatToDraw);
 			}
 
