@@ -218,6 +218,949 @@ namespace
 		ICallQueue* m_CallQueue = nullptr;
 		HooksViewmodelNearOverlayPassState* m_State = nullptr;
 	};
+
+	enum class HooksNekoPostPass : int
+	{
+		Outside = 0,
+		MainEye,
+		NearOverlay,
+		Scope,
+		RearMirror,
+	};
+
+	struct HooksNekoPostProbeThreadState
+	{
+		std::uint64_t frameSerial = 0;
+		HooksNekoPostPass pass = HooksNekoPostPass::Outside;
+		int eyeIndex = 0;
+		unsigned int candidateCalls = 0;
+		IMatRenderContext* context = nullptr;
+		ITexture* takeoverTarget = nullptr;
+		bool takeoverEnabled = false;
+	};
+
+	thread_local HooksNekoPostProbeThreadState g_NekoPostProbeState{};
+	std::atomic<std::uint64_t> g_NekoPostProbeFrameSerial{ 0 };
+	std::atomic<unsigned int> g_NekoPostLumaProbeMask{ 0 };
+
+	const char* HooksNekoPostPassName(HooksNekoPostPass pass)
+	{
+		switch (pass)
+		{
+		case HooksNekoPostPass::MainEye: return "main-eye";
+		case HooksNekoPostPass::NearOverlay: return "near-overlay";
+		case HooksNekoPostPass::Scope: return "scope";
+		case HooksNekoPostPass::RearMirror: return "rear-mirror";
+		default: return "outside";
+		}
+	}
+
+	void HooksNekoPostProbeSurfaceLuma(
+		unsigned int stageBit,
+		const char* stageName,
+		IDirect3DDevice9* device,
+		IDirect3DSurface9* source)
+	{
+		if (!stageBit || !device || !source)
+			return;
+		if (g_NekoPostLumaProbeMask.fetch_or(
+			stageBit, std::memory_order_acq_rel) & stageBit)
+		{
+			return;
+		}
+
+		D3DSURFACE_DESC sourceDesc{};
+		HRESULT const sourceDescHr = source->GetDesc(&sourceDesc);
+		const bool sourceIsEightBit =
+			sourceDesc.Format == D3DFMT_A8R8G8B8 ||
+			sourceDesc.Format == D3DFMT_X8R8G8B8;
+		const bool sourceIsFloat =
+			sourceDesc.Format == D3DFMT_A16B16G16R16F;
+		if (FAILED(sourceDescHr) || (!sourceIsEightBit && !sourceIsFloat))
+		{
+			Game::logMsg(
+				"[VR][NekoPostLuma] stage=%s ok=0 reason=source-format src=%ux%u fmt=%d desc=0x%08lx tid=%lu",
+				stageName ? stageName : "<null>",
+				sourceDesc.Width,
+				sourceDesc.Height,
+				static_cast<int>(sourceDesc.Format),
+				static_cast<unsigned long>(sourceDescHr),
+				GetCurrentThreadId());
+			return;
+		}
+
+		constexpr UINT kProbeSize = 64;
+		IDirect3DSurface9* reduced = nullptr;
+		IDirect3DSurface9* readback = nullptr;
+		const D3DFORMAT probeFormat = sourceIsFloat
+			? D3DFMT_A8R8G8B8
+			: sourceDesc.Format;
+		HRESULT const createReducedHr = device->CreateRenderTarget(
+			kProbeSize,
+			kProbeSize,
+			probeFormat,
+			D3DMULTISAMPLE_NONE,
+			0,
+			FALSE,
+			&reduced,
+			nullptr);
+		HRESULT stretchHr = E_FAIL;
+		HRESULT createReadbackHr = E_FAIL;
+		HRESULT readbackHr = E_FAIL;
+		HRESULT lockHr = E_FAIL;
+		D3DLOCKED_RECT locked{};
+		if (SUCCEEDED(createReducedHr) && reduced)
+		{
+			stretchHr = device->StretchRect(
+				source, nullptr, reduced, nullptr, D3DTEXF_LINEAR);
+			if (SUCCEEDED(stretchHr))
+			{
+				createReadbackHr = device->CreateOffscreenPlainSurface(
+					kProbeSize,
+					kProbeSize,
+					probeFormat,
+					D3DPOOL_SYSTEMMEM,
+					&readback,
+					nullptr);
+				if (SUCCEEDED(createReadbackHr) && readback)
+				{
+					readbackHr = device->GetRenderTargetData(reduced, readback);
+					if (SUCCEEDED(readbackHr))
+						lockHr = readback->LockRect(&locked, nullptr, D3DLOCK_READONLY);
+				}
+			}
+		}
+
+		if (SUCCEEDED(lockHr) && locked.pBits)
+		{
+			std::uint64_t redSum = 0;
+			std::uint64_t greenSum = 0;
+			std::uint64_t blueSum = 0;
+			std::uint64_t lumaSum = 0;
+			unsigned int histogram[256]{};
+			unsigned int darkPixels = 0;
+			unsigned int brightPixels = 0;
+			for (UINT y = 0; y < kProbeSize; ++y)
+			{
+				const unsigned char* const row =
+					reinterpret_cast<const unsigned char*>(locked.pBits) +
+					static_cast<std::size_t>(y) * locked.Pitch;
+				for (UINT x = 0; x < kProbeSize; ++x)
+				{
+					const unsigned char blue = row[x * 4 + 0];
+					const unsigned char green = row[x * 4 + 1];
+					const unsigned char red = row[x * 4 + 2];
+					const unsigned int luma =
+						(54u * red + 183u * green + 19u * blue + 128u) >> 8;
+					redSum += red;
+					greenSum += green;
+					blueSum += blue;
+					lumaSum += luma;
+					++histogram[luma];
+					if (luma < 32)
+						++darkPixels;
+					if (luma > 224)
+						++brightPixels;
+				}
+			}
+
+			constexpr unsigned int kPixelCount = kProbeSize * kProbeSize;
+			auto percentile = [&](unsigned int numerator, unsigned int denominator)
+			{
+				const unsigned int threshold =
+					(kPixelCount * numerator + denominator - 1) / denominator;
+				unsigned int cumulative = 0;
+				for (unsigned int i = 0; i < 256; ++i)
+				{
+					cumulative += histogram[i];
+					if (cumulative >= threshold)
+						return i;
+				}
+				return 255u;
+			};
+
+			Game::logMsg(
+				"[VR][NekoPostLuma] stage=%s ok=1 src=%ux%u fmt=%d avgRGB=%llu/%llu/%llu avgY=%llu p05=%u p50=%u p95=%u dark=%u bright=%u tid=%lu",
+				stageName ? stageName : "<null>",
+				sourceDesc.Width,
+				sourceDesc.Height,
+				static_cast<int>(sourceDesc.Format),
+				static_cast<unsigned long long>(redSum / kPixelCount),
+				static_cast<unsigned long long>(greenSum / kPixelCount),
+				static_cast<unsigned long long>(blueSum / kPixelCount),
+				static_cast<unsigned long long>(lumaSum / kPixelCount),
+				percentile(5, 100),
+				percentile(50, 100),
+				percentile(95, 100),
+				darkPixels,
+				brightPixels,
+				GetCurrentThreadId());
+			readback->UnlockRect();
+		}
+		else
+		{
+			Game::logMsg(
+				"[VR][NekoPostLuma] stage=%s ok=0 reason=readback createRT=0x%08lx stretch=0x%08lx createSys=0x%08lx read=0x%08lx lock=0x%08lx tid=%lu",
+				stageName ? stageName : "<null>",
+				static_cast<unsigned long>(createReducedHr),
+				static_cast<unsigned long>(stretchHr),
+				static_cast<unsigned long>(createReadbackHr),
+				static_cast<unsigned long>(readbackHr),
+				static_cast<unsigned long>(lockHr),
+				GetCurrentThreadId());
+		}
+
+		if (readback)
+			readback->Release();
+		if (reduced)
+			reduced->Release();
+	}
+
+	void HooksNekoPostProbeBoundSamplers(IDirect3DDevice9* device)
+	{
+		if (!device)
+			return;
+
+		static std::atomic<bool> s_logged{ false };
+		if (s_logged.exchange(true, std::memory_order_acq_rel))
+			return;
+
+		for (DWORD stage = 0; stage < 10; ++stage)
+		{
+			IDirect3DBaseTexture9* base = nullptr;
+			const HRESULT getHr = device->GetTexture(stage, &base);
+			DWORD samplerSrgb = 0;
+			const HRESULT srgbHr = device->GetSamplerState(
+				stage, D3DSAMP_SRGBTEXTURE, &samplerSrgb);
+			if (!base)
+			{
+				Game::logMsg(
+					"[VR][NekoPostSampler] stage=%lu bound=0 get=0x%08lx srgb=%lu srgbHr=0x%08lx",
+					static_cast<unsigned long>(stage),
+					static_cast<unsigned long>(getHr),
+					static_cast<unsigned long>(samplerSrgb),
+					static_cast<unsigned long>(srgbHr));
+				continue;
+			}
+
+			IDirect3DTexture9* texture = nullptr;
+			const HRESULT queryHr = base->QueryInterface(
+				__uuidof(IDirect3DTexture9),
+				reinterpret_cast<void**>(&texture));
+			D3DSURFACE_DESC desc{};
+			HRESULT descHr = E_NOINTERFACE;
+			if (texture)
+				descHr = texture->GetLevelDesc(0, &desc);
+			Game::logMsg(
+				"[VR][NekoPostSampler] stage=%lu bound=1 type=%d get=0x%08lx query=0x%08lx desc=0x%08lx size=%ux%u fmt=%d levels=%lu srgb=%lu srgbHr=0x%08lx",
+				static_cast<unsigned long>(stage),
+				static_cast<int>(base->GetType()),
+				static_cast<unsigned long>(getHr),
+				static_cast<unsigned long>(queryHr),
+				static_cast<unsigned long>(descHr),
+				desc.Width,
+				desc.Height,
+				static_cast<int>(desc.Format),
+				texture ? static_cast<unsigned long>(texture->GetLevelCount()) : 0ul,
+				static_cast<unsigned long>(samplerSrgb),
+				static_cast<unsigned long>(srgbHr));
+
+			if (texture && (stage < 2 || stage == 8))
+			{
+				IDirect3DSurface9* surface = nullptr;
+				if (SUCCEEDED(texture->GetSurfaceLevel(0, &surface)) && surface)
+				{
+					char stageName[32]{};
+					sprintf_s(stageName, "sampler%lu", static_cast<unsigned long>(stage));
+					const unsigned int lumaBit = stage == 8
+						? 1024u
+						: (128u << stage);
+					HooksNekoPostProbeSurfaceLuma(
+						lumaBit,
+						stageName,
+						device,
+						surface);
+					surface->Release();
+				}
+			}
+			if (texture)
+				texture->Release();
+			base->Release();
+		}
+	}
+
+	int HooksNekoPostReadMaterialInt(
+		IMaterial* material,
+		const char* name,
+		int fallback = -9999)
+	{
+		if (!material || !name)
+			return fallback;
+		__try
+		{
+			bool found = false;
+			void* const var = material->FindVar(name, &found, false);
+			if (!found || !var)
+				return fallback;
+			void** const vtable = *reinterpret_cast<void***>(var);
+			if (!vtable || !vtable[26])
+				return fallback;
+			using GetIntValueFn = int(__thiscall*)(void*);
+			return reinterpret_cast<GetIntValueFn>(vtable[26])(var);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return fallback;
+		}
+	}
+
+	float HooksNekoPostReadMaterialFloat(
+		IMaterial* material,
+		const char* name,
+		float fallback = -9999.0f)
+	{
+		if (!material || !name)
+			return fallback;
+		__try
+		{
+			bool found = false;
+			void* const var = material->FindVar(name, &found, false);
+			if (!found || !var)
+				return fallback;
+			void** const vtable = *reinterpret_cast<void***>(var);
+			if (!vtable || !vtable[27])
+				return fallback;
+			using GetFloatValueFn = float(__thiscall*)(void*);
+			return reinterpret_cast<GetFloatValueFn>(vtable[27])(var);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return fallback;
+		}
+	}
+
+	ITexture* HooksNekoPostReadMaterialTexture(
+		IMaterial* material,
+		const char* name)
+	{
+		if (!material || !name)
+			return nullptr;
+		__try
+		{
+			bool found = false;
+			void* const var = material->FindVar(name, &found, false);
+			if (!found || !var)
+				return nullptr;
+			void** const vtable = *reinterpret_cast<void***>(var);
+			if (!vtable || !vtable[0])
+				return nullptr;
+			using GetTextureValueFn = ITexture* (__thiscall*)(void*);
+			return reinterpret_cast<GetTextureValueFn>(vtable[0])(var);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return nullptr;
+		}
+	}
+
+	HRESULT HooksNekoPostApplyColorTransfer(
+		VR* vr,
+		IDirect3DDevice9* device,
+		IDirect3DSurface9* sourceTextureSurface,
+		IDirect3DSurface9* destination,
+		float gamma,
+		bool decodeSrgb)
+	{
+		if (!vr || !device || !sourceTextureSurface || !destination)
+			return E_POINTER;
+
+		if (vr->m_D9NekoPostOutputTransferShaderDevice != device)
+		{
+			if (vr->m_D9NekoPostOutputTransferPixelShader)
+			{
+				vr->m_D9NekoPostOutputTransferPixelShader->Release();
+				vr->m_D9NekoPostOutputTransferPixelShader = nullptr;
+			}
+			vr->m_D9NekoPostOutputTransferShaderDevice = device;
+		}
+
+		if (!vr->m_D9NekoPostOutputTransferPixelShader)
+		{
+			static const char* const kShaderSource = R"HLSL(
+sampler2D gSource : register(s0);
+float4 gTransfer : register(c0);
+
+float4 main(float2 uv : TEXCOORD0) : COLOR0
+{
+    float4 color = tex2D(gSource, uv);
+    float3 c = saturate(color.rgb);
+    if (gTransfer.y > 0.5)
+    {
+        float3 low = c / 12.92;
+        float3 high = pow((c + 0.055) / 1.055, 2.4);
+        color.rgb = lerp(high, low, step(c, 0.04045));
+    }
+    else
+    {
+        color.rgb = pow(c, gTransfer.xxx);
+    }
+    return color;
+}
+)HLSL";
+			ID3DXBuffer* bytecode = nullptr;
+			ID3DXBuffer* errors = nullptr;
+			const HRESULT compileHr = D3DXCompileShader(
+				kShaderSource,
+				static_cast<UINT>(std::strlen(kShaderSource)),
+				nullptr,
+				nullptr,
+				"main",
+				"ps_3_0",
+				0,
+				&bytecode,
+				&errors,
+				nullptr);
+			if (FAILED(compileHr) || !bytecode)
+			{
+				static std::atomic<bool> s_loggedCompileFailure{ false };
+				if (!s_loggedCompileFailure.exchange(true, std::memory_order_acq_rel))
+				{
+					Game::logMsg(
+						"[VR][NekoPostTransfer] shader compile failed hr=0x%08lx error=%s",
+						static_cast<unsigned long>(compileHr),
+						errors
+							? static_cast<const char*>(errors->GetBufferPointer())
+							: "<none>");
+				}
+				if (errors)
+					errors->Release();
+				if (bytecode)
+					bytecode->Release();
+				return compileHr;
+			}
+
+			const HRESULT createHr = device->CreatePixelShader(
+				static_cast<const DWORD*>(bytecode->GetBufferPointer()),
+				&vr->m_D9NekoPostOutputTransferPixelShader);
+			bytecode->Release();
+			if (errors)
+				errors->Release();
+			if (FAILED(createHr) || !vr->m_D9NekoPostOutputTransferPixelShader)
+				return createHr;
+		}
+
+		IDirect3DTexture9* sourceTexture = nullptr;
+		const HRESULT containerHr = sourceTextureSurface->GetContainer(
+			__uuidof(IDirect3DTexture9),
+			reinterpret_cast<void**>(&sourceTexture));
+		if (FAILED(containerHr) || !sourceTexture)
+			return containerHr;
+
+		D3DSURFACE_DESC destinationDesc{};
+		HRESULT hr = destination->GetDesc(&destinationDesc);
+		if (FAILED(hr))
+		{
+			sourceTexture->Release();
+			return hr;
+		}
+
+		IDirect3DSurface9* oldRenderTarget = nullptr;
+		const HRESULT oldRenderTargetHr = device->GetRenderTarget(0, &oldRenderTarget);
+		D3DVIEWPORT9 oldViewport{};
+		const bool haveOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
+		IDirect3DStateBlock9* stateBlock = nullptr;
+		if (SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &stateBlock)) && stateBlock)
+			stateBlock->Capture();
+
+		D3DVIEWPORT9 viewport{};
+		viewport.Width = destinationDesc.Width;
+		viewport.Height = destinationDesc.Height;
+		viewport.MinZ = 0.0f;
+		viewport.MaxZ = 1.0f;
+		struct TransferVertex
+		{
+			float x;
+			float y;
+			float z;
+			float rhw;
+			float u;
+			float v;
+		};
+		const float right = static_cast<float>(destinationDesc.Width) - 0.5f;
+		const float bottom = static_cast<float>(destinationDesc.Height) - 0.5f;
+		const TransferVertex quad[4] =
+		{
+			{ -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f },
+			{ right, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
+			{ -0.5f, bottom, 0.0f, 1.0f, 0.0f, 1.0f },
+			{ right, bottom, 0.0f, 1.0f, 1.0f, 1.0f }
+		};
+		const float transfer[4] = {
+			std::clamp(gamma, 1.0f, 4.0f),
+			decodeSrgb ? 1.0f : 0.0f,
+			0.0f,
+			0.0f
+		};
+
+		hr = device->SetRenderTarget(0, destination);
+		if (SUCCEEDED(hr))
+			hr = device->SetViewport(&viewport);
+		if (SUCCEEDED(hr))
+		{
+			device->SetVertexShader(nullptr);
+			device->SetPixelShader(vr->m_D9NekoPostOutputTransferPixelShader);
+			device->SetPixelShaderConstantF(0, transfer, 1);
+			device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+			device->SetTexture(0, sourceTexture);
+			device->SetRenderState(D3DRS_ZENABLE, FALSE);
+			device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+			device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+			device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+			device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+			device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+			device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+			device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+			device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+			device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+			device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+			device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+			hr = device->DrawPrimitiveUP(
+				D3DPT_TRIANGLESTRIP, 2, quad, sizeof(TransferVertex));
+		}
+
+		if (stateBlock)
+		{
+			stateBlock->Apply();
+			stateBlock->Release();
+		}
+		else
+		{
+			device->SetTexture(0, nullptr);
+			device->SetPixelShader(nullptr);
+		}
+		if (SUCCEEDED(oldRenderTargetHr) && oldRenderTarget)
+			device->SetRenderTarget(0, oldRenderTarget);
+		if (haveOldViewport)
+			device->SetViewport(&oldViewport);
+		if (oldRenderTarget)
+			oldRenderTarget->Release();
+		sourceTexture->Release();
+		return hr;
+	}
+
+	void HooksNekoPostProbeEnter(
+		IMatRenderContext* context,
+		std::uint64_t frameSerial,
+		HooksNekoPostPass pass,
+		int eyeIndex,
+		ITexture* takeoverTarget,
+		bool takeoverEnabled)
+	{
+		ITexture* const previousTakeoverTarget =
+			g_NekoPostProbeState.takeoverTarget;
+		g_NekoPostProbeState.frameSerial = frameSerial;
+		g_NekoPostProbeState.pass = pass;
+		g_NekoPostProbeState.eyeIndex = eyeIndex;
+		g_NekoPostProbeState.candidateCalls = 0;
+		g_NekoPostProbeState.context = context;
+		g_NekoPostProbeState.takeoverTarget = takeoverTarget;
+		g_NekoPostProbeState.takeoverEnabled = takeoverEnabled;
+		if (g_NekoPostProbeState.takeoverTarget)
+			g_NekoPostProbeState.takeoverTarget->AddRef();
+		if (previousTakeoverTarget)
+			previousTakeoverTarget->Release();
+	}
+
+	void HooksNekoPostProbeLeave()
+	{
+		// In the queued renderer this marker executes after RenderView has
+		// completely finished, including Left4Neko's wrapper code that runs after
+		// the raw Neko_Engine_Post draw.  Capture the real D3D9 backbuffer here so
+		// the VR eye receives the final wrapped result, and use StretchRect to keep
+		// this a format-preserving pixel copy rather than another material pass.
+		if (g_NekoPostProbeState.takeoverEnabled &&
+			g_NekoPostProbeState.candidateCalls != 0 &&
+			Hooks::m_VR &&
+			Hooks::m_VR->m_IsVREnabled &&
+			Hooks::m_VR->m_NekoEnginePostVRTakeover &&
+			Hooks::m_VR->m_NekoEnginePostVRCaptureBackBuffer)
+		{
+			IDirect3DSurface9* targetSurface = nullptr;
+			switch (g_NekoPostProbeState.pass)
+			{
+			case HooksNekoPostPass::MainEye:
+				targetSurface = g_NekoPostProbeState.eyeIndex == 1
+					? Hooks::m_VR->m_D9LeftEyeSurface
+					: Hooks::m_VR->m_D9RightEyeSurface;
+				break;
+			case HooksNekoPostPass::Scope:
+				targetSurface = Hooks::m_VR->m_D9ScopeSurface;
+				break;
+			case HooksNekoPostPass::RearMirror:
+				targetSurface = Hooks::m_VR->m_D9RearMirrorSurface;
+				break;
+			default:
+				break;
+			}
+
+			HRESULT getDeviceHr = E_POINTER;
+			HRESULT getBackBufferHr = E_POINTER;
+			HRESULT copyHr = E_POINTER;
+			HRESULT transferHr = S_FALSE;
+			HRESULT correctedCopyHr = S_FALSE;
+			bool transferApplied = false;
+			IDirect3DDevice9* device = nullptr;
+			IDirect3DSurface9* backBuffer = nullptr;
+			D3DSURFACE_DESC sourceDesc{};
+			D3DSURFACE_DESC targetDesc{};
+			if (targetSurface)
+			{
+				targetSurface->AddRef();
+				getDeviceHr = targetSurface->GetDevice(&device);
+				if (SUCCEEDED(getDeviceHr) && device)
+				{
+					getBackBufferHr = device->GetBackBuffer(
+						0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+					if (SUCCEEDED(getBackBufferHr) && backBuffer)
+					{
+						backBuffer->GetDesc(&sourceDesc);
+						targetSurface->GetDesc(&targetDesc);
+						if (Hooks::m_VR->m_NekoEnginePostProbeLog &&
+							g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+							g_NekoPostProbeState.eyeIndex == 1)
+						{
+							HooksNekoPostProbeSurfaceLuma(
+								4u, "wrapper-output", device, backBuffer);
+						}
+						copyHr = device->StretchRect(
+							backBuffer,
+							nullptr,
+							targetSurface,
+							nullptr,
+							D3DTEXF_NONE);
+						if (SUCCEEDED(copyHr) &&
+							Hooks::m_VR->m_NekoEnginePostProbeLog &&
+							g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+							g_NekoPostProbeState.eyeIndex == 1)
+						{
+							HooksNekoPostProbeSurfaceLuma(
+								8u, "copied-eye", device, targetSurface);
+						}
+
+						// Neko's gamma-space final pass raises the VR eye's dark and
+						// middle values substantially (the GPU probe sees Y=203 with no
+						// pixels below 32).  The desktop compositor normally supplies the
+						// complementary output transfer, but our eye RT is submitted as a
+						// plain UNORM texture. Use the eye as a temporary sampled copy,
+						// apply that missing transfer into the separate backbuffer, then
+						// copy the corrected pixels back into the eye. This retains Neko's
+						// tonemap/local-contrast result while restoring VR contrast.
+						if (SUCCEEDED(copyHr) &&
+							Hooks::m_VR->m_NekoEnginePostVROutputGammaCorrection &&
+							!Hooks::m_VR->m_NekoEnginePostVRDecodeInputSrgb)
+						{
+							transferHr = HooksNekoPostApplyColorTransfer(
+								Hooks::m_VR,
+								device,
+								targetSurface,
+								backBuffer,
+								Hooks::m_VR->m_NekoEnginePostVROutputGamma,
+								false);
+							if (SUCCEEDED(transferHr))
+							{
+								correctedCopyHr = device->StretchRect(
+									backBuffer,
+									nullptr,
+									targetSurface,
+									nullptr,
+									D3DTEXF_NONE);
+								transferApplied = SUCCEEDED(correctedCopyHr);
+								if (transferApplied)
+									copyHr = correctedCopyHr;
+							}
+							if (transferApplied &&
+								Hooks::m_VR->m_NekoEnginePostProbeLog &&
+								g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+								g_NekoPostProbeState.eyeIndex == 1)
+							{
+								HooksNekoPostProbeSurfaceLuma(
+									16u, "transfer-output", device, backBuffer);
+								HooksNekoPostProbeSurfaceLuma(
+									32u, "corrected-eye", device, targetSurface);
+							}
+						}
+					}
+				}
+			}
+
+			static std::atomic<unsigned int> s_tailCaptureLogBudget{ 16 };
+			unsigned int remaining =
+				s_tailCaptureLogBudget.load(std::memory_order_acquire);
+			while (remaining > 0 &&
+				!s_tailCaptureLogBudget.compare_exchange_weak(
+					remaining,
+					remaining - 1,
+					std::memory_order_acq_rel,
+					std::memory_order_acquire))
+			{
+			}
+			if (remaining > 0)
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover][PassEndCapture] copied=%d transfer=%d gamma=%.3f pass=%s eye=%d target=%s src=%ux%u fmt=%d ms=%d dst=%ux%u fmt=%d ms=%d getDev=0x%08lx getBB=0x%08lx copy=0x%08lx transferHr=0x%08lx correctedCopy=0x%08lx tid=%lu",
+					SUCCEEDED(copyHr) ? 1 : 0,
+					transferApplied ? 1 : 0,
+					Hooks::m_VR->m_NekoEnginePostVROutputGamma,
+					HooksNekoPostPassName(g_NekoPostProbeState.pass),
+					g_NekoPostProbeState.eyeIndex,
+					DebugTextureName(g_NekoPostProbeState.takeoverTarget),
+					sourceDesc.Width,
+					sourceDesc.Height,
+					static_cast<int>(sourceDesc.Format),
+					static_cast<int>(sourceDesc.MultiSampleType),
+					targetDesc.Width,
+					targetDesc.Height,
+					static_cast<int>(targetDesc.Format),
+					static_cast<int>(targetDesc.MultiSampleType),
+					static_cast<unsigned long>(getDeviceHr),
+					static_cast<unsigned long>(getBackBufferHr),
+					static_cast<unsigned long>(copyHr),
+					static_cast<unsigned long>(transferHr),
+					static_cast<unsigned long>(correctedCopyHr),
+					GetCurrentThreadId());
+			}
+
+			if (backBuffer)
+				backBuffer->Release();
+			if (device)
+				device->Release();
+			if (targetSurface)
+				targetSurface->Release();
+		}
+
+		if (g_NekoPostProbeState.frameSerial != 0)
+		{
+			ITexture* currentRt = nullptr;
+			ITexture* copy0 = nullptr;
+			ITexture* copy1 = nullptr;
+			int vpX = 0;
+			int vpY = 0;
+			int vpW = 0;
+			int vpH = 0;
+			const bool haveViewport = DebugGetViewport(
+				g_NekoPostProbeState.context, vpX, vpY, vpW, vpH);
+			if (g_NekoPostProbeState.context)
+			{
+				__try
+				{
+					currentRt = g_NekoPostProbeState.context->GetRenderTarget();
+					void** const vtable = *reinterpret_cast<void***>(g_NekoPostProbeState.context);
+					if (vtable && vtable[19])
+					{
+						using GetFramebufferCopyFn = ITexture* (__thiscall*)(void*, int);
+						GetFramebufferCopyFn const getCopy =
+							reinterpret_cast<GetFramebufferCopyFn>(vtable[19]);
+						copy0 = getCopy(g_NekoPostProbeState.context, 0);
+						copy1 = getCopy(g_NekoPostProbeState.context, 1);
+					}
+				}
+				__except (EXCEPTION_EXECUTE_HANDLER)
+				{
+					currentRt = nullptr;
+					copy0 = nullptr;
+					copy1 = nullptr;
+				}
+			}
+			Game::logMsg(
+				"[VR][NekoPostProbe][PassEnd] frame=%llu pass=%s eye=%d calls=%u tid=%lu rt=%s vp=%d,%d %dx%d haveVp=%d fb0=%s fb1=%s",
+				static_cast<unsigned long long>(g_NekoPostProbeState.frameSerial),
+				HooksNekoPostPassName(g_NekoPostProbeState.pass),
+				g_NekoPostProbeState.eyeIndex,
+				g_NekoPostProbeState.candidateCalls,
+				GetCurrentThreadId(),
+				DebugTextureName(currentRt),
+				vpX, vpY, vpW, vpH, haveViewport ? 1 : 0,
+				DebugTextureName(copy0),
+				DebugTextureName(copy1));
+		}
+		ITexture* const takeoverTarget = g_NekoPostProbeState.takeoverTarget;
+		g_NekoPostProbeState = HooksNekoPostProbeThreadState{};
+		if (takeoverTarget)
+			takeoverTarget->Release();
+	}
+
+	class HooksNekoPostProbePassFunctor final : public CFunctor
+	{
+	public:
+		HooksNekoPostProbePassFunctor(
+			IMatRenderContext* context,
+			std::uint64_t frameSerial,
+			HooksNekoPostPass pass,
+			int eyeIndex,
+			ITexture* takeoverTarget,
+			bool takeoverEnabled,
+			bool begin)
+			: m_Context(context),
+			m_FrameSerial(frameSerial),
+			m_Pass(pass),
+			m_EyeIndex(eyeIndex),
+			m_TakeoverTarget(takeoverTarget),
+			m_TakeoverEnabled(takeoverEnabled),
+			m_Begin(begin)
+		{
+			if (m_TakeoverTarget)
+				m_TakeoverTarget->AddRef();
+		}
+
+		~HooksNekoPostProbePassFunctor() override
+		{
+			if (m_TakeoverTarget)
+				m_TakeoverTarget->Release();
+		}
+
+		int AddRef() override
+		{
+			return static_cast<int>(m_Refs.fetch_add(1, std::memory_order_acq_rel) + 1);
+		}
+
+		int Release() override
+		{
+			const long remaining = m_Refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
+			if (remaining == 0)
+				delete this;
+			return static_cast<int>(remaining);
+		}
+
+		void operator()() override
+		{
+			if (m_Begin)
+				HooksNekoPostProbeEnter(
+					m_Context,
+					m_FrameSerial,
+					m_Pass,
+					m_EyeIndex,
+					m_TakeoverTarget,
+					m_TakeoverEnabled);
+			else
+				HooksNekoPostProbeLeave();
+		}
+
+	private:
+		std::atomic<long> m_Refs{ 0 };
+		IMatRenderContext* m_Context = nullptr;
+		std::uint64_t m_FrameSerial = 0;
+		HooksNekoPostPass m_Pass = HooksNekoPostPass::Outside;
+		int m_EyeIndex = 0;
+		ITexture* m_TakeoverTarget = nullptr;
+		bool m_TakeoverEnabled = false;
+		bool m_Begin = false;
+	};
+
+	class ScopedNekoPostProbePass
+	{
+	public:
+		ScopedNekoPostProbePass(
+			IMatRenderContext* context,
+			int queueMode,
+			std::uint64_t frameSerial,
+			HooksNekoPostPass pass,
+			int eyeIndex,
+			ITexture* takeoverTarget,
+			bool takeoverEnabled)
+			: m_FrameSerial(frameSerial),
+			m_Pass(pass),
+			m_EyeIndex(eyeIndex)
+		{
+			if (!context || (frameSerial == 0 && !takeoverEnabled))
+				return;
+
+			if (queueMode != 0)
+			{
+				m_CallQueue = context->GetCallQueue();
+				if (!m_CallQueue)
+				{
+					static std::atomic<bool> s_loggedMissingQueue{ false };
+					if (!s_loggedMissingQueue.exchange(true, std::memory_order_acq_rel))
+						Game::logMsg("[VR][NekoPostProbe] call queue unavailable; sampled queued passes cannot be labelled");
+					return;
+				}
+				m_CallQueue->QueueFunctor(new HooksNekoPostProbePassFunctor(
+					context,
+					m_FrameSerial,
+					m_Pass,
+					m_EyeIndex,
+					takeoverTarget,
+					takeoverEnabled,
+					true));
+			}
+			else
+			{
+				HooksNekoPostProbeEnter(
+					context,
+					m_FrameSerial,
+					m_Pass,
+					m_EyeIndex,
+					takeoverTarget,
+					takeoverEnabled);
+			}
+			m_Active = true;
+		}
+
+		~ScopedNekoPostProbePass()
+		{
+			if (!m_Active)
+				return;
+			if (m_CallQueue)
+			{
+				m_CallQueue->QueueFunctor(new HooksNekoPostProbePassFunctor(
+					nullptr,
+					m_FrameSerial,
+					m_Pass,
+					m_EyeIndex,
+					nullptr,
+					false,
+					false));
+			}
+			else
+			{
+				HooksNekoPostProbeLeave();
+			}
+		}
+
+	private:
+		ICallQueue* m_CallQueue = nullptr;
+		std::uint64_t m_FrameSerial = 0;
+		HooksNekoPostPass m_Pass = HooksNekoPostPass::Outside;
+		int m_EyeIndex = 0;
+		bool m_Active = false;
+	};
+
+	std::uint64_t HooksNekoPostProbeSampleFrame(VR* vr)
+	{
+		if (!vr || !vr->m_NekoEnginePostProbeLog ||
+			vr->m_NekoEnginePostProbeLogHz <= 0.0f)
+		{
+			return 0;
+		}
+
+		static thread_local std::chrono::steady_clock::time_point s_lastSample{};
+		if (ShouldThrottleLog(s_lastSample, vr->m_NekoEnginePostProbeLogHz))
+			return 0;
+		return g_NekoPostProbeFrameSerial.fetch_add(1, std::memory_order_acq_rel) + 1;
+	}
+
+	bool HooksNekoPostContainsI(const char* value, const char* needle)
+	{
+		if (!value || !needle || !*needle)
+			return false;
+		const size_t needleLength = std::strlen(needle);
+		for (const char* cursor = value; *cursor; ++cursor)
+		{
+			if (_strnicmp(cursor, needle, needleLength) == 0)
+				return true;
+		}
+		return false;
+	}
 }
 
 static DWORD TimedWaitForPoseEvent(HANDLE event, DWORD timeoutMs)
@@ -412,6 +1355,899 @@ ITexture* __fastcall Hooks::dGetRenderTarget(void* ecx, void* edx)
 {
 	ITexture* result = hkGetRenderTarget.fOriginal(ecx);
 	return result;
+}
+
+void __fastcall Hooks::dDrawScreenSpaceRectangle(
+	void* ecx,
+	void* edx,
+	IMaterial* material,
+	int destX,
+	int destY,
+	int width,
+	int height,
+	float srcX0,
+	float srcY0,
+	float srcX1,
+	float srcY1,
+	int srcWidth,
+	int srcHeight,
+	void* clientRenderable,
+	int xDice,
+	int yDice)
+{
+	const bool probeActive =
+		g_NekoPostProbeState.frameSerial != 0 &&
+		m_VR &&
+		m_VR->m_NekoEnginePostProbeLog;
+	const bool takeoverPassActive =
+		g_NekoPostProbeState.takeoverEnabled &&
+		g_NekoPostProbeState.takeoverTarget != nullptr &&
+		m_VR &&
+		m_VR->m_IsVREnabled &&
+		m_VR->m_NekoEnginePostVRTakeover;
+	if (!probeActive && !takeoverPassActive)
+	{
+		if (hkDrawScreenSpaceRectangle.fOriginal)
+		{
+			hkDrawScreenSpaceRectangle.fOriginal(
+				ecx,
+				material,
+				destX,
+				destY,
+				width,
+				height,
+				srcX0,
+				srcY0,
+				srcX1,
+				srcY1,
+				srcWidth,
+				srcHeight,
+				clientRenderable,
+				xDice,
+				yDice);
+		}
+		return;
+	}
+
+	char materialName[160] = "<null>";
+	char shaderName[96] = "<null>";
+	if (material)
+	{
+		__try
+		{
+			const char* const name = material->GetName();
+			const char* const shader = material->GetShaderName();
+			if (name && *name)
+				strncpy_s(materialName, name, _TRUNCATE);
+			if (shader && *shader)
+				strncpy_s(shaderName, shader, _TRUNCATE);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			strcpy_s(materialName, "<bad-material>");
+			strcpy_s(shaderName, "<bad-shader>");
+		}
+	}
+
+	const bool candidate =
+		HooksNekoPostContainsI(materialName, "dev/engine_post") ||
+		HooksNekoPostContainsI(materialName, "neko_engine_post") ||
+		HooksNekoPostContainsI(shaderName, "neko_engine_post");
+	const bool sampled = probeActive && candidate;
+	const bool takeover = takeoverPassActive && candidate;
+	const unsigned int callIndex = (sampled || takeover)
+		? ++g_NekoPostProbeState.candidateCalls
+		: 0;
+	if (takeover && material && callIndex == 1 &&
+		g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+		g_NekoPostProbeState.eyeIndex == 1)
+	{
+		static std::atomic<bool> s_loggedNekoParameters{ false };
+		if (!s_loggedNekoParameters.exchange(true, std::memory_order_acq_rel))
+		{
+			ITexture* const baseTexture =
+				HooksNekoPostReadMaterialTexture(material, "$BASETEXTURE");
+			ITexture* const framebufferTexture =
+				HooksNekoPostReadMaterialTexture(material, "$FBTEXTURE");
+			Game::logMsg(
+				"[VR][NekoPostParams][Material] base=%s fb=%s allowAfter=%d allowVignette=%d allowNoise=%d allowLocal=%d aa=%d bloom=%d nekoBloom=%d after=%d local=%d vignette=%d blurredVignette=%d noise=%d vomit=%d fade=%d desaturate=%d lookups=%d linearWrite=%d linearBase=%d linear1=%d tvGamma=%.4f noiseScale=%.4f",
+				DebugTextureName(baseTexture),
+				DebugTextureName(framebufferTexture),
+				HooksNekoPostReadMaterialInt(material, "$ALLOW_AFTER"),
+				HooksNekoPostReadMaterialInt(material, "$ALLOWVIGNETTE"),
+				HooksNekoPostReadMaterialInt(material, "$ALLOWNOISE"),
+				HooksNekoPostReadMaterialInt(material, "$ALLOWLOCALCONTRAST"),
+				HooksNekoPostReadMaterialInt(material, "$AAENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$BLOOMENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$NEKO_BLOOM"),
+				HooksNekoPostReadMaterialInt(material, "$AFTER"),
+				HooksNekoPostReadMaterialInt(material, "$LOCALCONTRASTENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$VIGNETTEENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$BLURREDVIGNETTEENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$NOISEENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$VOMITENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$FADE"),
+				HooksNekoPostReadMaterialInt(material, "$DESATURATEENABLE"),
+				HooksNekoPostReadMaterialInt(material, "$NUM_LOOKUPS"),
+				HooksNekoPostReadMaterialInt(material, "$LINEARWRITE"),
+				HooksNekoPostReadMaterialInt(material, "$LINEARREAD_BASETEXTURE"),
+				HooksNekoPostReadMaterialInt(material, "$LINEARREAD_TEXTURE1"),
+				HooksNekoPostReadMaterialFloat(material, "$TV_GAMMA"),
+				HooksNekoPostReadMaterialFloat(material, "$NOISESCALE"));
+
+			if (m_Game)
+			{
+				Game::logMsg(
+					"[VR][NekoPostParams][CVar] gamma=%.4f tonemap=%d forceLinear=%d allowInvert=%d preTonemap=%d after=%d adaptedLum=%.4f lumCompareScale=%.4f lumAllowTonemap=%d bloomMode=%d bloomScale=%.4f localScale=%.4f localEdge=%.4f vignette=%d colorCorrection=%d",
+					m_Game->GetConVarFloat("mat_neko_gamma", -9999.0f),
+					m_Game->GetConVarInt("mat_neko_tonemapping_algorithm", -9999),
+					m_Game->GetConVarInt("mat_neko_tonemapping_force_linear", -9999),
+					m_Game->GetConVarInt("mat_neko_allow_invert_tonemap", -9999),
+					m_Game->GetConVarInt("mat_neko_pre_tonemapping", -9999),
+					m_Game->GetConVarInt("mat_neko_engine_post_after", -9999),
+					m_Game->GetConVarFloat("mat_neko_engine_post_adapted_lum", -9999.0f),
+					m_Game->GetConVarFloat("mat_neko_lumance_compare_scale", -9999.0f),
+					m_Game->GetConVarInt("mat_neko_luminance_compare_allow_tonemap", -9999),
+					m_Game->GetConVarInt("mat_nekobloom_blend_mode", -9999),
+					m_Game->GetConVarFloat("mat_nekobloom_scale", -9999.0f),
+					m_Game->GetConVarFloat("mat_local_contrast_scale_override", -9999.0f),
+					m_Game->GetConVarFloat("mat_local_contrast_edge_scale_override", -9999.0f),
+					m_Game->GetConVarInt("mat_vignette_enable", -9999),
+					m_Game->GetConVarInt("mat_colorcorrection", -9999));
+			}
+		}
+	}
+
+	IMatRenderContext* const context =
+		reinterpret_cast<IMatRenderContext*>(ecx);
+	ITexture* beforeRt = nullptr;
+	ITexture* beforeCopy0 = nullptr;
+	ITexture* beforeCopy1 = nullptr;
+	int beforeVpX = 0;
+	int beforeVpY = 0;
+	int beforeVpW = 0;
+	int beforeVpH = 0;
+	bool haveBeforeViewport = false;
+	if (sampled && context)
+	{
+		haveBeforeViewport = DebugGetViewport(
+			context, beforeVpX, beforeVpY, beforeVpW, beforeVpH);
+		__try
+		{
+			beforeRt = context->GetRenderTarget();
+			void** const vtable = *reinterpret_cast<void***>(context);
+			if (vtable && vtable[19])
+			{
+				using GetFramebufferCopyFn = ITexture* (__thiscall*)(void*, int);
+				GetFramebufferCopyFn const getCopy =
+					reinterpret_cast<GetFramebufferCopyFn>(vtable[19]);
+				beforeCopy0 = getCopy(context, 0);
+				beforeCopy1 = getCopy(context, 1);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			beforeRt = nullptr;
+			beforeCopy0 = nullptr;
+			beforeCopy1 = nullptr;
+		}
+	}
+
+	ITexture* takeoverPreviousRt = nullptr;
+	int takeoverPreviousVpX = 0;
+	int takeoverPreviousVpY = 0;
+	int takeoverPreviousVpW = 0;
+	int takeoverPreviousVpH = 0;
+	bool takeoverHavePreviousViewport = false;
+	bool takeoverApplied = false;
+	bool takeoverCapturedBackBuffer = false;
+	const bool takeoverUseBackBufferCapture =
+		takeover && m_VR && m_VR->m_NekoEnginePostVRCaptureBackBuffer;
+	const bool takeoverUseNativeFullFrameSource =
+		takeoverUseBackBufferCapture && m_VR &&
+		m_VR->m_NekoEnginePostVRUseNativeFullFrameSource;
+	ITexture* takeoverPreviousFramebufferCopy0 = nullptr;
+	bool takeoverReboundFramebufferCopy0 = false;
+	ITexture* takeoverFramebufferSource =
+		g_NekoPostProbeState.takeoverTarget;
+	HRESULT takeoverDecodeInputHr = S_FALSE;
+	bool takeoverDecodedInput = false;
+	bool takeoverHdrSceneInput = false;
+	void* takeoverFramebufferTextureVar = nullptr;
+	ITexture* takeoverPreviousFramebufferTexture = nullptr;
+	bool takeoverReboundFramebufferTexture = false;
+	HRESULT takeoverRefreshSmallInputHr = S_FALSE;
+	void* takeoverBaseTextureVar = nullptr;
+	ITexture* takeoverPreviousBaseTexture = nullptr;
+	bool takeoverReboundBaseTexture = false;
+	void* takeoverNekoBloomVar = nullptr;
+	int takeoverPreviousNekoBloom = 0;
+	bool takeoverDisabledNekoBloom = false;
+	bool takeoverTargetCleared = false;
+	IDirect3DDevice9* takeoverDevice = nullptr;
+	HRESULT takeoverGetActualTargetHr = E_FAIL;
+	HRESULT takeoverActualTargetDescHr = E_FAIL;
+	HRESULT takeoverClearActualTargetHr = E_FAIL;
+	D3DSURFACE_DESC takeoverActualTargetDesc{};
+	DWORD takeoverSrgbBefore = 0;
+	DWORD takeoverSrgbAfter = 0;
+	DWORD takeoverBlendBefore = 0;
+	DWORD takeoverBlendAfter = 0;
+	DWORD takeoverSrcBlendAfter = 0;
+	DWORD takeoverDstBlendAfter = 0;
+	DWORD takeoverBlendOpAfter = 0;
+	DWORD takeoverSampler0SrgbAfter = 0;
+	DWORD takeoverSampler1SrgbAfter = 0;
+	bool takeoverHaveD3DState = false;
+	if (takeover && context && !takeoverUseBackBufferCapture)
+	{
+		__try
+		{
+			if (m_VR && m_VR->m_D9LeftEyeSurface &&
+				SUCCEEDED(m_VR->m_D9LeftEyeSurface->GetDevice(&takeoverDevice)) &&
+				takeoverDevice)
+			{
+				takeoverHaveD3DState =
+					SUCCEEDED(takeoverDevice->GetRenderState(
+						D3DRS_SRGBWRITEENABLE, &takeoverSrgbBefore)) &&
+					SUCCEEDED(takeoverDevice->GetRenderState(
+						D3DRS_ALPHABLENDENABLE, &takeoverBlendBefore));
+			}
+
+			takeoverPreviousRt = context->GetRenderTarget();
+			takeoverHavePreviousViewport = DebugGetViewport(
+				context,
+				takeoverPreviousVpX,
+				takeoverPreviousVpY,
+				takeoverPreviousVpW,
+				takeoverPreviousVpH);
+			context->SetRenderTarget(g_NekoPostProbeState.takeoverTarget);
+			takeoverApplied = true;
+			if (hkViewport.fOriginal)
+			{
+					hkViewport.fOriginal(
+					context,
+					destX,
+					destY,
+					width,
+					height);
+			}
+			// Left4Neko has already captured this eye into framebuffer-copy slot 0.
+			// Its normal destination is the default backbuffer, which is not still
+			// holding the unprocessed eye scene. A redirected eye RT is, so clear it
+			// before the final pass to prevent blend/discard branches from adding the
+			// processed result over the original and lifting the whole image to white.
+			if (m_VR->m_NekoEnginePostVRClearTarget)
+			{
+				context->OverrideAlphaWriteEnable(true, true);
+				context->ClearColor4ub(0, 0, 0, 255);
+				context->ClearBuffers(true, false, false);
+				context->OverrideAlphaWriteEnable(false, true);
+				takeoverTargetCleared = true;
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			takeoverApplied = false;
+			if (takeoverDevice)
+			{
+				takeoverDevice->Release();
+				takeoverDevice = nullptr;
+			}
+		}
+	}
+	else if (takeoverUseBackBufferCapture && context)
+	{
+		__try
+		{
+			// This is the path used by the default configuration.  L4N has already
+			// switched the material-system destination back to the default target,
+			// so clear that *actual D3D target* before its final native draw.  Merely
+			// clearing the eye ITexture (the direct-path behaviour above) never
+			// touched this target.  A black destination is required when any Neko
+			// snapshot/branch uses alpha or additive blending; otherwise the old eye
+			// image underneath is accumulated a second time and the result washes out.
+			if (m_VR && m_VR->m_D9LeftEyeSurface &&
+				SUCCEEDED(m_VR->m_D9LeftEyeSurface->GetDevice(&takeoverDevice)) &&
+				takeoverDevice)
+			{
+				// Sample the unprocessed eye before clearing the separate default
+				// backbuffer.  This must live in the capture branch: the direct-eye
+				// branch above is only an opt-in fallback and is not the default path.
+				if (m_VR->m_NekoEnginePostProbeLog &&
+					g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+					g_NekoPostProbeState.eyeIndex == 1 &&
+					callIndex == 1)
+				{
+					HooksNekoPostProbeSurfaceLuma(
+						1u,
+						"input-eye",
+						takeoverDevice,
+						m_VR->m_D9LeftEyeSurface);
+				}
+				takeoverHaveD3DState =
+					SUCCEEDED(takeoverDevice->GetRenderState(
+						D3DRS_SRGBWRITEENABLE, &takeoverSrgbBefore)) &&
+					SUCCEEDED(takeoverDevice->GetRenderState(
+						D3DRS_ALPHABLENDENABLE, &takeoverBlendBefore));
+
+				// The fallback path replaces L4N's full-frame source with the VR eye.
+				// Decode that LDR eye into a private linear RT before the native draw.
+				// The normal path keeps L4N's own _rt_FullFrameFB untouched so every
+				// tonemapper sees the same pre-final-pass domain as desktop mode.
+				IDirect3DSurface9* const eyeSourceSurface =
+					g_NekoPostProbeState.eyeIndex == 1
+					? m_VR->m_D9LeftEyeSurface
+					: (g_NekoPostProbeState.eyeIndex == 2
+						? m_VR->m_D9RightEyeSurface
+						: nullptr);
+				D3DSURFACE_DESC eyeSourceDesc{};
+				if (eyeSourceSurface &&
+					SUCCEEDED(eyeSourceSurface->GetDesc(&eyeSourceDesc)) &&
+					eyeSourceDesc.Format == D3DFMT_A16B16G16R16F)
+				{
+					takeoverHdrSceneInput = true;
+					takeoverFramebufferSource =
+						g_NekoPostProbeState.eyeIndex == 1
+						? m_VR->m_LeftEyeTexture
+						: m_VR->m_RightEyeTexture;
+				}
+				else if (!takeoverUseNativeFullFrameSource &&
+					m_VR->m_NekoEnginePostVRDecodeInputSrgb &&
+					eyeSourceSurface &&
+					m_VR->m_NekoPostLinearInputTexture &&
+					m_VR->m_D9NekoPostLinearInputSurface)
+				{
+					takeoverDecodeInputHr = HooksNekoPostApplyColorTransfer(
+						m_VR,
+						takeoverDevice,
+						eyeSourceSurface,
+						m_VR->m_D9NekoPostLinearInputSurface,
+						1.0f,
+						true);
+					if (SUCCEEDED(takeoverDecodeInputHr))
+					{
+						takeoverFramebufferSource =
+							m_VR->m_NekoPostLinearInputTexture;
+						takeoverDecodedInput = true;
+						if (m_VR->m_NekoEnginePostProbeLog &&
+							g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+							g_NekoPostProbeState.eyeIndex == 1 &&
+							callIndex == 1)
+						{
+							HooksNekoPostProbeSurfaceLuma(
+								64u,
+								"decoded-input",
+								takeoverDevice,
+								m_VR->m_D9NekoPostLinearInputSurface);
+						}
+					}
+				}
+
+				// Source's desktop post chain refreshes _rt_smallfb0 from the same
+				// frame before this draw. In VR that material variable was still bound
+				// to a stale 1010x1010 allocation (the sampler probe saw a constant
+				// yellow/green image). Recreate that dependency from the current eye.
+				// Keep it LDR, matching native _rt_smallfb0, while StretchRect performs
+				// the same quarter-resolution bilinear reduction on the GPU.
+				IDirect3DSurface9* const smallInputSource =
+					takeoverHdrSceneInput
+					? eyeSourceSurface
+					: (takeoverDecodedInput && m_VR->m_D9NekoPostLinearInputSurface
+					? m_VR->m_D9NekoPostLinearInputSurface
+					: eyeSourceSurface);
+				if (smallInputSource &&
+					m_VR->m_NekoPostSmallInputTexture &&
+					m_VR->m_D9NekoPostSmallInputSurface)
+				{
+					takeoverRefreshSmallInputHr = takeoverDevice->StretchRect(
+						smallInputSource,
+						nullptr,
+						m_VR->m_D9NekoPostSmallInputSurface,
+						nullptr,
+						D3DTEXF_LINEAR);
+					if (SUCCEEDED(takeoverRefreshSmallInputHr) &&
+						m_VR->m_NekoEnginePostProbeLog &&
+						g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+						g_NekoPostProbeState.eyeIndex == 1 &&
+						callIndex == 1)
+					{
+						HooksNekoPostProbeSurfaceLuma(
+							512u,
+							"small-input",
+							takeoverDevice,
+							m_VR->m_D9NekoPostSmallInputSurface);
+					}
+				}
+
+				if (m_VR->m_NekoEnginePostVRClearTarget)
+				{
+					IDirect3DSurface9* actualTarget = nullptr;
+					takeoverGetActualTargetHr =
+						takeoverDevice->GetRenderTarget(0, &actualTarget);
+					if (SUCCEEDED(takeoverGetActualTargetHr) && actualTarget)
+					{
+						takeoverActualTargetDescHr =
+							actualTarget->GetDesc(&takeoverActualTargetDesc);
+						if (SUCCEEDED(takeoverActualTargetDescHr))
+						{
+							D3DRECT const clearRect = {
+								0,
+								0,
+								static_cast<LONG>(takeoverActualTargetDesc.Width),
+								static_cast<LONG>(takeoverActualTargetDesc.Height)
+							};
+							takeoverClearActualTargetHr = takeoverDevice->Clear(
+								1,
+								&clearRect,
+								D3DCLEAR_TARGET,
+								D3DCOLOR_ARGB(255, 0, 0, 0),
+								1.0f,
+								0);
+							takeoverTargetCleared =
+								SUCCEEDED(takeoverClearActualTargetHr);
+						}
+						actualTarget->Release();
+					}
+				}
+			}
+
+			// Neko_Engine_Post obtains the full-frame scene through framebuffer-copy
+			// slot 0. Keep L4N's own _rt_FullFrameFB for the normal path: it includes
+			// the pre-final-pass data expected by its tonemappers. The eye/linear RT
+			// substitution remains available as a fallback. $BaseTexture is the
+			// auxiliary _rt_smallfb0 and is rebound separately below.
+			void** const contextVtable = *reinterpret_cast<void***>(context);
+			if (contextVtable && contextVtable[18] && contextVtable[19])
+			{
+				using SetFramebufferCopyFn =
+					void(__thiscall*)(void*, ITexture*, int);
+				using GetFramebufferCopyFn =
+					ITexture* (__thiscall*)(void*, int);
+				GetFramebufferCopyFn const getFramebufferCopy =
+					reinterpret_cast<GetFramebufferCopyFn>(contextVtable[19]);
+				SetFramebufferCopyFn const setFramebufferCopy =
+					reinterpret_cast<SetFramebufferCopyFn>(contextVtable[18]);
+				takeoverPreviousFramebufferCopy0 =
+					getFramebufferCopy(context, 0);
+				if (takeoverUseNativeFullFrameSource)
+				{
+					takeoverFramebufferSource =
+						takeoverPreviousFramebufferCopy0;
+				}
+				else
+				{
+					setFramebufferCopy(
+						context,
+						takeoverFramebufferSource,
+						0);
+					takeoverReboundFramebufferCopy0 = true;
+				}
+			}
+
+			// The Neko shader does not resolve framebuffer-copy slot 0 lazily; its
+			// primary sampler is the already-bound $FBTEXTURE. Leave it unchanged in
+			// native-source mode, and only substitute it for the fallback path.
+			if (material)
+			{
+				// Bind the freshly downsampled eye as the auxiliary small-frame input.
+				// This changes only the missing VR dependency; all L4N tonemap/gamma
+				// constants and the native full-frame input remain untouched.
+				bool foundBaseTexture = false;
+				takeoverBaseTextureVar = material->FindVar(
+					"$BASETEXTURE", &foundBaseTexture, false);
+				if (SUCCEEDED(takeoverRefreshSmallInputHr) &&
+					foundBaseTexture && takeoverBaseTextureVar &&
+					m_VR->m_NekoPostSmallInputTexture)
+				{
+					void** const baseVarVtable =
+						*reinterpret_cast<void***>(takeoverBaseTextureVar);
+					if (baseVarVtable && baseVarVtable[0] && baseVarVtable[14])
+					{
+						using GetTextureValueFn = ITexture* (__thiscall*)(void*);
+						using SetTextureValueFn = void(__thiscall*)(void*, ITexture*);
+						takeoverPreviousBaseTexture =
+							reinterpret_cast<GetTextureValueFn>(baseVarVtable[0])(
+								takeoverBaseTextureVar);
+						reinterpret_cast<SetTextureValueFn>(baseVarVtable[14])(
+							takeoverBaseTextureVar,
+							m_VR->m_NekoPostSmallInputTexture);
+						takeoverReboundBaseTexture = true;
+					}
+				}
+
+				bool foundFramebufferTexture = false;
+				takeoverFramebufferTextureVar = material->FindVar(
+					"$FBTEXTURE", &foundFramebufferTexture, false);
+				if (foundFramebufferTexture && takeoverFramebufferTextureVar)
+				{
+					void** const varVtable =
+						*reinterpret_cast<void***>(takeoverFramebufferTextureVar);
+					if (varVtable && varVtable[0] && varVtable[14])
+					{
+						using GetTextureValueFn = ITexture* (__thiscall*)(void*);
+						using SetTextureValueFn = void(__thiscall*)(void*, ITexture*);
+					takeoverPreviousFramebufferTexture =
+						reinterpret_cast<GetTextureValueFn>(varVtable[0])(
+							takeoverFramebufferTextureVar);
+					if (takeoverUseNativeFullFrameSource)
+					{
+						takeoverFramebufferSource =
+							takeoverPreviousFramebufferTexture;
+					}
+					else
+					{
+						reinterpret_cast<SetTextureValueFn>(varVtable[14])(
+							takeoverFramebufferTextureVar,
+							takeoverFramebufferSource);
+						takeoverReboundFramebufferTexture = true;
+					}
+					}
+				}
+
+				// L4N builds its NekoBloom auxiliary chain before this raw final draw.
+				// That chain still uses the desktop-sized full-frame source while the
+				// main sampler above has been replaced by a 4040x4040 eye.  Screen-mode
+				// bloom (the user's current blend mode 2) therefore lifts the complete
+				// image.  Gate only the final NEKO_BLOOM combo for VR until the auxiliary
+				// chain is redirected per-eye; preserve all tonemap/gamma parameters.
+				if (!takeoverUseNativeFullFrameSource &&
+					m_VR->m_NekoEnginePostVRDisableNekoBloom)
+				{
+					bool foundNekoBloom = false;
+					takeoverNekoBloomVar = material->FindVar(
+						"$NEKO_BLOOM", &foundNekoBloom, false);
+					if (foundNekoBloom && takeoverNekoBloomVar)
+					{
+						void** const bloomVarVtable =
+							*reinterpret_cast<void***>(takeoverNekoBloomVar);
+						if (bloomVarVtable && bloomVarVtable[4] && bloomVarVtable[26])
+						{
+							using GetIntValueFn = int(__thiscall*)(void*);
+							using SetIntValueFn = void(__thiscall*)(void*, int);
+							takeoverPreviousNekoBloom =
+								reinterpret_cast<GetIntValueFn>(bloomVarVtable[26])(
+									takeoverNekoBloomVar);
+							reinterpret_cast<SetIntValueFn>(bloomVarVtable[4])(
+								takeoverNekoBloomVar,
+								0);
+							takeoverDisabledNekoBloom = true;
+						}
+					}
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			// Keep any successfully-completed rebind flags intact so the cleanup
+			// below can restore state even if the other rebind faults midway.
+			static std::atomic<bool> s_loggedFramebufferRebindFault{ false };
+			if (!s_loggedFramebufferRebindFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] framebuffer source rebind fault");
+			}
+		}
+	}
+
+	if (hkDrawScreenSpaceRectangle.fOriginal)
+	{
+		hkDrawScreenSpaceRectangle.fOriginal(
+			ecx,
+			material,
+			destX,
+			destY,
+			width,
+			height,
+			srcX0,
+			srcY0,
+			srcX1,
+			srcY1,
+			srcWidth,
+			srcHeight,
+			clientRenderable,
+			xDice,
+			yDice);
+	}
+
+	if (takeoverUseBackBufferCapture && takeoverDevice && m_VR &&
+		m_VR->m_NekoEnginePostProbeLog &&
+		g_NekoPostProbeState.pass == HooksNekoPostPass::MainEye &&
+		g_NekoPostProbeState.eyeIndex == 1 &&
+		callIndex == 1)
+	{
+		HooksNekoPostProbeBoundSamplers(takeoverDevice);
+		IDirect3DSurface9* rawOutput = nullptr;
+		if (SUCCEEDED(takeoverDevice->GetRenderTarget(0, &rawOutput)) && rawOutput)
+		{
+			HooksNekoPostProbeSurfaceLuma(
+				2u, "raw-neko-output", takeoverDevice, rawOutput);
+			rawOutput->Release();
+		}
+	}
+
+	if (takeoverReboundBaseTexture && takeoverBaseTextureVar)
+	{
+		__try
+		{
+			void** const baseVarVtable =
+				*reinterpret_cast<void***>(takeoverBaseTextureVar);
+			if (baseVarVtable && baseVarVtable[14])
+			{
+				using SetTextureValueFn = void(__thiscall*)(void*, ITexture*);
+				reinterpret_cast<SetTextureValueFn>(baseVarVtable[14])(
+					takeoverBaseTextureVar,
+					takeoverPreviousBaseTexture);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedBaseTextureRestoreFault{ false };
+			if (!s_loggedBaseTextureRestoreFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] $BASETEXTURE restore fault");
+			}
+		}
+	}
+
+	if (takeoverReboundFramebufferCopy0 && context)
+	{
+		__try
+		{
+			void** const contextVtable = *reinterpret_cast<void***>(context);
+			if (contextVtable && contextVtable[18])
+			{
+				using SetFramebufferCopyFn =
+					void(__thiscall*)(void*, ITexture*, int);
+				reinterpret_cast<SetFramebufferCopyFn>(contextVtable[18])(
+					context,
+					takeoverPreviousFramebufferCopy0,
+					0);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedFramebufferCopyRestoreFault{ false };
+			if (!s_loggedFramebufferCopyRestoreFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] framebuffer-copy slot 0 restore fault");
+			}
+		}
+	}
+
+	if (takeoverReboundFramebufferTexture && takeoverFramebufferTextureVar)
+	{
+		__try
+		{
+			void** const varVtable =
+				*reinterpret_cast<void***>(takeoverFramebufferTextureVar);
+			if (varVtable && varVtable[14])
+			{
+				using SetTextureValueFn = void(__thiscall*)(void*, ITexture*);
+				reinterpret_cast<SetTextureValueFn>(varVtable[14])(
+					takeoverFramebufferTextureVar,
+					takeoverPreviousFramebufferTexture);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedFramebufferTextureRestoreFault{ false };
+			if (!s_loggedFramebufferTextureRestoreFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] $FBTEXTURE restore fault");
+			}
+		}
+	}
+
+	if (takeoverDisabledNekoBloom && takeoverNekoBloomVar)
+	{
+		__try
+		{
+			void** const bloomVarVtable =
+				*reinterpret_cast<void***>(takeoverNekoBloomVar);
+			if (bloomVarVtable && bloomVarVtable[4])
+			{
+				using SetIntValueFn = void(__thiscall*)(void*, int);
+				reinterpret_cast<SetIntValueFn>(bloomVarVtable[4])(
+					takeoverNekoBloomVar,
+					takeoverPreviousNekoBloom);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedNekoBloomRestoreFault{ false };
+			if (!s_loggedNekoBloomRestoreFault.exchange(
+				true, std::memory_order_acq_rel))
+			{
+				Game::logMsg(
+					"[VR][NekoPostTakeover] $NEKO_BLOOM restore fault");
+			}
+		}
+	}
+
+	if (takeoverDevice)
+	{
+		const bool readAfterState =
+			SUCCEEDED(takeoverDevice->GetRenderState(
+				D3DRS_SRGBWRITEENABLE, &takeoverSrgbAfter)) &&
+			SUCCEEDED(takeoverDevice->GetRenderState(
+				D3DRS_ALPHABLENDENABLE, &takeoverBlendAfter)) &&
+			SUCCEEDED(takeoverDevice->GetRenderState(
+				D3DRS_SRCBLEND, &takeoverSrcBlendAfter)) &&
+			SUCCEEDED(takeoverDevice->GetRenderState(
+				D3DRS_DESTBLEND, &takeoverDstBlendAfter)) &&
+			SUCCEEDED(takeoverDevice->GetRenderState(
+				D3DRS_BLENDOP, &takeoverBlendOpAfter)) &&
+			SUCCEEDED(takeoverDevice->GetSamplerState(
+				0, D3DSAMP_SRGBTEXTURE, &takeoverSampler0SrgbAfter)) &&
+			SUCCEEDED(takeoverDevice->GetSamplerState(
+				1, D3DSAMP_SRGBTEXTURE, &takeoverSampler1SrgbAfter));
+		takeoverHaveD3DState = takeoverHaveD3DState && readAfterState;
+		takeoverDevice->Release();
+		takeoverDevice = nullptr;
+	}
+
+	if (takeoverApplied && context && !takeoverUseBackBufferCapture)
+	{
+		__try
+		{
+			context->SetRenderTarget(takeoverPreviousRt);
+			if (takeoverHavePreviousViewport && hkViewport.fOriginal)
+			{
+				hkViewport.fOriginal(
+					context,
+					takeoverPreviousVpX,
+					takeoverPreviousVpY,
+					takeoverPreviousVpW,
+					takeoverPreviousVpH);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			static std::atomic<bool> s_loggedRestoreFault{ false };
+			if (!s_loggedRestoreFault.exchange(true, std::memory_order_acq_rel))
+				Game::logMsg("[VR][NekoPostTakeover] RT/viewport restore fault");
+		}
+	}
+
+	if (takeover)
+	{
+		static std::atomic<unsigned int> s_takeoverLogBudget{ 12 };
+		unsigned int remaining = s_takeoverLogBudget.load(std::memory_order_acquire);
+		while (remaining > 0 &&
+			!s_takeoverLogBudget.compare_exchange_weak(
+				remaining,
+				remaining - 1,
+				std::memory_order_acq_rel,
+				std::memory_order_acquire))
+		{
+		}
+		if (remaining > 0)
+		{
+			Game::logMsg(
+				"[VR][NekoPostTakeover] applied=%d captured=%d deferred=%d nativeSource=%d hdrScene=%d decoded=%d decodeHr=0x%08lx source=%s smallHr=0x%08lx reboundBase=%d base=%s->%s reboundFB0=%d fb0=%s->%s reboundFBTex=%d fbTex=%s->%s nekoBloom=%d->%d gated=%d cleared=%d actualRT=%ux%u fmt=%d getRT=0x%08lx getDesc=0x%08lx clear=0x%08lx pass=%s eye=%d target=%s restoredRT=%s viewport=%d,%d %dx%d d3d=%d srgb=%lu->%lu blend=%lu->%lu src=%lu dst=%lu op=%lu sampSrgb=%lu/%lu tid=%lu",
+				takeoverApplied ? 1 : 0,
+				takeoverCapturedBackBuffer ? 1 : 0,
+				takeoverUseBackBufferCapture ? 1 : 0,
+				takeoverUseNativeFullFrameSource ? 1 : 0,
+				takeoverHdrSceneInput ? 1 : 0,
+				takeoverDecodedInput ? 1 : 0,
+				static_cast<unsigned long>(takeoverDecodeInputHr),
+				DebugTextureName(takeoverFramebufferSource),
+				static_cast<unsigned long>(takeoverRefreshSmallInputHr),
+				takeoverReboundBaseTexture ? 1 : 0,
+				DebugTextureName(takeoverPreviousBaseTexture),
+				DebugTextureName(m_VR ? m_VR->m_NekoPostSmallInputTexture : nullptr),
+				takeoverReboundFramebufferCopy0 ? 1 : 0,
+				DebugTextureName(takeoverPreviousFramebufferCopy0),
+				DebugTextureName(takeoverFramebufferSource),
+				takeoverReboundFramebufferTexture ? 1 : 0,
+				DebugTextureName(takeoverPreviousFramebufferTexture),
+				DebugTextureName(takeoverFramebufferSource),
+				takeoverPreviousNekoBloom,
+				takeoverDisabledNekoBloom ? 0 : takeoverPreviousNekoBloom,
+				takeoverDisabledNekoBloom ? 1 : 0,
+				takeoverTargetCleared ? 1 : 0,
+				takeoverActualTargetDesc.Width,
+				takeoverActualTargetDesc.Height,
+				static_cast<int>(takeoverActualTargetDesc.Format),
+				static_cast<unsigned long>(takeoverGetActualTargetHr),
+				static_cast<unsigned long>(takeoverActualTargetDescHr),
+				static_cast<unsigned long>(takeoverClearActualTargetHr),
+				HooksNekoPostPassName(g_NekoPostProbeState.pass),
+				g_NekoPostProbeState.eyeIndex,
+				DebugTextureName(g_NekoPostProbeState.takeoverTarget),
+				DebugTextureName(takeoverPreviousRt),
+				takeoverPreviousVpX,
+				takeoverPreviousVpY,
+				takeoverPreviousVpW,
+				takeoverPreviousVpH,
+				takeoverHaveD3DState ? 1 : 0,
+				static_cast<unsigned long>(takeoverSrgbBefore),
+				static_cast<unsigned long>(takeoverSrgbAfter),
+				static_cast<unsigned long>(takeoverBlendBefore),
+				static_cast<unsigned long>(takeoverBlendAfter),
+				static_cast<unsigned long>(takeoverSrcBlendAfter),
+				static_cast<unsigned long>(takeoverDstBlendAfter),
+				static_cast<unsigned long>(takeoverBlendOpAfter),
+				static_cast<unsigned long>(takeoverSampler0SrgbAfter),
+				static_cast<unsigned long>(takeoverSampler1SrgbAfter),
+				GetCurrentThreadId());
+		}
+	}
+
+	if (!sampled || !context)
+		return;
+
+	ITexture* afterRt = nullptr;
+	ITexture* afterCopy0 = nullptr;
+	ITexture* afterCopy1 = nullptr;
+	int afterVpX = 0;
+	int afterVpY = 0;
+	int afterVpW = 0;
+	int afterVpH = 0;
+	const bool haveAfterViewport = DebugGetViewport(
+		context, afterVpX, afterVpY, afterVpW, afterVpH);
+	__try
+	{
+		afterRt = context->GetRenderTarget();
+		void** const vtable = *reinterpret_cast<void***>(context);
+		if (vtable && vtable[19])
+		{
+			using GetFramebufferCopyFn = ITexture* (__thiscall*)(void*, int);
+			GetFramebufferCopyFn const getCopy =
+				reinterpret_cast<GetFramebufferCopyFn>(vtable[19]);
+			afterCopy0 = getCopy(context, 0);
+			afterCopy1 = getCopy(context, 1);
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		afterRt = nullptr;
+		afterCopy0 = nullptr;
+		afterCopy1 = nullptr;
+	}
+
+	int beforeMapW = 0;
+	int beforeMapH = 0;
+	int beforeActualW = 0;
+	int beforeActualH = 0;
+	DebugTextureFullSize(
+		beforeRt, beforeMapW, beforeMapH, beforeActualW, beforeActualH);
+	int afterMapW = 0;
+	int afterMapH = 0;
+	int afterActualW = 0;
+	int afterActualH = 0;
+	DebugTextureFullSize(
+		afterRt, afterMapW, afterMapH, afterActualW, afterActualH);
+
+	Game::logMsg(
+		"[VR][NekoPostProbe][Call] frame=%llu pass=%s eye=%d call=%u tid=%lu ctx=%p mat=%s shader=%s dst=%d,%d %dx%d src=(%.1f,%.1f)-(%.1f,%.1f) tex=%dx%d dice=%dx%d beforeRT=%s(map=%dx%d actual=%dx%d) beforeVP=%d,%d %dx%d haveVP=%d beforeFB0=%s beforeFB1=%s afterRT=%s(map=%dx%d actual=%dx%d) afterVP=%d,%d %dx%d haveVP=%d afterFB0=%s afterFB1=%s",
+		static_cast<unsigned long long>(g_NekoPostProbeState.frameSerial),
+		HooksNekoPostPassName(g_NekoPostProbeState.pass),
+		g_NekoPostProbeState.eyeIndex,
+		callIndex,
+		GetCurrentThreadId(),
+		context,
+		materialName,
+		shaderName,
+		destX, destY, width, height,
+		srcX0, srcY0, srcX1, srcY1,
+		srcWidth, srcHeight,
+		xDice, yDice,
+		DebugTextureName(beforeRt), beforeMapW, beforeMapH, beforeActualW, beforeActualH,
+		beforeVpX, beforeVpY, beforeVpW, beforeVpH, haveBeforeViewport ? 1 : 0,
+		DebugTextureName(beforeCopy0), DebugTextureName(beforeCopy1),
+		DebugTextureName(afterRt), afterMapW, afterMapH, afterActualW, afterActualH,
+		afterVpX, afterVpY, afterVpW, afterVpH, haveAfterViewport ? 1 : 0,
+		DebugTextureName(afterCopy0), DebugTextureName(afterCopy1));
 }
 
 void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CViewSetup& hudViewSetup, int nClearFlags, int whatToDraw)
@@ -667,6 +2503,18 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	};
 	RenderContextStateGuard renderContextStateGuard(rndrContext);
 	const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
+	const std::uint64_t nekoPostProbeFrameSerial =
+		HooksNekoPostProbeSampleFrame(m_VR);
+	if (nekoPostProbeFrameSerial != 0)
+	{
+		Game::logMsg(
+			"[VR][NekoPostProbe][FrameBegin] frame=%llu q=%d producerTid=%lu left=%s right=%s",
+			static_cast<unsigned long long>(nekoPostProbeFrameSerial),
+			queueMode,
+			GetCurrentThreadId(),
+			DebugTextureName(m_VR->m_LeftEyeTexture),
+			DebugTextureName(m_VR->m_RightEyeTexture));
+	}
 	// Normal queued rendering uses Source call-queue markers to own the device for
 	// complete render-command intervals. The activity gate remains a fallback for
 	// calls outside a proven interval.
@@ -3370,6 +5218,18 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			if (m_VR->m_IsVREnabled)
 				m_VR->BeginVrHandsEyeRender(eyeView, eyeIndex == 1 ? 0 : 1);
 
+			constexpr int kRenderViewDrawViewmodel = 1 << 0;
+			const float viewmodelNear = std::clamp(
+				m_VR->m_VRNearClipViewmodelNearClip,
+				0.1f,
+				6.0f);
+			const bool renderViewmodelNearOverlay =
+				m_VR->m_VRNearClipViewmodel &&
+				m_VR->m_D9ViewmodelNearDepthSurface &&
+				!renderThirdPerson &&
+				(whatToDraw & kRenderViewDrawViewmodel) != 0 &&
+				eyeView.zNear > viewmodelNear + 0.001f;
+
 			struct FirstPersonBodyEyeSceneScope
 			{
 				LONG previousOverride = 0;
@@ -3470,6 +5330,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			};
 
 			{
+				ScopedNekoPostProbePass nekoPostProbePass(
+					rndrContext,
+					queueMode,
+					nekoPostProbeFrameSerial,
+					HooksNekoPostPass::MainEye,
+					eyeIndex,
+					eyeTexture,
+					m_VR->m_NekoEnginePostVRTakeover);
 				FirstPersonBodyEyeSceneScope firstPersonBodyScope(
 					m_VR,
 					eyeView,
@@ -3487,17 +5355,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			// visible scene geometry, so compositing it directly cannot punch through
 			// a wall. Unlike depth clamping, layers of the arm/clothing retain their
 			// distinct depth values.
-			constexpr int kRenderViewDrawViewmodel = 1 << 0;
-			const float viewmodelNear = std::clamp(
-				m_VR->m_VRNearClipViewmodelNearClip,
-				0.1f,
-				6.0f);
-			const bool renderViewmodelNearOverlay =
-				m_VR->m_VRNearClipViewmodel &&
-				m_VR->m_D9ViewmodelNearDepthSurface &&
-				!renderThirdPerson &&
-				(whatToDraw & kRenderViewDrawViewmodel) != 0 &&
-				eyeView.zNear > viewmodelNear + 0.001f;
 			if (renderViewmodelNearOverlay)
 			{
 				ICallQueue* overlayCallQueue = nullptr;
@@ -3531,6 +5388,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 						overlayCallQueue);
 					if (overlayPass.IsValid())
 					{
+						ScopedNekoPostProbePass nekoPostProbePass(
+							rndrContext,
+							queueMode,
+							nekoPostProbeFrameSerial,
+							HooksNekoPostPass::NearOverlay,
+							eyeIndex,
+							eyeTexture,
+							false);
 						const int previousRecording =
 							m_VR->m_ViewmodelNearOverlayRecordingActive.exchange(
 								1, std::memory_order_acq_rel);
@@ -3639,7 +5504,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	timingStereoSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stereoSceneStartTime).count();
 
 	auto renderToTexture_SetRT = [&](ITexture* target, int texW, int texH, QAngle passAngles,
-		CViewSetup& view, CViewSetup& hud)
+		CViewSetup& view, CViewSetup& hud, HooksNekoPostPass nekoPostPass)
 		{
 			// Scope/rear-mirror RTTs are allowed in queued rendering. Do not touch
 			// EngineClient viewangles in queueMode!=0; CViewSetup already carries
@@ -3681,7 +5546,17 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				touchedAngles = true;
 			}
 
-			callOriginalRenderView(view, hud, nClearFlags, whatToDraw);
+			{
+				ScopedNekoPostProbePass nekoPostProbeScope(
+					rc,
+					queueMode,
+					nekoPostProbeFrameSerial,
+					nekoPostPass,
+					0,
+					target,
+					m_VR->m_NekoEnginePostVRTakeover);
+				callOriginalRenderView(view, hud, nClearFlags, whatToDraw);
+			}
 
 			if (touchedAngles && m_Game && m_Game->m_EngineClient)
 				m_Game->m_EngineClient->SetViewAngles(oldEngineAngles);
@@ -3733,7 +5608,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		renderToTexture_SetRT(m_VR->m_ScopeTexture,
 			m_VR->m_ScopeRTTSize, m_VR->m_ScopeRTTSize,
-			scopeAngles, scopeView, hudScope);
+			scopeAngles, scopeView, hudScope, HooksNekoPostPass::Scope);
 		m_VR->m_ScopeRenderingPass = false;
 		scopeLensPostProcessPending = true;
 	}
@@ -3774,7 +5649,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		renderToTexture_SetRT(m_VR->m_RearMirrorTexture,
 			m_VR->m_RearMirrorRTTSize, m_VR->m_RearMirrorRTTSize,
-			mirrorAngles, mirrorView, hudMirror);
+			mirrorAngles, mirrorView, hudMirror, HooksNekoPostPass::RearMirror);
 
 		m_VR->m_RearMirrorRenderingPass = false;
 		const auto rmNow = std::chrono::steady_clock::now();

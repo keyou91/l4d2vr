@@ -1756,6 +1756,14 @@ namespace dxvk {
                     texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9RightEyeSubmitSurface);
                     vrDescResult = g_D3DVR9->GetVRDesc(g_Game->m_VR->m_D9RightEyeSubmitSurface, &texDesc);
                 }
+                else if (texID == VR::Texture_NekoPostLinearInput) {
+                    // Private D3D9 scratch RT: never register a Vulkan/OpenVR handle.
+                    texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9NekoPostLinearInputSurface);
+                }
+                else if (texID == VR::Texture_NekoPostSmallInput) {
+                    // Private quarter-size Neko auxiliary input; no compositor handle.
+                    texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9NekoPostSmallInputSurface);
+                }
                 else if (texID == VR::Texture_HUD) {
                     textureTarget = &g_Game->m_VR->m_VKHUD;
                     texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9HUDSurface);

@@ -2210,6 +2210,10 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     SafeReleaseD3D(m_D9ViewmodelNearDepthSurface);
     SafeReleaseD3D(m_D9LeftEyeSubmitSurface);
     SafeReleaseD3D(m_D9RightEyeSubmitSurface);
+    SafeReleaseD3D(m_D9NekoPostLinearInputSurface);
+    SafeReleaseD3D(m_D9NekoPostSmallInputSurface);
+    SafeReleaseD3D(m_D9NekoPostOutputTransferPixelShader);
+    m_D9NekoPostOutputTransferShaderDevice = nullptr;
     SafeReleaseD3D(m_D9HUDSurface);
     SafeReleaseD3D(m_D9ScopeLensSurface);
     SafeReleaseD3D(m_D9ScopeLensTexture);
@@ -2230,6 +2234,8 @@ void VR::ReleaseVRRenderTargetsForDeviceReset()
     SafeReleaseSourceTexture(m_RightEyeTexture);
     SafeReleaseSourceTexture(m_LeftEyeSubmitTexture);
     SafeReleaseSourceTexture(m_RightEyeSubmitTexture);
+    SafeReleaseSourceTexture(m_NekoPostLinearInputTexture);
+    SafeReleaseSourceTexture(m_NekoPostSmallInputTexture);
     SafeReleaseSourceTexture(m_HUDTexture);
     SafeReleaseSourceTexture(m_ScopeTexture);
     SafeReleaseSourceTexture(m_RearMirrorTexture);
@@ -2334,7 +2340,23 @@ void VR::CreateVRTextures()
     m_Game->m_MaterialSystem->BeginRenderTargetAllocation();
     m_Game->m_MaterialSystem->isGameRunning = true;
     const ImageFormat backBufferFormat = m_Game->m_MaterialSystem->GetBackBufferFormat();
-    const ImageFormat eyeFormat = backBufferFormat;
+    // L4N's desktop sequence deliberately keeps 3DScene in F16 HDR until
+    // Neko_Engine_Post performs its tonemap and standard sRGB output. Rendering
+    // the VR scene straight into A8R8G8B8 destroys highlights and exposure before
+    // Neko ever sees them; decoding that LDR image into an FP16 scratch cannot
+    // recover the lost range. Match the desktop producer format when takeover is
+    // enabled, then convert the completed post result into the LDR submit pair.
+    const char* const processCommandLine = GetCommandLineA();
+    const bool l4nNekoPostRequested =
+        processCommandLine &&
+        std::strstr(processCommandLine, "-l4n_use_neko_engine_post") != nullptr;
+    const bool useNekoHdrSceneInput =
+        m_NekoEnginePostVRTakeover &&
+        m_NekoEnginePostVRHDRSceneInput &&
+        l4nNekoPostRequested;
+    const ImageFormat eyeFormat = useNekoHdrSceneInput
+        ? IMAGE_FORMAT_RGBA16161616F
+        : backBufferFormat;
     m_CreatingTextureID = Texture_LeftEye;
     m_LeftEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEye0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
     m_CreatingTextureID = Texture_RightEye;
@@ -2348,14 +2370,15 @@ void VR::CreateVRTextures()
         m_AutoMatQueueMode ||
         (m_Game && m_Game->GetMatQueueMode() != 0);
     const bool useDedicatedEyeSubmitTextures =
+        useNekoHdrSceneInput ||
         queuedEyeIsolationRequested ||
         m_AntiAliasing == 2 || m_AntiAliasing == 4 || m_AntiAliasing == 8 || m_AntiAliasing == 16;
     if (useDedicatedEyeSubmitTextures)
     {
         m_CreatingTextureID = Texture_LeftEyeSubmit;
-        m_LeftEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
+        m_LeftEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, backBufferFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
         m_CreatingTextureID = Texture_RightEyeSubmit;
-        m_RightEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, eyeFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
+        m_RightEyeSubmitTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEyeSubmit0", m_RenderWidth, m_RenderHeight, RT_SIZE_NO_CHANGE, backBufferFormat, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_NOMIP);
     }
     else
     {
@@ -2364,6 +2387,51 @@ void VR::CreateVRTextures()
         m_D9LeftEyeSubmitSurface = nullptr;
         m_D9RightEyeSubmitSurface = nullptr;
     }
+
+    if (m_NekoEnginePostVRTakeover)
+    {
+        Game::logMsg(
+            "[VR][NekoPostHDR] enabled=%d commandLine=%d eyeFormat=%d submitFormat=%d dedicatedSubmit=%d",
+            useNekoHdrSceneInput ? 1 : 0,
+            l4nNekoPostRequested ? 1 : 0,
+            static_cast<int>(eyeFormat),
+            static_cast<int>(backBufferFormat),
+            useDedicatedEyeSubmitTextures ? 1 : 0);
+    }
+
+    // Neko_Engine_Post's native shader consumes a linear full-frame source and
+    // performs its own standard sRGB output encode. The normal VR eye target is
+    // LDR/sRGB, so keep one render-worker scratch RT for the narrow final pass.
+    // A single surface is sufficient because queued material work executes eye
+    // post passes serially; unlike the submit pair this texture is never exposed
+    // to OpenVR or the compositor thread.
+    m_CreatingTextureID = Texture_NekoPostLinearInput;
+    m_NekoPostLinearInputTexture =
+        m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
+            "nekoPostLinearInput0",
+            m_RenderWidth,
+            m_RenderHeight,
+            RT_SIZE_NO_CHANGE,
+            IMAGE_FORMAT_RGBA16161616F,
+            MATERIAL_RT_DEPTH_NONE,
+            TEXTUREFLAGS_NOMIP);
+
+    // Neko_Engine_Post binds _rt_smallfb0 as $BASETEXTURE alongside the
+    // full-frame sampler. Source normally refreshes that quarter-size image
+    // before the final desktop pass, but L4N's pass boundary leaves the VR
+    // instance pointing at a stale allocation. Keep a per-eye scratch with the
+    // exact native small-frame dimensions and LDR format; it is refreshed from
+    // the current eye immediately before Neko's final draw.
+    m_CreatingTextureID = Texture_NekoPostSmallInput;
+    m_NekoPostSmallInputTexture =
+        m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx(
+            "nekoPostSmallInput0",
+            std::max(1, static_cast<int>((m_RenderWidth + 3u) / 4u)),
+            std::max(1, static_cast<int>((m_RenderHeight + 3u) / 4u)),
+            RT_SIZE_NO_CHANGE,
+            useNekoHdrSceneInput ? IMAGE_FORMAT_RGBA16161616F : eyeFormat,
+            MATERIAL_RT_DEPTH_NONE,
+            TEXTUREFLAGS_NOMIP);
 
     const bool createDesktopMirrorCleanTarget =
         m_DesktopMirrorEnabled &&
@@ -2381,7 +2449,7 @@ void VR::CreateVRTextures()
             static_cast<int>(m_RenderWidth),
             static_cast<int>(m_RenderHeight),
             RT_SIZE_NO_CHANGE,
-            eyeFormat,
+            backBufferFormat,
             MATERIAL_RT_DEPTH_SEPARATE,
             TEXTUREFLAGS_NOMIP);
         const bool queuedRendering = m_Game && m_Game->GetMatQueueMode() != 0;

@@ -44,6 +44,7 @@ class CUserCmd;
 struct IDirect3DDevice9;
 struct IDirect3DTexture9;
 struct IDirect3DSurface9;
+struct IDirect3DPixelShader9;
 class ITexture;
 class IMaterial;
 class IMatRenderContext;
@@ -799,6 +800,26 @@ public:
 	// Render/HUD/multicore pipeline diagnostics. Default off; logs key frame boundaries only.
 	bool  m_RenderPipelineDebugLog = false;
 	float m_RenderPipelineDebugLogHz = 2.0f;
+	bool  m_NekoEnginePostVRTakeover = true;
+	bool  m_NekoEnginePostVRCaptureBackBuffer = true;
+	bool  m_NekoEnginePostVRClearTarget = true;
+	// Diagnostic escape hatch only. The per-eye full/small inputs are now valid,
+	// so disabling this combo would intentionally diverge from desktop Neko.
+	bool  m_NekoEnginePostVRDisableNekoBloom = false;
+	// Diagnostic fallback: keep Left4Neko's native _rt_FullFrameFB source. In VR
+	// that FP16 copy contains gamma-encoded LDR eye values, while Neko's tonemappers
+	// expect a linear source and therefore lift blacks/midtones severely.
+	bool  m_NekoEnginePostVRUseNativeFullFrameSource = false;
+	// Preserve the desktop Neko pipeline's F16 HDR scene until its final
+	// tonemap/sRGB pass. OpenVR still receives a separate LDR submit pair.
+	bool  m_NekoEnginePostVRHDRSceneInput = true;
+	// Fallback source path: when the native full-frame source is disabled, decode
+	// the LDR eye into a private linear input before the native Neko draw.
+	bool  m_NekoEnginePostVRDecodeInputSrgb = true;
+	bool  m_NekoEnginePostVROutputGammaCorrection = false;
+	float m_NekoEnginePostVROutputGamma = 2.2f;
+	bool  m_NekoEnginePostProbeLog = true;
+	float m_NekoEnginePostProbeLogHz = 2.0f;
 	// Low-overhead Source main-thread Present spike profiler. It retains only the
 	// worst segmented frame in each reporting window, avoiding per-frame file I/O.
 	bool  m_PresentSpikeDebugLog = false;
@@ -1213,6 +1234,8 @@ public:
 		Texture_RightEye,
 		Texture_LeftEyeSubmit,
 		Texture_RightEyeSubmit,
+		Texture_NekoPostLinearInput,
+		Texture_NekoPostSmallInput,
 		Texture_HUD,
 		Texture_Scope,
 		Texture_RearMirror,
@@ -1224,6 +1247,8 @@ public:
 	ITexture* m_RightEyeTexture = nullptr;
 	ITexture* m_LeftEyeSubmitTexture = nullptr;
 	ITexture* m_RightEyeSubmitTexture = nullptr;
+	ITexture* m_NekoPostLinearInputTexture = nullptr;
+	ITexture* m_NekoPostSmallInputTexture = nullptr;
 	ITexture* m_HUDTexture = nullptr;
 	ITexture* m_ScopeTexture = nullptr;
 	ITexture* m_RearMirrorTexture = nullptr;
@@ -1237,6 +1262,10 @@ public:
 	IDirect3DSurface9* m_D9ViewmodelNearDepthSurface = nullptr;
 	IDirect3DSurface9* m_D9LeftEyeSubmitSurface = nullptr;
 	IDirect3DSurface9* m_D9RightEyeSubmitSurface = nullptr;
+	IDirect3DSurface9* m_D9NekoPostLinearInputSurface = nullptr;
+	IDirect3DSurface9* m_D9NekoPostSmallInputSurface = nullptr;
+	IDirect3DPixelShader9* m_D9NekoPostOutputTransferPixelShader = nullptr;
+	IDirect3DDevice9* m_D9NekoPostOutputTransferShaderDevice = nullptr;
 	IDirect3DSurface9* m_D9HUDSurface = nullptr;
 	IDirect3DSurface9* m_D9ScopeSurface = nullptr;
 	// GPU-side scope lens post-process surfaces. The raw scope RTT is copied and masked into

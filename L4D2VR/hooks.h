@@ -12,6 +12,7 @@
 
 class VR;
 class ITexture;
+class IMaterial;
 class CViewSetup;
 class CUserCmd;
 class QAngle;
@@ -90,6 +91,12 @@ typedef int(__cdecl* tWriteUsercmd)(void* buf, CUserCmd* to, CUserCmd* from);
 typedef int(__cdecl* tAdjustEngineViewport)(int& x, int& y, int& width, int& height);
 typedef void(__thiscall* tViewport)(void* thisptr, int x, int y, int width, int height);
 typedef void(__thiscall* tGetViewport)(void* thisptr, int& x, int& y, int& width, int& height);
+typedef void(__thiscall* tDrawScreenSpaceRectangle)(
+	void* thisptr, IMaterial* material,
+	int destX, int destY, int width, int height,
+	float srcX0, float srcY0, float srcX1, float srcY1,
+	int srcWidth, int srcHeight,
+	void* clientRenderable, int xDice, int yDice);
 typedef int(__thiscall* tTestMeleeSwingCollision)(void* thisptr, Vector const& vec);
 typedef void(__thiscall* tDoMeleeSwing)(void* thisptr);
 typedef void(__thiscall* tStartMeleeSwing)(void* thisptr, void* player, bool a3);
@@ -158,6 +165,7 @@ public:
 	static inline Hook<tAdjustEngineViewport> hkAdjustEngineViewport;
 	static inline Hook<tViewport> hkViewport;
 	static inline Hook<tGetViewport> hkGetViewport;
+	static inline Hook<tDrawScreenSpaceRectangle> hkDrawScreenSpaceRectangle;
 	static inline Hook<tTestMeleeSwingCollision> hkTestMeleeSwingCollisionClient;
 	static inline Hook<tTestMeleeSwingCollision> hkTestMeleeSwingCollisionServer;
 	static inline Hook<tDoMeleeSwing> hkDoMeleeSwingServer;
@@ -239,6 +247,12 @@ public:
 	static void dAdjustEngineViewport(int& x, int& y, int& width, int& height);
 	static void __fastcall dViewport(void* ecx, void* edx, int x, int y, int width, int height);
 	static void __fastcall dGetViewport(void* ecx, void* edx, int& x, int& y, int& width, int& height);
+	static void __fastcall dDrawScreenSpaceRectangle(
+		void* ecx, void* edx, IMaterial* material,
+		int destX, int destY, int width, int height,
+		float srcX0, float srcY0, float srcX1, float srcY1,
+		int srcWidth, int srcHeight,
+		void* clientRenderable, int xDice, int yDice);
 	static int __fastcall dTestMeleeSwingCollisionClient(void* ecx, void* edx, Vector const& vec);
 	static int __fastcall dTestMeleeSwingCollisionServer(void* ecx, void* edx, Vector const& vec);
 	static void __fastcall dDoMeleeSwingServer(void* ecx, void* edx);

@@ -3292,6 +3292,17 @@ void VR::ParseConfigFile()
     m_QueuedViewmodelStabilizeDebugLogHz = std::max(0.0f, getFloat("QueuedViewmodelStabilizeDebugLogHz", m_QueuedViewmodelStabilizeDebugLogHz));
     m_RenderPipelineDebugLog = getBool("RenderPipelineDebugLog", m_RenderPipelineDebugLog);
     m_RenderPipelineDebugLogHz = std::clamp(getFloat("RenderPipelineDebugLogHz", m_RenderPipelineDebugLogHz), 0.0f, 60.0f);
+    m_NekoEnginePostVRTakeover = getBool("NekoEnginePostVRTakeover", m_NekoEnginePostVRTakeover);
+    m_NekoEnginePostVRCaptureBackBuffer = getBool("NekoEnginePostVRCaptureBackBuffer", m_NekoEnginePostVRCaptureBackBuffer);
+    m_NekoEnginePostVRClearTarget = getBool("NekoEnginePostVRClearTarget", m_NekoEnginePostVRClearTarget);
+    m_NekoEnginePostVRDisableNekoBloom = getBool("NekoEnginePostVRDisableNekoBloom", m_NekoEnginePostVRDisableNekoBloom);
+    m_NekoEnginePostVRUseNativeFullFrameSource = getBool("NekoEnginePostVRUseNativeFullFrameSource", m_NekoEnginePostVRUseNativeFullFrameSource);
+    m_NekoEnginePostVRHDRSceneInput = getBool("NekoEnginePostVRHDRSceneInput", m_NekoEnginePostVRHDRSceneInput);
+    m_NekoEnginePostVRDecodeInputSrgb = getBool("NekoEnginePostVRDecodeInputSrgb", m_NekoEnginePostVRDecodeInputSrgb);
+    m_NekoEnginePostVROutputGammaCorrection = getBool("NekoEnginePostVROutputGammaCorrection", m_NekoEnginePostVROutputGammaCorrection);
+    m_NekoEnginePostVROutputGamma = std::clamp(getFloat("NekoEnginePostVROutputGamma", m_NekoEnginePostVROutputGamma), 1.0f, 4.0f);
+    m_NekoEnginePostProbeLog = getBool("NekoEnginePostProbeLog", m_NekoEnginePostProbeLog);
+    m_NekoEnginePostProbeLogHz = std::clamp(getFloat("NekoEnginePostProbeLogHz", m_NekoEnginePostProbeLogHz), 0.0f, 60.0f);
     m_PresentSpikeDebugLog = getBool("PresentSpikeDebugLog", m_PresentSpikeDebugLog);
     m_PresentSpikeThresholdMs = std::clamp(getFloat("PresentSpikeThresholdMs", m_PresentSpikeThresholdMs), 5.0f, 100.0f);
     m_PresentSpikeDebugLogHz = std::clamp(getFloat("PresentSpikeDebugLogHz", m_PresentSpikeDebugLogHz), 0.2f, 10.0f);

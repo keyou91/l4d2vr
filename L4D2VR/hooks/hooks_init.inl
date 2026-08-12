@@ -1,3 +1,184 @@
+namespace
+{
+	bool HooksAddressIsExecutable(void* address)
+	{
+		if (!address)
+			return false;
+
+		MEMORY_BASIC_INFORMATION memoryInfo{};
+		if (!VirtualQuery(address, &memoryInfo, sizeof(memoryInfo)) ||
+			memoryInfo.State != MEM_COMMIT ||
+			(memoryInfo.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+		{
+			return false;
+		}
+
+		const DWORD protection = memoryInfo.Protect & 0xff;
+		return protection == PAGE_EXECUTE ||
+			protection == PAGE_EXECUTE_READ ||
+			protection == PAGE_EXECUTE_READWRITE ||
+			protection == PAGE_EXECUTE_WRITECOPY;
+	}
+
+	// left4neko replaces IMatRenderContext::DrawScreenSpaceRectangle in the live
+	// vtable with its own pre/original/post wrapper. Resolve the pristine slot
+	// from materialsystem.dll on disk so our diagnostic detour sits inside that
+	// wrapper, exactly where left4neko invokes the engine implementation.
+	void* HooksResolvePristineVtableTarget(
+		HMODULE module,
+		void** liveVtable,
+		size_t slot,
+		DWORD* vtableRvaOut,
+		DWORD* targetRvaOut)
+	{
+		if (vtableRvaOut)
+			*vtableRvaOut = 0;
+		if (targetRvaOut)
+			*targetRvaOut = 0;
+		if (!module || !liveVtable)
+			return nullptr;
+
+		char modulePath[MAX_PATH]{};
+		const DWORD pathLength = GetModuleFileNameA(module, modulePath, MAX_PATH);
+		if (pathLength == 0 || pathLength >= MAX_PATH)
+			return nullptr;
+
+		HANDLE file = CreateFileA(
+			modulePath,
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+			return nullptr;
+
+		DWORD sizeHigh = 0;
+		const DWORD fileSize = GetFileSize(file, &sizeHigh);
+		if (fileSize == INVALID_FILE_SIZE || sizeHigh != 0 || fileSize < sizeof(IMAGE_DOS_HEADER))
+		{
+			CloseHandle(file);
+			return nullptr;
+		}
+
+		BYTE* const image = static_cast<BYTE*>(
+			HeapAlloc(GetProcessHeap(), 0, fileSize));
+		if (!image)
+		{
+			CloseHandle(file);
+			return nullptr;
+		}
+
+		DWORD bytesRead = 0;
+		const bool readSucceeded =
+			ReadFile(file, image, fileSize, &bytesRead, nullptr) != FALSE &&
+			bytesRead == fileSize;
+		CloseHandle(file);
+		if (!readSucceeded)
+		{
+			HeapFree(GetProcessHeap(), 0, image);
+			return nullptr;
+		}
+
+		void* result = nullptr;
+		do
+		{
+			const IMAGE_DOS_HEADER* const dos =
+				reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
+			if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+				static_cast<DWORD>(dos->e_lfanew) > fileSize - sizeof(IMAGE_NT_HEADERS32))
+			{
+				break;
+			}
+
+			const IMAGE_NT_HEADERS32* const nt =
+				reinterpret_cast<const IMAGE_NT_HEADERS32*>(image + dos->e_lfanew);
+			if (nt->Signature != IMAGE_NT_SIGNATURE ||
+				nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+			{
+				break;
+			}
+
+			const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(module);
+			const uintptr_t vtableAddress = reinterpret_cast<uintptr_t>(liveVtable);
+			if (vtableAddress < moduleBase ||
+				vtableAddress - moduleBase >= nt->OptionalHeader.SizeOfImage)
+			{
+				break;
+			}
+
+			const DWORD vtableRva = static_cast<DWORD>(vtableAddress - moduleBase);
+			const uint64_t entryRva64 =
+				static_cast<uint64_t>(vtableRva) + slot * sizeof(DWORD);
+			if (entryRva64 + sizeof(DWORD) > nt->OptionalHeader.SizeOfImage)
+				break;
+			const DWORD entryRva = static_cast<DWORD>(entryRva64);
+
+			const IMAGE_SECTION_HEADER* const sections = IMAGE_FIRST_SECTION(nt);
+			DWORD entryFileOffset = 0;
+			bool entryMapped = false;
+			for (WORD sectionIndex = 0;
+				sectionIndex < nt->FileHeader.NumberOfSections;
+				++sectionIndex)
+			{
+				const IMAGE_SECTION_HEADER& section = sections[sectionIndex];
+				const DWORD sectionStart = section.VirtualAddress;
+				const DWORD sectionEnd = sectionStart + section.SizeOfRawData;
+				if (entryRva >= sectionStart && entryRva + sizeof(DWORD) <= sectionEnd)
+				{
+					entryFileOffset =
+						section.PointerToRawData + (entryRva - sectionStart);
+					entryMapped = entryFileOffset + sizeof(DWORD) <= fileSize;
+					break;
+				}
+			}
+			if (!entryMapped)
+				break;
+
+			const DWORD preferredTarget =
+				*reinterpret_cast<const DWORD*>(image + entryFileOffset);
+			if (preferredTarget < nt->OptionalHeader.ImageBase)
+				break;
+			const DWORD targetRva = preferredTarget - nt->OptionalHeader.ImageBase;
+			if (targetRva >= nt->OptionalHeader.SizeOfImage)
+				break;
+
+			bool targetIsCode = false;
+			for (WORD sectionIndex = 0;
+				sectionIndex < nt->FileHeader.NumberOfSections;
+				++sectionIndex)
+			{
+				const IMAGE_SECTION_HEADER& section = sections[sectionIndex];
+				const DWORD sectionSize = std::max(section.Misc.VirtualSize, section.SizeOfRawData);
+				if (targetRva >= section.VirtualAddress &&
+					targetRva < section.VirtualAddress + sectionSize &&
+					(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0)
+				{
+					targetIsCode = true;
+					break;
+				}
+			}
+			if (!targetIsCode)
+				break;
+
+			void* const runtimeTarget =
+				reinterpret_cast<void*>(moduleBase + targetRva);
+			if (!HooksAddressIsExecutable(runtimeTarget))
+				break;
+
+			if (vtableRvaOut)
+				*vtableRvaOut = vtableRva;
+			if (targetRvaOut)
+				*targetRvaOut = targetRva;
+			result = runtimeTarget;
+		} while (false);
+
+		HeapFree(GetProcessHeap(), 0, image);
+		return result;
+	}
+}
+
 bool Hooks::s_ServerUnderstandsVR = false;
 
 Hooks::Hooks(Game* game)
@@ -36,6 +217,8 @@ Hooks::Hooks(Game* game)
 	hkAdjustEngineViewport.enableHook();
 	hkViewport.enableHook();
 	hkGetViewport.enableHook();
+	if (hkDrawScreenSpaceRectangle.pTarget)
+		hkDrawScreenSpaceRectangle.enableHook();
 	hkCreateMove.enableHook();
 	hkTestMeleeSwingCollisionClient.enableHook();
 	hkTestMeleeSwingCollisionServer.enableHook();
@@ -236,6 +419,46 @@ int Hooks::initSourceHooks()
 
 	LPVOID GetViewportAddr = (LPVOID)(m_Game->m_Offsets->GetViewport.address);
 	hkGetViewport.createHook(GetViewportAddr, &dGetViewport);
+
+	if (m_Game->m_MaterialSystem)
+	{
+		IMatRenderContext* const context =
+			m_Game->m_MaterialSystem->GetRenderContext();
+		if (context)
+		{
+			void** const liveVtable = *reinterpret_cast<void***>(context);
+			HMODULE const materialModule = GetModuleHandleA("materialsystem.dll");
+			DWORD vtableRva = 0;
+			DWORD targetRva = 0;
+			void* const pristineTarget = HooksResolvePristineVtableTarget(
+				materialModule,
+				liveVtable,
+				104,
+				&vtableRva,
+				&targetRva);
+			void* const liveTarget = liveVtable ? liveVtable[104] : nullptr;
+			if (pristineTarget &&
+				hkDrawScreenSpaceRectangle.createHook(
+					pristineTarget,
+					reinterpret_cast<LPVOID>(&dDrawScreenSpaceRectangle)) == 0)
+			{
+				Game::logMsg(
+					"[VR][NekoPostProbe] prepared raw DSR slot=104 live=%p raw=%p vtableRva=%08lX targetRva=%08lX",
+					liveTarget,
+					pristineTarget,
+					static_cast<unsigned long>(vtableRva),
+					static_cast<unsigned long>(targetRva));
+			}
+			else
+			{
+				Game::logMsg(
+					"[VR][NekoPostProbe] raw DSR unavailable; probe disabled live=%p raw=%p",
+					liveTarget,
+					pristineTarget);
+			}
+			context->Release();
+		}
+	}
 
 	LPVOID MeleeSwingClientAddr = (LPVOID)(m_Game->m_Offsets->TestMeleeSwingClient.address);
 	hkTestMeleeSwingCollisionClient.createHook(MeleeSwingClientAddr, &dTestMeleeSwingCollisionClient);
