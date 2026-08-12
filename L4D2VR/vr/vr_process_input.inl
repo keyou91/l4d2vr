@@ -404,6 +404,7 @@ void VR::ProcessInput()
 
     bool suppressReload = false;
     bool suppressCrouch = false;
+    bool suppressSecondaryAttack = false;
 
     auto originMatchesRole = [&](vr::VRInputValueHandle_t origin, vr::ETrackedControllerRole role) -> bool
         {
@@ -461,6 +462,16 @@ void VR::ProcessInput()
     bool reloadButtonDown = false;
     bool reloadJustPressed = false;
     bool reloadDataValid = getActionState(&m_ActionReload, reloadActionData, reloadButtonDown, reloadJustPressed);
+
+    vr::InputDigitalActionData_t secondaryAttackActionData{};
+    bool secondaryAttackActive = false;
+    bool secondaryAttackJustPressed = false;
+    bool secondaryAttackDataValid = getActionState(
+        &m_ActionSecondaryAttack,
+        secondaryAttackActionData,
+        secondaryAttackActive,
+        secondaryAttackJustPressed);
+
     // Manual magazine handling uses the gameplay left/off hand. In LeftHanded mode
     // that is the physical right controller after the pose remap in GetPoses().
     const bool reloadFromLeftHand =
@@ -475,6 +486,10 @@ void VR::ProcessInput()
         jumpDataValid &&
         (originMatchesRole(jumpActionData.activeOrigin, gameplayLeftRole) ||
             jumpActionData.activeOrigin == vr::k_ulInvalidInputValueHandle);
+    const bool secondaryAttackFromLeftHand =
+        secondaryAttackDataValid &&
+        (originMatchesRole(secondaryAttackActionData.activeOrigin, gameplayLeftRole) ||
+            secondaryAttackActionData.activeOrigin == vr::k_ulInvalidInputValueHandle);
 
     vr::InputDigitalActionData_t inventoryQuickSwitchActionData{};
     bool inventoryQuickSwitchDown = false;
@@ -611,15 +626,18 @@ void VR::ProcessInput()
     const bool magazineButtonGripDown =
         (reloadFromLeftHand && reloadButtonDown) ||
         (crouchFromLeftHand && crouchButtonDown) ||
-        (jumpFromLeftHand && jumpButtonDown);
+        (jumpFromLeftHand && jumpButtonDown) ||
+        (secondaryAttackFromLeftHand && secondaryAttackActive);
     const bool magazineButtonGripJustPressed =
         (reloadFromLeftHand && reloadJustPressed) ||
         (crouchFromLeftHand && crouchJustPressed) ||
-        (jumpFromLeftHand && jumpJustPressed);
+        (jumpFromLeftHand && jumpJustPressed) ||
+        (secondaryAttackFromLeftHand && secondaryAttackJustPressed);
     const bool magazineButtonGripJustPressedFromReload = reloadFromLeftHand && reloadJustPressed;
     const bool magazineButtonGripJustPressedFromOther =
         (crouchFromLeftHand && crouchJustPressed) ||
-        (jumpFromLeftHand && jumpJustPressed);
+        (jumpFromLeftHand && jumpJustPressed) ||
+        (secondaryAttackFromLeftHand && secondaryAttackJustPressed);
     const bool allowGameplayInputOnTwoHandedGripRelease =
         magazineButtonGripInput &&
         magazineButtonGripJustPressedFromReload &&
@@ -690,6 +708,12 @@ void VR::ProcessInput()
             jumpButtonDown = false;
             jumpJustPressed = false;
         }
+        if (secondaryAttackFromLeftHand)
+        {
+            secondaryAttackActive = false;
+            secondaryAttackJustPressed = false;
+            suppressSecondaryAttack = true;
+        }
     }
     if (isObserverOrIdle)
     {
@@ -723,11 +747,6 @@ void VR::ProcessInput()
         reloadJustPressed = false;
         suppressReload = true;
     }
-    vr::InputDigitalActionData_t secondaryAttackActionData{};
-    bool secondaryAttackActive = false;
-    bool secondaryAttackJustPressed = false;
-    bool secondaryAttackDataValid = getActionState(&m_ActionSecondaryAttack, secondaryAttackActionData, secondaryAttackActive, secondaryAttackJustPressed);
-
     const bool gestureSecondaryAttackActive = m_MotionGesturesEnabled && currentTime < m_SecondaryAttackGestureHoldUntil;
 
     vr::InputDigitalActionData_t flashlightActionData{};
@@ -1484,7 +1503,11 @@ void VR::ProcessInput()
     [[maybe_unused]] bool quickTurnSecondaryJustPressed = false;
     bool quickTurnComboValid = getComboStates(m_QuickTurnCombo, quickTurnPrimaryData, quickTurnSecondaryData,
         quickTurnPrimaryDown, quickTurnSecondaryDown, quickTurnPrimaryJustPressed, quickTurnSecondaryJustPressed);
-    bool quickTurnComboPressed = quickTurnComboValid && quickTurnPrimaryDown && quickTurnSecondaryDown;
+    bool quickTurnComboPressed =
+        !suppressSecondaryAttack &&
+        quickTurnComboValid &&
+        quickTurnPrimaryDown &&
+        quickTurnSecondaryDown;
     vr::InputDigitalActionData_t viewmodelPrimaryData{};
     vr::InputDigitalActionData_t viewmodelSecondaryData{};
     bool viewmodelPrimaryDown = false;
@@ -1493,9 +1516,12 @@ void VR::ProcessInput()
     [[maybe_unused]] bool viewmodelSecondaryJustPressed = false;
     bool viewmodelComboValid = getComboStates(m_ViewmodelAdjustCombo, viewmodelPrimaryData, viewmodelSecondaryData,
         viewmodelPrimaryDown, viewmodelSecondaryDown, viewmodelPrimaryJustPressed, viewmodelSecondaryJustPressed);
-    const bool scopeAdjustActive = m_ViewmodelAdjustEnabled && IsScopeActive() && m_ScopeWeaponIsFirearm &&
+    const bool scopeAdjustActive = !suppressSecondaryAttack &&
+        m_ViewmodelAdjustEnabled && IsScopeActive() && m_ScopeWeaponIsFirearm &&
         viewmodelComboValid && viewmodelPrimaryDown && viewmodelSecondaryDown;
-    const bool adjustViewmodelActive = !scopeAdjustActive && m_ViewmodelAdjustEnabled && viewmodelComboValid && viewmodelPrimaryDown && viewmodelSecondaryDown;
+    const bool adjustViewmodelActive = !suppressSecondaryAttack &&
+        !scopeAdjustActive && m_ViewmodelAdjustEnabled &&
+        viewmodelComboValid && viewmodelPrimaryDown && viewmodelSecondaryDown;
 
     if (scopeAdjustActive && !m_AdjustingScope)
     {
@@ -1591,7 +1617,9 @@ void VR::ProcessInput()
     }
 
     reloadButtonDown = (((reloadButtonDown || gestureReloadActive) && !suppressReload) || magazineInteractionReloadPulse);
-    secondaryAttackActive = secondaryAttackActive || gestureSecondaryAttackActive;
+    secondaryAttackActive =
+        (secondaryAttackActive || gestureSecondaryAttackActive) &&
+        !suppressSecondaryAttack;
 
     const bool wantReload =
         magazineInteractionReloadPulse ||

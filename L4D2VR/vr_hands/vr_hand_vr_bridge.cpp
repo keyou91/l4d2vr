@@ -5116,7 +5116,12 @@ bool VR::UpdateMagazineInteraction(
 
     auto beginBoltStage = [&](C_WeaponCSBase::WeaponID weaponId, const char* reason, bool backendReloadStillPending = false) -> bool
     {
-        if(m_MagazineInteractionSuppressEmptyClipAutoReload && !m_MagazineInteractionChamberEmpty)
+        // Whether a bolt cycle is required depends on the chamber state at the
+        // start of this physical reload, not on the option that suppresses the
+        // game's empty-clip auto reload. A tactical magazine change keeps the
+        // chambered round and must not leave the viewmodel frozen waiting for a
+        // bolt grab when that suppression option is disabled.
+        if (!m_MagazineInteractionChamberEmpty)
             return false;
 
         if (!MagazineInteractionWeaponRequiresManualBolt(weaponId))
@@ -6227,6 +6232,10 @@ bool VR::UpdateMagazineInteraction(
         m_MagazineInteractionFreshMagazineContactActive = false;
         m_MagazineInteractionBoltContactActive = false;
         m_MagazineInteractionShotgunShellMode = MagazineInteractionWeaponUsesShotgunShells(activeWeaponId);
+        // Capture this before the interaction mutates the client/server clip.
+        // The chamber state remains authoritative for the eventual bolt stage,
+        // even when empty-clip auto-reload suppression is disabled.
+        m_MagazineInteractionChamberEmpty = activeClip <= 0;
         m_MagazineInteractionServerClipSettlementActive =
             !m_MagazineInteractionShotgunShellMode &&
             activeDetachableServerClipSettlementAvailable;
