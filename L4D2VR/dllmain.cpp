@@ -38,6 +38,8 @@ namespace
     constexpr wchar_t kConfigMigrationsStateFile[] = L"config_migrations_applied.txt";
     constexpr char kForcedDataCacheHeapSizeKiB[] = "2097151";
     constexpr uint32_t kForcedDataCacheSizeBytes = 2097152u * 1024u;
+    constexpr uint32_t kOriginalIndexBufferSize = 32768u;
+    constexpr uint32_t kForcedIndexBufferSize = 65535u;
 
     static_assert(kForcedDataCacheSizeBytes == 0x80000000u,
         "The forced datacache budget must be exactly 2 GiB.");
@@ -103,6 +105,47 @@ namespace
     };
 
     DataCacheForceState g_DataCacheForceState;
+
+    // Left4Neko raises the three hard-coded dynamic index-buffer limits in the
+    // active shaderapi module. Keep the same signatures here so VRMod can provide
+    // the safety margin when Left4Neko is not actually active.
+    constexpr std::array<uint8_t, 16> kIndexBufferPatternCreate{
+        0x6A, 0x01, 0xFF, 0xD2, 0x0F, 0xB6, 0xC0, 0x50,
+        0x68, 0x00, 0x80, 0x00, 0x00, 0x53, 0x8B, 0xCF };
+    constexpr std::array<uint8_t, 11> kIndexBufferPatternMember{
+        0xC7, 0x86, 0xC8, 0x03, 0x00, 0x00, 0x00, 0x80,
+        0x00, 0x00, 0x89 };
+    constexpr std::array<uint8_t, 6> kIndexBufferPatternGetter{
+        0xB8, 0x00, 0x80, 0x00, 0x00, 0xC3 };
+
+    struct IndexBufferPatchPattern
+    {
+        const uint8_t* bytes = nullptr;
+        size_t length = 0;
+        size_t immediateOffset = 0;
+        const char* name = nullptr;
+    };
+
+    constexpr std::array<IndexBufferPatchPattern, 3> kIndexBufferPatchPatterns{
+        IndexBufferPatchPattern{ kIndexBufferPatternCreate.data(), kIndexBufferPatternCreate.size(), 9, "create" },
+        IndexBufferPatchPattern{ kIndexBufferPatternMember.data(), kIndexBufferPatternMember.size(), 6, "member" },
+        IndexBufferPatchPattern{ kIndexBufferPatternGetter.data(), kIndexBufferPatternGetter.size(), 1, "getter" } };
+
+    struct ExecutableImageRange
+    {
+        uint8_t* begin = nullptr;
+        size_t size = 0;
+    };
+
+    struct IndexBufferPatchStats
+    {
+        size_t patched = 0;
+        size_t alreadyAtTarget = 0;
+        size_t externallyChanged = 0;
+        size_t missing = 0;
+        size_t ambiguous = 0;
+        size_t writeFailed = 0;
+    };
 
     struct WindowSearchContext
     {
@@ -382,6 +425,245 @@ namespace
 
         bytesAvailable = static_cast<size_t>(regionEnd - start);
         return bytesAvailable >= size;
+    }
+
+    bool GetExecutableImageRanges(HMODULE module, std::vector<ExecutableImageRange>& ranges)
+    {
+        ranges.clear();
+        if (!module)
+            return false;
+
+        auto* base = reinterpret_cast<uint8_t*>(module);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+            return false;
+
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.SizeOfImage == 0)
+            return false;
+
+        const size_t imageSize = nt->OptionalHeader.SizeOfImage;
+        const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
+        {
+            if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0)
+                continue;
+
+            const size_t sectionOffset = section->VirtualAddress;
+            if (sectionOffset >= imageSize)
+                continue;
+
+            size_t sectionSize = section->Misc.VirtualSize;
+            if (sectionSize == 0)
+                sectionSize = section->SizeOfRawData;
+            sectionSize = (std::min)(sectionSize, imageSize - sectionOffset);
+            if (sectionSize == 0)
+                continue;
+
+            ranges.push_back({ base + sectionOffset, sectionSize });
+        }
+
+        return !ranges.empty();
+    }
+
+    bool MatchesIndexBufferPattern(
+        const uint8_t* candidate,
+        const IndexBufferPatchPattern& pattern)
+    {
+        for (size_t i = 0; i < pattern.length; ++i)
+        {
+            if (i >= pattern.immediateOffset &&
+                i < pattern.immediateOffset + sizeof(uint32_t))
+            {
+                continue;
+            }
+            if (candidate[i] != pattern.bytes[i])
+                return false;
+        }
+        return true;
+    }
+
+    std::vector<uint8_t*> FindIndexBufferPatternMatches(
+        HMODULE module,
+        const IndexBufferPatchPattern& pattern)
+    {
+        std::vector<ExecutableImageRange> ranges;
+        if (!GetExecutableImageRanges(module, ranges) ||
+            !pattern.bytes ||
+            pattern.length < pattern.immediateOffset + sizeof(uint32_t))
+        {
+            return {};
+        }
+
+        std::vector<uint8_t*> matches;
+        for (const ExecutableImageRange& range : ranges)
+        {
+            if (!range.begin || range.size < pattern.length)
+                continue;
+
+            const size_t lastOffset = range.size - pattern.length;
+            for (size_t offset = 0; offset <= lastOffset; ++offset)
+            {
+                uint8_t* candidate = range.begin + offset;
+                if (!MatchesIndexBufferPattern(candidate, pattern))
+                    continue;
+
+                uint32_t currentValue = 0;
+                std::memcpy(
+                    &currentValue,
+                    candidate + pattern.immediateOffset,
+                    sizeof(currentValue));
+                if (currentValue == kOriginalIndexBufferSize ||
+                    currentValue == kForcedIndexBufferSize)
+                {
+                    matches.push_back(candidate);
+                }
+            }
+        }
+        return matches;
+    }
+
+    bool WriteIndexBufferImmediate(uint8_t* address)
+    {
+        if (!address)
+            return false;
+
+        DWORD oldProtection = 0;
+        if (!VirtualProtect(address, sizeof(uint32_t), PAGE_EXECUTE_READWRITE, &oldProtection))
+            return false;
+
+        uint32_t currentValue = 0;
+        std::memcpy(&currentValue, address, sizeof(currentValue));
+        if (currentValue == kOriginalIndexBufferSize)
+            std::memcpy(address, &kForcedIndexBufferSize, sizeof(kForcedIndexBufferSize));
+
+        FlushInstructionCache(GetCurrentProcess(), address, sizeof(uint32_t));
+        DWORD ignoredProtection = 0;
+        VirtualProtect(address, sizeof(uint32_t), oldProtection, &ignoredProtection);
+
+        uint32_t verifiedValue = 0;
+        std::memcpy(&verifiedValue, address, sizeof(verifiedValue));
+        return verifiedValue == kForcedIndexBufferSize;
+    }
+
+    IndexBufferPatchStats ApplyForcedIndexBufferSizeToModule(
+        HMODULE module,
+        const wchar_t* moduleName)
+    {
+        IndexBufferPatchStats stats;
+        for (const IndexBufferPatchPattern& pattern : kIndexBufferPatchPatterns)
+        {
+            const std::vector<uint8_t*> matches = FindIndexBufferPatternMatches(module, pattern);
+            if (matches.empty())
+            {
+                ++stats.missing;
+                Game::logMsg(
+                    "[VR][IndexBuffer] module=%ls pattern=%s missing",
+                    moduleName,
+                    pattern.name);
+                continue;
+            }
+            if (matches.size() != 1)
+            {
+                ++stats.ambiguous;
+                Game::logMsg(
+                    "[VR][IndexBuffer] module=%ls pattern=%s ambiguous matches=%zu",
+                    moduleName,
+                    pattern.name,
+                    matches.size());
+                continue;
+            }
+
+            uint8_t* immediate = matches.front() + pattern.immediateOffset;
+            uint32_t currentValue = 0;
+            std::memcpy(&currentValue, immediate, sizeof(currentValue));
+            if (currentValue == kForcedIndexBufferSize)
+            {
+                ++stats.alreadyAtTarget;
+                continue;
+            }
+            if (currentValue != kOriginalIndexBufferSize)
+            {
+                // Another active patch owns this value. Do not identify it by a
+                // DLL filename and do not overwrite its explicit configuration.
+                ++stats.externallyChanged;
+                Game::logMsg(
+                    "[VR][IndexBuffer] module=%ls pattern=%s external value=%u preserved",
+                    moduleName,
+                    pattern.name,
+                    currentValue);
+                continue;
+            }
+
+            if (WriteIndexBufferImmediate(immediate))
+                ++stats.patched;
+            else
+                ++stats.writeFailed;
+        }
+
+        Game::logMsg(
+            "[VR][IndexBuffer] module=%ls target=%u patched=%zu already=%zu external=%zu missing=%zu ambiguous=%zu failed=%zu",
+            moduleName,
+            kForcedIndexBufferSize,
+            stats.patched,
+            stats.alreadyAtTarget,
+            stats.externallyChanged,
+            stats.missing,
+            stats.ambiguous,
+            stats.writeFailed);
+        return stats;
+    }
+
+    bool ApplyForcedIndexBufferSizeToLoadedShaderApi()
+    {
+        constexpr std::array<const wchar_t*, 2> kShaderApiModules{
+            L"shaderapidx9.dll",
+            L"shaderapivk.dll" };
+
+        bool foundLoadedModule = false;
+        for (const wchar_t* moduleName : kShaderApiModules)
+        {
+            HMODULE module = GetModuleHandleW(moduleName);
+            if (!module)
+                continue;
+
+            foundLoadedModule = true;
+            ApplyForcedIndexBufferSizeToModule(module, moduleName);
+        }
+        return foundLoadedModule;
+    }
+
+    DWORD WINAPI WaitForShaderApiAndApplyIndexBufferSize(LPVOID)
+    {
+        constexpr DWORD kRetryDelayMs = 100;
+        constexpr int kMaxAttempts = 600;
+        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        {
+            if (ApplyForcedIndexBufferSizeToLoadedShaderApi())
+                return 0;
+            Sleep(kRetryDelayMs);
+        }
+
+        Game::logMsg("[VR][IndexBuffer] shaderapi module was not loaded within 60 seconds");
+        return 0;
+    }
+
+    void StartForcedIndexBufferPolicy()
+    {
+        if (ApplyForcedIndexBufferSizeToLoadedShaderApi())
+            return;
+
+        HANDLE worker = CreateThread(
+            nullptr,
+            0,
+            WaitForShaderApiAndApplyIndexBufferSize,
+            nullptr,
+            0,
+            nullptr);
+        if (worker)
+            CloseHandle(worker);
+        else
+            Game::logMsg("[VR][IndexBuffer] failed to start shaderapi wait worker");
     }
 
     bool OverrideSourceHeapSizeCommandLine()
@@ -2873,6 +3155,7 @@ bool L4D2VR_ApplyRecommendedVideoSettings()
 DWORD WINAPI InitL4D2VR(HMODULE hModule)
 {
     timeBeginPeriod(1);
+    StartForcedIndexBufferPolicy();
 
 #ifdef _DEBUG
     AllocConsole();

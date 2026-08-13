@@ -2088,8 +2088,8 @@ namespace
             s.dirty = true;
     }
 
-    // Release config template used by the Reset Settings action. Keep this as the
-    // authoritative sample so resetting does not depend on the user's already-edited VR\config.txt.
+    // Legacy embedded snapshot retained only as source history. Reset Settings reads
+    // vr\config.sample from disk so it always follows the sample shipped with the mod.
     static constexpr char kCfgSampleConfigText0[] = R"L4D2VR0(VRScale=43.2
 IPDScale=1.0
 TurnSpeed=0.3
@@ -2675,9 +2675,34 @@ FlashlightEnhancementEnabled=false
         if (s.configPath.empty())
             s.configPath = CfgDefaultConfigPath();
 
+        const std::filesystem::path configPath(s.configPath);
+        const std::filesystem::path samplePath = configPath.parent_path() / "config.sample";
+
+        // Read the complete sample before truncating config.txt. If the sample is
+        // missing, unreadable, or empty, leave the user's current config untouched.
+        std::ifstream sample(samplePath, std::ios::binary);
+        if (!sample.good())
+        {
+            s.status = (s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A\xE6\x97\xA0\xE6\xB3\x95\xE8\xAF\xBB\xE5\x8F\x96 " : "Reset failed: cannot read ") + samplePath.string();
+            s.resetConfirmVisible = false;
+            s.dirty = true;
+            return false;
+        }
+
+        std::ostringstream sampleBuffer;
+        sampleBuffer << sample.rdbuf();
+        const std::string sampleText = sampleBuffer.str();
+        if (sample.bad() || sampleText.empty())
+        {
+            s.status = (s.useChinese ? "\xE9\x87\x8D\xE7\xBD\xAE\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x9A\xE6\x97\xA0\xE6\xB3\x95\xE8\xAF\xBB\xE5\x8F\x96 " : "Reset failed: cannot read ") + samplePath.string();
+            s.resetConfirmVisible = false;
+            s.dirty = true;
+            return false;
+        }
+
         try
         {
-            const std::filesystem::path parent = std::filesystem::path(s.configPath).parent_path();
+            const std::filesystem::path parent = configPath.parent_path();
             if (!parent.empty())
                 std::filesystem::create_directories(parent);
         }
@@ -2698,20 +2723,7 @@ FlashlightEnhancementEnabled=false
             return false;
         }
 
-        // Translation phase newline normalization means the embedded raw string uses '\n'.
-        // Write CRLF explicitly so the restored config keeps the project's Windows format.
-        for (const char* chunk : kCfgSampleConfigChunks)
-        {
-            for (const char* p = chunk; *p; ++p)
-            {
-                if (*p == '\r')
-                    continue;
-                if (*p == '\n')
-                    out.write("\r\n", 2);
-                else
-                    out.put(*p);
-            }
-        }
+        out.write(sampleText.data(), static_cast<std::streamsize>(sampleText.size()));
         out.flush();
         const bool writeOk = out.good();
         out.close();
@@ -2729,8 +2741,8 @@ FlashlightEnhancementEnabled=false
         CfgLoad(s);
         CfgApplyOverlayPlacement(s);
         s.status = s.useChinese
-            ? "\xE5\xB7\xB2\xE6\x8C\x89 sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xEF\xBC\x8C\xE9\x9D\xA2\xE6\x9D\xBF\xE5\xB7\xB2\xE5\x88\xB7\xE6\x96\xB0\xE3\x80\x82"
-            : "Reset config.txt to the release sample and refreshed the panel.";
+            ? "\xE5\xB7\xB2\xE7\x94\xA8 vr/config.sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xEF\xBC\x8C\xE9\x9D\xA2\xE6\x9D\xBF\xE5\xB7\xB2\xE5\x88\xB7\xE6\x96\xB0\xE3\x80\x82"
+            : "Reset config.txt from vr/config.sample and refreshed the panel.";
         s.dirty = true;
         return true;
     }
@@ -3996,8 +4008,8 @@ FlashlightEnhancementEnabled=false
             kCfgResetConfirmPanelW - 84,
             80,
             s.useChinese
-                ? "\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE4\xBC\x9A\xE7\x94\xA8\xE5\x8F\x91\xE5\xB8\x83 sample \xE5\xAE\x8C\xE6\x95\xB4\xE8\xA6\x86\xE7\x9B\x96 config.txt\xEF\xBC\x8C\xE5\x8C\x85\xE6\x8B\xAC\xE6\x89\x80\xE6\x9C\x89 # \xE6\xB3\xA8\xE9\x87\x8A\xE8\xA1\x8C\xEF\xBC\x8C\xE5\xB9\xB6\xE7\xAB\x8B\xE5\x8D\xB3\xE5\x88\xB7\xE6\x96\xB0\xE6\x9C\xAC\xE9\x9D\xA2\xE6\x9D\xBF\xE3\x80\x82"
-                : "This overwrites config.txt with the complete release sample, including every # comment line, then refreshes this panel immediately.",
+                ? "\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE4\xBC\x9A\xE7\x94\xA8 vr/config.sample \xE5\xAE\x8C\xE6\x95\xB4\xE8\xA6\x86\xE7\x9B\x96 config.txt\xEF\xBC\x8C\xE5\x8C\x85\xE6\x8B\xAC\xE6\x89\x80\xE6\x9C\x89 # \xE6\xB3\xA8\xE9\x87\x8A\xE8\xA1\x8C\xEF\xBC\x8C\xE5\xB9\xB6\xE7\xAB\x8B\xE5\x8D\xB3\xE5\x88\xB7\xE6\x96\xB0\xE6\x9C\xAC\xE9\x9D\xA2\xE6\x9D\xBF\xE3\x80\x82"
+                : "This overwrites config.txt with vr/config.sample, including every # comment line, then refreshes this panel immediately.",
             g.normalFont,
             { 210, 216, 228 });
         CfgGdiButton(
@@ -9144,8 +9156,8 @@ FlashlightEnhancementEnabled=false
             }
             s.resetConfirmVisible = true;
             s.status = s.useChinese
-                ? "\xE5\x86\x8D\xE6\xAC\xA1\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE5\xB0\x86\xE6\x8C\x89 sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xE3\x80\x82"
-                : "Confirm once more to reset config.txt to the release sample.";
+                ? "\xE5\x86\x8D\xE6\xAC\xA1\xE7\xA1\xAE\xE8\xAE\xA4\xE5\x90\x8E\xE5\xB0\x86\xE7\x94\xA8 vr/config.sample \xE9\x87\x8D\xE7\xBD\xAE config.txt\xE3\x80\x82"
+                : "Confirm once more to reset config.txt from vr/config.sample.";
             s.dirty = true;
             return;
         }
