@@ -579,18 +579,6 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
     const float contactNear = std::clamp(m_VRNearClip, 0.1f, 6.0f);
     const float selfBodyNear = std::clamp(m_VRNearClipSelfBodyNearClip, 0.1f, 6.0f);
 
-    // Disabling adaptive mode preserves the old constant-near-plane behavior.
-    if (!m_VRNearClipAdaptive)
-    {
-        m_VRNearClipCharacterContactActive = false;
-        m_VRNearClipSelfBodyActive = false;
-        s_lastCandidateCount = -1;
-        m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
-        m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
-        m_RenderVRNearClipCharacterContactActive.store(1, std::memory_order_release);
-        return;
-    }
-
     if (!localPlayer ||
         !m_Game ||
         !m_Game->m_EngineClient ||
@@ -602,7 +590,7 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
         m_VRNearClipSelfBodyActive = false;
         s_lastCandidateCount = -1;
         m_VRNearClipClosestCharacterDistance.store(-1.0f, std::memory_order_relaxed);
-        m_VRNearClipEffective.store(contactNear, std::memory_order_relaxed);
+        m_VRNearClipEffective.store(6.0f, std::memory_order_relaxed);
         m_RenderVRNearClipCharacterContactActive.store(0, std::memory_order_release);
         return;
     }
@@ -610,40 +598,48 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
     bool foundCharacter = false;
     int candidateCount = 0;
     float closestDistance = 1.0e30f;
-    for (int entityIndex = 1; entityIndex < static_cast<int>(Game::kMaxPlayers); ++entityIndex)
+    if (m_VRNearClipAdaptive)
     {
-        if (!AdaptiveNearClipIsConnectedPlayer(m_Game->m_EngineClient, entityIndex))
-            continue;
+        for (int entityIndex = 1; entityIndex < static_cast<int>(Game::kMaxPlayers); ++entityIndex)
+        {
+            if (!AdaptiveNearClipIsConnectedPlayer(m_Game->m_EngineClient, entityIndex))
+                continue;
 
-        C_BaseEntity* character = AdaptiveNearClipGetClientEntity(
-            m_Game->m_ClientEntityList,
-            entityIndex);
-        // GetPlayerInfo distinguishes real player slots from weapons and props whose
-        // entity indices can also fall below Game::kMaxPlayers on small servers.
-        if (!character || character == localPlayer || !IsEntityAlive(character))
-            continue;
+            C_BaseEntity* character = AdaptiveNearClipGetClientEntity(
+                m_Game->m_ClientEntityList,
+                entityIndex);
+            // GetPlayerInfo distinguishes real player slots from weapons and props whose
+            // entity indices can also fall below Game::kMaxPlayers on small servers.
+            if (!character || character == localPlayer || !IsEntityAlive(character))
+                continue;
 
-        int team = 0;
-        if (!AdaptiveNearClipGetPlayerTeam(character, team) || (team != 2 && team != 3))
-            continue;
+            int team = 0;
+            if (!AdaptiveNearClipGetPlayerTeam(character, team) || (team != 2 && team != 3))
+                continue;
 
-        Vector characterOrigin{};
-        if (!AdaptiveNearClipGetAbsOrigin(character, characterOrigin))
-            continue;
+            Vector characterOrigin{};
+            if (!AdaptiveNearClipGetAbsOrigin(character, characterOrigin))
+                continue;
 
-        const float distance = AdaptiveNearClipDistanceToCharacterCapsule(m_HmdPosAbs, characterOrigin);
-        if (!std::isfinite(distance))
-            continue;
+            const float distance = AdaptiveNearClipDistanceToCharacterCapsule(m_HmdPosAbs, characterOrigin);
+            if (!std::isfinite(distance))
+                continue;
 
-        foundCharacter = true;
-        ++candidateCount;
-        closestDistance = (std::min)(closestDistance, distance);
+            foundCharacter = true;
+            ++candidateCount;
+            closestDistance = (std::min)(closestDistance, distance);
+        }
     }
 
     const float enterDistance = std::clamp(m_VRNearClipEnterDistance, 0.0f, 128.0f);
     const float exitDistance = std::clamp(m_VRNearClipExitDistance, enterDistance, 192.0f);
     const bool wasActive = m_VRNearClipCharacterContactActive;
-    if (m_VRNearClipCharacterContactActive)
+    if (!m_VRNearClipAdaptive)
+    {
+        m_VRNearClipCharacterContactActive = false;
+        s_lastCandidateCount = -1;
+    }
+    else if (m_VRNearClipCharacterContactActive)
     {
         if (!foundCharacter || closestDistance >= exitDistance)
             m_VRNearClipCharacterContactActive = false;
@@ -653,7 +649,7 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
         m_VRNearClipCharacterContactActive = true;
     }
 
-    if (candidateCount != s_lastCandidateCount)
+    if (m_VRNearClipDebugLog && candidateCount != s_lastCandidateCount)
     {
         Game::logMsg(
             "[VR][NearClip] player-slot candidates=%d closest=%.2f enter=%.2f exit=%.2f clip=%.2f",
@@ -664,7 +660,7 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
             contactNear);
         s_lastCandidateCount = candidateCount;
     }
-    if (wasActive != m_VRNearClipCharacterContactActive)
+    if (m_VRNearClipDebugLog && wasActive != m_VRNearClipCharacterContactActive)
     {
         Game::logMsg(
             "[VR][NearClip] contact %s closest=%.2f effective=%.2f",
@@ -700,7 +696,7 @@ void VR::UpdateAdaptiveNearClip(C_BasePlayer* localPlayer)
             m_VRNearClipSelfBodyActive);
     }
     m_VRNearClipSelfBodyActive = selfBodyEligible && selfBodyViewHit;
-    if (wasSelfBodyActive != m_VRNearClipSelfBodyActive)
+    if (m_VRNearClipDebugLog && wasSelfBodyActive != m_VRNearClipSelfBodyActive)
     {
         Game::logMsg(
             "[VR][NearClip] self-body %s effective=%.2f",

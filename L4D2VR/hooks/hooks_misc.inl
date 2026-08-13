@@ -20009,7 +20009,8 @@ namespace
                 if (!callQueue)
                 {
                     static std::atomic<bool> s_loggedMissingQueue{ false };
-                    if (!s_loggedMissingQueue.exchange(true, std::memory_order_acq_rel))
+                    if (vr->m_VRNearClipDebugLog &&
+                        !s_loggedMissingQueue.exchange(true, std::memory_order_acq_rel))
                     {
                         Game::logMsg(
                             "[VR][NearClip] viewmodel depth-clamp skipped: Source render call queue unavailable");

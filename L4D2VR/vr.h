@@ -358,8 +358,9 @@ public:
 	float m_VRNearClip = 0.8f;
 	// Adaptive mode keeps the normal, depth-stable near plane at ordinary distances
 	// and only publishes m_VRNearClip when the HMD enters a character's bounds.
-	bool m_VRNearClipAdaptive = true;
+	bool m_VRNearClipAdaptive = false;
 	bool m_VRNearClipSelfBody = true;
+	bool m_VRNearClipDebugLog = false;
 	float m_VRNearClipSelfBodyLookDownDegrees = 35.0f;
 	float m_VRNearClipSelfBodyNearClip = 0.8f;
 	float m_VRNearClipEnterDistance = 18.0f;
