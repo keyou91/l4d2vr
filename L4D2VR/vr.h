@@ -1766,17 +1766,16 @@ public:
 	Vector m_FirstPersonBodyAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	// Model-specific pitch/yaw/roll calibration around the rigid torso anchor.
 	Vector m_FirstPersonBodyAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
-	// Camera position relative to the body anchor. Positive X places the camera farther forward.
-	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.08f, 0.0f, 0.0f };
+	// Camera position relative to the body anchor in body-yaw-local meters.
+	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.0f, 0.0f, 0.06f };
 	bool m_FirstPersonBodyHideWorldWeapon = true;
 	bool m_HideArms = false;
 	bool m_NativeViewmodelHandsOnly = false;
 	// true keeps the existing wrist clip; false draws the complete native viewmodel arms with analytic IK.
 	bool m_NativeViewmodelArmCroppingEnabled = true;
 	// Full-arm IK shoulder-root tuning in the body yaw frame. Position uses
-	// X=forward, Y=right, Z=up. Rotation uses pitch,yaw,roll in degrees.
-	// Left and right are independent and are applied after reading the
-	// first-person body shoulders.
+	// X=forward, Y=right, Z=up. Rotation uses pitch,yaw,roll and adjusts the IK
+	// frame without moving the controller/weapon palm target.
 	Vector m_NativeViewmodelLeftArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	Vector m_NativeViewmodelRightArmAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	Vector m_NativeViewmodelLeftArmAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
@@ -1784,6 +1783,9 @@ public:
 	// Total extra distance between the two shoulder roots. Positive widens and
 	// negative narrows; half is applied to each side.
 	float m_NativeViewmodelArmShoulderSpacingOffsetMeters = 0.0f;
+	// First-person elbow pole weights in torso-local coordinates. X is forward,
+	// Y is outward for each arm, and Z is up. Only the component ratios matter.
+	Vector m_NativeViewmodelArmElbowPoleBias = { -0.05f, 0.20f, -1.0f };
 	float m_NativeViewmodelHandsOnlyWristKeepFraction = 0.0f;
 	float m_NativeViewmodelHandsOnlyTrimUnits = 0.0f;
 	float m_NativeViewmodelHandsOnlyArmBendScale = 1.0f;

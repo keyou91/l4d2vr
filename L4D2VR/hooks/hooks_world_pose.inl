@@ -5824,6 +5824,7 @@
         const Vector& bodyForward,
         const Vector& bodyRight,
         const Vector& bodyUp,
+        const Vector& elbowPoleBias,
         const vr_vm_stabilize::Mat3x4& handTarget,
         float weight,
         bool& bendBodyLocalValid,
@@ -6088,7 +6089,10 @@
                 bendWorld,
                 previousTwist,
                 &solvedTwistRadians,
-                true) ||
+                true,
+                1.0f,
+                true,
+                &elbowPoleBias) ||
             !HooksWorldPoseBlendAnalyticArmSolution(
                 layout,
                 arm,
@@ -6982,6 +6986,7 @@
                     bodyForward,
                     bodyRight,
                     bodyUp,
+                    vr->m_NativeViewmodelArmElbowPoleBias,
                     leftHandTarget,
                     trackingWeight,
                     calibration.leftBendBodyLocalValid,
@@ -7015,6 +7020,7 @@
                     bodyForward,
                     bodyRight,
                     bodyUp,
+                    vr->m_NativeViewmodelArmElbowPoleBias,
                     rightHandTarget,
                     trackingWeight,
                     calibration.rightBendBodyLocalValid,

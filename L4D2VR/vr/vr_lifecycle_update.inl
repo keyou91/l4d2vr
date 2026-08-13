@@ -4793,6 +4793,7 @@ void VR::LogCompositorError(const char* action, vr::EVRCompositorError error)
     if (now - m_LastCompositorErrorLog < kLogCooldown)
         return;
 
+    Game::logMsg("[VR] %s failed with VRCompositorError %d", action, static_cast<int>(error));
     m_LastCompositorErrorLog = now;
 }
 

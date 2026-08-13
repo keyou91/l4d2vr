@@ -1588,6 +1588,12 @@ void VR::ParseConfigFile()
                 m_NativeViewmodelRightArmAnchorRotationOffsetDeg),
             -180.0f,
             180.0f);
+        m_NativeViewmodelArmElbowPoleBias = clampArmAnchorVector(
+            getVector3(
+                "NativeViewmodelArmElbowPoleBias",
+                m_NativeViewmodelArmElbowPoleBias),
+            -4.0f,
+            4.0f);
     }
     m_NativeViewmodelArmShoulderSpacingOffsetMeters = std::clamp(
         getFloat(
