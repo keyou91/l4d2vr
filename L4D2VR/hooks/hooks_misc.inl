@@ -911,6 +911,82 @@ namespace
             !vr->m_NativeViewmodelArmCroppingEnabled;
     }
 
+    inline bool HooksNativeViewmodelFullArmControllerPairReady(VR* vr)
+    {
+        if (!vr)
+            return false;
+
+        struct ControllerPairReadiness
+        {
+            VR* owner = nullptr;
+            uint32_t generation = 0;
+            bool ready = false;
+            bool waitingLogged = false;
+            bool readyLogged = false;
+            std::chrono::steady_clock::time_point bothValidSince{};
+        };
+
+        static std::mutex s_readinessMutex;
+        static ControllerPairReadiness s_readiness;
+
+        VRWorldPoseTrackingSnapshot tracking{};
+        const bool haveTracking =
+            vr->ReadWorldPoseTrackingSnapshot(tracking);
+        const bool bothControllersValid =
+            haveTracking && tracking.leftHandValid && tracking.rightHandValid;
+        const uint32_t generation =
+            vr->m_NativeViewmodelLeftHandFreezeGeneration.load(
+                std::memory_order_acquire);
+        const auto now = std::chrono::steady_clock::now();
+        constexpr auto kStableDuration = std::chrono::milliseconds(200);
+
+        std::lock_guard<std::mutex> lock(s_readinessMutex);
+        if (s_readiness.owner != vr ||
+            s_readiness.generation != generation)
+        {
+            s_readiness = ControllerPairReadiness{};
+            s_readiness.owner = vr;
+            s_readiness.generation = generation;
+        }
+
+        if (!bothControllersValid)
+        {
+            s_readiness.ready = false;
+            s_readiness.readyLogged = false;
+            s_readiness.bothValidSince = {};
+            if (!s_readiness.waitingLogged)
+            {
+                Game::logMsg(
+                    "[VR][ViewmodelArmIK] waiting for atomic controller pair generation=%u snapshot=%s leftValid=%s rightValid=%s",
+                    generation,
+                    haveTracking ? "ready" : "missing",
+                    tracking.leftHandValid ? "true" : "false",
+                    tracking.rightHandValid ? "true" : "false");
+                s_readiness.waitingLogged = true;
+            }
+            return false;
+        }
+
+        if (s_readiness.bothValidSince.time_since_epoch().count() == 0)
+            s_readiness.bothValidSince = now;
+        if (now - s_readiness.bothValidSince < kStableDuration)
+            return false;
+
+        s_readiness.ready = true;
+        s_readiness.waitingLogged = false;
+        if (!s_readiness.readyLogged)
+        {
+            Game::logMsg(
+                "[VR][ViewmodelArmIK] atomic controller pair stable; enabling both arms generation=%u stableMs=%lld",
+                generation,
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - s_readiness.bothValidSince).count()));
+            s_readiness.readyLogged = true;
+        }
+        return s_readiness.ready;
+    }
+
     inline bool HooksModelNameIsViewmodel(const std::string& modelName)
     {
         return
@@ -15187,17 +15263,15 @@ namespace
     }
 
 
-    struct HooksFirstPersonBodyViewmodelShoulderAnchors
+    struct HooksFirstPersonBodyViewmodelSkeleton
     {
         VR* owner = nullptr;
         const HooksFirstPersonBodyEyeSceneState* sceneState = nullptr;
         std::uint64_t sceneSerial = 0;
         std::uint64_t playerGeneration = 0;
         int localPlayerIndex = -1;
-        Vector leftShoulder{};
-        Vector rightShoulder{};
-        bool leftValid = false;
-        bool rightValid = false;
+        std::vector<std::string> boneNames;
+        std::vector<vr_vm_stabilize::Mat3x4> bones;
     };
 
     inline int HooksFirstPersonBodyEyeSlot(int eyeIndex)
@@ -15209,29 +15283,29 @@ namespace
         return -1;
     }
 
-    inline std::mutex& HooksFirstPersonBodyViewmodelShoulderMutex()
+    inline std::mutex& HooksFirstPersonBodyViewmodelSkeletonMutex()
     {
         static std::mutex s_mutex;
         return s_mutex;
     }
 
-    inline HooksFirstPersonBodyViewmodelShoulderAnchors*
-        HooksFirstPersonBodyViewmodelShoulderStorage()
+    inline HooksFirstPersonBodyViewmodelSkeleton*
+        HooksFirstPersonBodyViewmodelSkeletonStorage()
     {
-        static HooksFirstPersonBodyViewmodelShoulderAnchors s_anchors[2]{};
-        return s_anchors;
+        static HooksFirstPersonBodyViewmodelSkeleton s_skeletons[2]{};
+        return s_skeletons;
     }
 
-    inline void HooksFirstPersonBodyPublishViewmodelShoulders(
+    inline void HooksFirstPersonBodyPublishViewmodelSkeleton(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
-        const Vector& leftShoulder,
-        bool leftValid,
-        const Vector& rightShoulder,
-        bool rightValid)
+        const std::vector<std::string>& boneNames,
+        const std::vector<vr_vm_stabilize::Mat3x4>& bones)
     {
         if (!vr || !bodyState || !bodyState->bodyActive ||
-            bodyState->sceneSerial == 0 || bodyState->playerGeneration == 0)
+            bodyState->sceneSerial == 0 || bodyState->playerGeneration == 0 ||
+            boneNames.empty() || boneNames.size() != bones.size() ||
+            boneNames.size() > 128u)
         {
             return;
         }
@@ -15240,30 +15314,31 @@ namespace
         if (slot < 0)
             return;
 
-        leftValid = leftValid &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(leftShoulder);
-        rightValid = rightValid &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(rightShoulder);
-        if (!leftValid && !rightValid)
-            return;
+        for (size_t bone = 0; bone < bones.size(); ++bone)
+        {
+            if (boneNames[bone].empty() ||
+                !HooksNativeViewmodelHandsOnlyMatrixFinite(bones[bone]))
+            {
+                return;
+            }
+        }
 
-        HooksFirstPersonBodyViewmodelShoulderAnchors snapshot{};
+        HooksFirstPersonBodyViewmodelSkeleton snapshot{};
         snapshot.owner = vr;
         snapshot.sceneState = bodyState;
         snapshot.sceneSerial = bodyState->sceneSerial;
         snapshot.playerGeneration = bodyState->playerGeneration;
         snapshot.localPlayerIndex = bodyState->localPlayerIndex;
-        snapshot.leftShoulder = leftShoulder;
-        snapshot.rightShoulder = rightShoulder;
-        snapshot.leftValid = leftValid;
-        snapshot.rightValid = rightValid;
+        snapshot.boneNames = boneNames;
+        snapshot.bones = bones;
 
         std::lock_guard<std::mutex> lock(
-            HooksFirstPersonBodyViewmodelShoulderMutex());
-        HooksFirstPersonBodyViewmodelShoulderStorage()[slot] = snapshot;
+            HooksFirstPersonBodyViewmodelSkeletonMutex());
+        HooksFirstPersonBodyViewmodelSkeletonStorage()[slot] =
+            std::move(snapshot);
     }
 
-    inline bool HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
+    inline bool HooksFirstPersonBodyCurrentSceneWantsViewmodelSkeleton(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState*& outBodyState)
     {
@@ -15292,18 +15367,14 @@ namespace
         return true;
     }
 
-    inline bool HooksFirstPersonBodyReadViewmodelShoulders(
+    inline bool HooksFirstPersonBodyReadViewmodelSkeleton(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
-        Vector& outLeftShoulder,
-        bool& outLeftValid,
-        Vector& outRightShoulder,
-        bool& outRightValid)
+        std::vector<std::string>& outBoneNames,
+        std::vector<vr_vm_stabilize::Mat3x4>& outBones)
     {
-        outLeftShoulder = Vector{};
-        outRightShoulder = Vector{};
-        outLeftValid = false;
-        outRightValid = false;
+        outBoneNames.clear();
+        outBones.clear();
         if (!vr || !bodyState)
             return false;
 
@@ -15311,11 +15382,11 @@ namespace
         if (slot < 0)
             return false;
 
-        HooksFirstPersonBodyViewmodelShoulderAnchors snapshot{};
+        HooksFirstPersonBodyViewmodelSkeleton snapshot{};
         {
             std::lock_guard<std::mutex> lock(
-                HooksFirstPersonBodyViewmodelShoulderMutex());
-            snapshot = HooksFirstPersonBodyViewmodelShoulderStorage()[slot];
+                HooksFirstPersonBodyViewmodelSkeletonMutex());
+            snapshot = HooksFirstPersonBodyViewmodelSkeletonStorage()[slot];
         }
 
         if (snapshot.owner != vr || snapshot.sceneState != bodyState ||
@@ -15326,15 +15397,21 @@ namespace
             return false;
         }
 
-        outLeftValid = snapshot.leftValid &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(snapshot.leftShoulder);
-        outRightValid = snapshot.rightValid &&
-            HooksNativeViewmodelHandsOnlyVectorFinite(snapshot.rightShoulder);
-        if (outLeftValid)
-            outLeftShoulder = snapshot.leftShoulder;
-        if (outRightValid)
-            outRightShoulder = snapshot.rightShoulder;
-        return outLeftValid || outRightValid;
+        if (snapshot.boneNames.empty() ||
+            snapshot.boneNames.size() != snapshot.bones.size() ||
+            snapshot.boneNames.size() > 128u)
+        {
+            return false;
+        }
+        for (const vr_vm_stabilize::Mat3x4& bone : snapshot.bones)
+        {
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(bone))
+                return false;
+        }
+
+        outBoneNames = std::move(snapshot.boneNames);
+        outBones = std::move(snapshot.bones);
+        return true;
     }
 
     inline float HooksTrackedBodyWrapYaw(float yaw)
@@ -16378,8 +16455,17 @@ namespace
         const float* previousTwistRadians = nullptr,
         float* outTwistRadians = nullptr,
         bool stabilizeNonStretchingArm = false,
-        float sharedUpperArmStretchScale = 1.0f)
+        float sharedUpperArmStretchScale = 1.0f,
+        const char** outFailureStage = nullptr)
     {
+        if (outFailureStage)
+            *outFailureStage = nullptr;
+        auto fail = [&](const char* stage) -> bool
+            {
+                if (outFailureStage)
+                    *outFailureStage = stage;
+                return false;
+            };
         const bool stabilizeArmState =
             stretchUpperArmToTarget || stabilizeNonStretchingArm;
         if (outTwistRadians)
@@ -16390,7 +16476,7 @@ namespace
             chain.hand >= numBones ||
             !HooksNativeViewmodelHandsOnlyMatrixFinite(handTarget))
         {
-            return false;
+            return fail("input");
         }
 
         const Vector currentShoulder =
@@ -16398,7 +16484,7 @@ namespace
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(currentShoulder) ||
             !HooksNativeViewmodelHandsOnlyVectorFinite(shoulderTarget))
         {
-            return false;
+            return fail("shoulder-input");
         }
 
         vr_vm_stabilize::Mat3x4 shoulderTranslation =
@@ -16414,7 +16500,7 @@ namespace
             shoulderTranslation,
             bones))
         {
-            return false;
+            return fail("shoulder-translate");
         }
 
         const Vector shoulder =
@@ -16435,7 +16521,7 @@ namespace
             upperLength < 0.25f || lowerLength < 0.25f ||
             upperLength > 256.0f || lowerLength > 256.0f)
         {
-            return false;
+            return fail("rest-geometry");
         }
 
         float solveUpperLength = upperLength;
@@ -16449,7 +16535,7 @@ namespace
 
             const float targetDistance = (targetPosition - shoulder).Length();
             if (!std::isfinite(targetDistance) || targetDistance < 0.01f)
-                return false;
+                return fail("target-distance");
 
             // Keep the authored forearm length. If the controller/weapon hand is
             // outside the normal two-bone reach, add only the missing distance to
@@ -16478,7 +16564,7 @@ namespace
                 targetDistance >
                 solveUpperLength + lowerLength - finalReachEpsilon)
             {
-                return false;
+                return fail("stretch-reach");
             }
         }
 
@@ -16554,7 +16640,7 @@ namespace
             animatedUpperDirection,
             solution))
         {
-            return false;
+            return fail("two-bone");
         }
         const Vector solvedHandTarget =
             stretchUpperArmToTarget ? targetPosition : solution.hand;
@@ -16573,7 +16659,7 @@ namespace
                 upperDelta,
                 bones))
         {
-            return false;
+            return fail("upper-align");
         }
 
         Vector solvedElbow =
@@ -16618,7 +16704,7 @@ namespace
                         upperTwistDelta,
                         bones))
                 {
-                    return false;
+                    return fail("upper-plane-align");
                 }
 
                 solvedElbow =
@@ -16647,7 +16733,7 @@ namespace
                 upperStretchTranslation,
                 bones))
             {
-                return false;
+                return fail("upper-stretch");
             }
 
             solvedElbow =
@@ -16670,7 +16756,7 @@ namespace
                 forearmDelta,
                 bones))
         {
-            return false;
+            return fail("forearm-align");
         }
 
         vr_vm_stabilize::Mat3x4 desiredHandRigid{};
@@ -16682,7 +16768,7 @@ namespace
                 bones[chain.hand],
                 currentHandRigid))
         {
-            return false;
+            return fail("hand-rigid");
         }
 
         // Applying the complete controller rotation only at the hand leaves the
@@ -16701,7 +16787,7 @@ namespace
             forearmTwistDelta,
             &principalTwistRadians))
         {
-            return false;
+            return fail("forearm-twist-build");
         }
 
         // Keep temporal twist in one bounded revolution. The previous unwrapped
@@ -16712,7 +16798,7 @@ namespace
         const float principalTwistBounded =
             HooksNativeViewmodelArmIkWrapRadians(principalTwistRadians);
         if (!std::isfinite(principalTwistBounded))
-            return false;
+            return fail("forearm-twist-wrap");
 
         float stabilizedUpperTwistRadians = principalTwistBounded;
         if (stabilizeArmState && previousTwistRadians &&
@@ -16734,7 +16820,7 @@ namespace
             float delta = HooksNativeViewmodelArmIkWrapRadians(
                 principalTwistBounded - previousBounded);
             if (!std::isfinite(previousBounded) || !std::isfinite(delta))
-                return false;
+                return fail("forearm-twist-continuity");
 
             if (std::fabs(delta) >= kUpperTwistReseedRadians)
             {
@@ -16829,7 +16915,7 @@ namespace
                     upperArmTwistDelta,
                     bones))
             {
-                return false;
+                return fail("upper-twist-share");
             }
         }
 
@@ -16843,7 +16929,7 @@ namespace
                 bones[chain.hand],
                 currentHandRigid))
         {
-            return false;
+            return fail("forearm-twist-apply");
         }
 
         if (stretchUpperArmToTarget)
@@ -16859,7 +16945,7 @@ namespace
             if (!HooksNativeViewmodelHandsOnlyVectorFinite(currentHandPosition) ||
                 !HooksNativeViewmodelHandsOnlyVectorFinite(handPositionDelta))
             {
-                return false;
+                return fail("hand-weld-input");
             }
 
             vr_vm_stabilize::Mat3x4 handWeldTranslation =
@@ -16877,7 +16963,7 @@ namespace
                     bones[chain.hand],
                     currentHandRigid))
             {
-                return false;
+                return fail("hand-weld-translate");
             }
 
             const Vector weldedHandPosition =
@@ -16906,11 +16992,13 @@ namespace
             handDelta,
             bones))
         {
-            return false;
+            return fail("palm-weld");
         }
 
         outBendDirection = solution.bendDirection;
-        return HooksNativeViewmodelHandsOnlyVectorFinite(outBendDirection);
+        return HooksNativeViewmodelHandsOnlyVectorFinite(outBendDirection)
+            ? true
+            : fail("bend-output");
     }
 
     struct HooksNativeViewmodelFirstPersonArmRestCache
@@ -17137,13 +17225,17 @@ namespace
             }
         }
 
+        // The body owns the immutable shoulder position, but the analytic arm
+        // must start from the cropped viewmodel's own rigid bind orientation.
+        // World-model upper-arm matrices may contain animation, mirroring or
+        // authored scale that this solver was never designed to inherit.
         Vector horizontalBodyForward(
             bodyForward.x,
             bodyForward.y,
             0.0f);
         if (!HooksNativeViewmodelArmIkNormalize(
-            horizontalBodyForward,
-            horizontalBodyForward))
+                horizontalBodyForward,
+                horizontalBodyForward))
         {
             return false;
         }
@@ -17161,10 +17253,6 @@ namespace
             return false;
         }
 
-        // Rotate the bind branch by the selected torso yaw, then apply the
-        // per-side arm-anchor pitch/yaw/roll adjustment. The additional rotation
-        // is built in the torso-local frame and never changes the controller hand
-        // target; it changes only the shoulder-root frame used by full-arm IK.
         vr_vm_stabilize::Mat3x4 armRootDelta{};
         vr_vm_stabilize::Mul(
             anchorRotationDelta,
@@ -17617,6 +17705,8 @@ namespace
         const std::string lowerModel = vr_vm_stabilize::ToLowerAscii(modelName);
         if (!HooksModelNameIsArmsOrHands(lowerModel))
             return false;
+        if (!HooksNativeViewmodelFullArmControllerPairReady(vr))
+            return false;
 
         std::vector<std::string> boneNames;
         std::vector<int> boneParents;
@@ -17758,11 +17848,11 @@ namespace
                 nullptr,
                 nullptr);
         }
-        if (!haveLeftChain && !haveRightChain)
+        if (!haveLeftChain || !haveRightChain)
         {
             HooksNativeViewmodelArmIkLogOnce(
-                "chain|" + lowerModel,
-                "[VR][ViewmodelArmIK] no valid shoulder-elbow-hand chain model=%s",
+                "atomic-chain|" + lowerModel,
+                "[VR][ViewmodelArmIK] atomic pair rejected because one shoulder-elbow-hand chain is missing model=%s",
                 lowerModel,
                 nullptr,
                 nullptr,
@@ -17838,7 +17928,7 @@ namespace
                 return false;
             }
         }
-        if (!haveLeftChain && !haveRightChain)
+        if (!haveLeftChain || !haveRightChain)
             return false;
 
         vr_vm_stabilize::Mat3x4 leftTarget{};
@@ -17857,11 +17947,11 @@ namespace
                 sourceBones,
                 numBones,
                 rightTarget);
-        if (!haveLeftTarget && !haveRightTarget)
+        if (!haveLeftTarget || !haveRightTarget)
         {
             HooksNativeViewmodelArmIkLogOnce(
-                "target|" + lowerModel,
-                "[VR][ViewmodelArmIK] no valid controller/viewmodel hand target model=%s",
+                "atomic-target|" + lowerModel,
+                "[VR][ViewmodelArmIK] atomic pair rejected because one hand target is missing model=%s",
                 lowerModel,
                 nullptr,
                 nullptr,
@@ -17904,7 +17994,7 @@ namespace
         Vector armFrameUp = turnUp;
         const HooksFirstPersonBodyEyeSceneState* firstPersonBodyState = nullptr;
         const bool haveFirstPersonBodyFrame =
-            HooksFirstPersonBodyCurrentSceneWantsViewmodelShoulders(
+            HooksFirstPersonBodyCurrentSceneWantsViewmodelSkeleton(
                 vr,
                 firstPersonBodyState);
         if (haveFirstPersonBodyFrame && firstPersonBodyState)
@@ -17946,48 +18036,136 @@ namespace
         Vector shoulderLateralAxis = bodyRight;
         const float shoulderHalfWidth = 0.18f * sourceUnitsPerMeter;
 
-        // When the first-person survivor body is being rendered, use the
-        // animation-free rest-pose shoulder positions published by its body-anchor
-        // pipeline. They keep the separate native viewmodel arm skeleton centred
-        // on the torso without importing survivor animation. Their orientation
-        // follows only the deadzone-resolved torso frame.
-        Vector publishedLeftShoulder{};
-        Vector publishedRightShoulder{};
-        bool publishedLeftValid = false;
-        bool publishedRightValid = false;
-        const bool havePublishedBodyShoulders =
-            haveFirstPersonBodyFrame &&
-            HooksFirstPersonBodyReadViewmodelShoulders(
-                vr,
-                firstPersonBodyState,
-                publishedLeftShoulder,
-                publishedLeftValid,
-                publishedRightShoulder,
-                publishedRightValid);
-        if (havePublishedBodyShoulders && publishedLeftValid && publishedRightValid)
+        // The arm viewmodel retains the survivor's complete skeleton even though
+        // most of its mesh was deleted. Match that skeleton to the final anchored
+        // first-person body by bone name. This supplies the exact spine/clavicle
+        // ancestry and upper-arm root matrices; no shoulder position is inferred
+        // from HMD offsets, fixed widths or user tuning while the body is active.
+        std::vector<std::string> bodyBoneNames;
+        std::vector<vr_vm_stabilize::Mat3x4> bodyBones;
+        std::vector<int> bodyBoneForViewmodel(
+            static_cast<size_t>(numBones),
+            -1);
+        std::vector<uint8_t> attachedAncestorMask(
+            static_cast<size_t>(numBones),
+            0u);
+        std::vector<vr_vm_stabilize::Mat3x4> attachedAncestorBones(
+            static_cast<size_t>(numBones));
+        Vector attachedUpperArmOrigin[2]{};
+        bool attachedUpperArmValid[2]{};
+        bool haveAttachedBodySkeleton = false;
+        if (haveFirstPersonBodyFrame)
         {
-            // The survivor bind pose is not guaranteed to be perfectly mirrored.
-            // Import only its body-centred shoulder midpoint. The shared delayed
-            // freeze below captures this once in torso-local metres, so a later
-            // survivor/viewmodel replacement cannot move both arm roots.
-            const Vector publishedCenter =
-                (publishedLeftShoulder + publishedRightShoulder) * 0.5f;
-            if (HooksNativeViewmodelHandsOnlyVectorFinite(publishedCenter))
-                shoulderCenter = publishedCenter;
-
-            // The published rest-pose shoulders have already received the same
-            // tracked upper-chest lean as the visible first-person body. Import
-            // their normalized lateral axis as well as their centre, otherwise
-            // the body shoulder line tilts while NativeViewmodelArm remains
-            // artificially horizontal.
-            Vector publishedShoulderLine =
-                publishedRightShoulder - publishedLeftShoulder;
-            if (HooksNativeViewmodelArmIkNormalize(
-                    publishedShoulderLine,
-                    publishedShoulderLine))
+            if (!HooksFirstPersonBodyReadViewmodelSkeleton(
+                    vr,
+                    firstPersonBodyState,
+                    bodyBoneNames,
+                    bodyBones))
             {
-                shoulderLateralAxis = publishedShoulderLine;
+                return false;
             }
+
+            std::unordered_map<std::string, int> bodyBoneByName;
+            for (int bone = 0;
+                bone < static_cast<int>(bodyBoneNames.size());
+                ++bone)
+            {
+                const std::string key = vr_vm_stabilize::ToLowerAscii(
+                    bodyBoneNames[static_cast<size_t>(bone)]);
+                if (!key.empty() && bodyBoneByName.find(key) == bodyBoneByName.end())
+                    bodyBoneByName.emplace(key, bone);
+            }
+            for (int bone = 0; bone < numBones; ++bone)
+            {
+                const std::string key = vr_vm_stabilize::ToLowerAscii(
+                    boneNames[static_cast<size_t>(bone)]);
+                const auto found = bodyBoneByName.find(key);
+                if (found != bodyBoneByName.end())
+                    bodyBoneForViewmodel[static_cast<size_t>(bone)] = found->second;
+            }
+
+            auto attachSide = [&] (
+                int slot,
+                bool chainValid,
+                const HooksNativeViewmodelArmIkChain& chain) -> bool
+                {
+                    if (!chainValid)
+                        return true;
+                    if (slot < 0 || slot > 1 || chain.upperArm < 0 ||
+                        chain.upperArm >= numBones)
+                    {
+                        return false;
+                    }
+
+                    const int bodyUpperArm = bodyBoneForViewmodel[
+                        static_cast<size_t>(chain.upperArm)];
+                    if (bodyUpperArm < 0 ||
+                        bodyUpperArm >= static_cast<int>(bodyBones.size()) ||
+                        !HooksNativeViewmodelHandsOnlyMatrixFinite(
+                            bodyBones[static_cast<size_t>(bodyUpperArm)]))
+                    {
+                        return false;
+                    }
+                    // The body supplies the hard shoulder joint position. Its
+                    // complete upper-arm orientation deliberately does not enter
+                    // the viewmodel solver; the latter rebuilds a rigid bind-pose
+                    // branch at this exact point below.
+                    attachedUpperArmOrigin[slot] = vr_vm_stabilize::GetOrigin(
+                        bodyBones[static_cast<size_t>(bodyUpperArm)]);
+                    if (!HooksNativeViewmodelHandsOnlyVectorFinite(
+                            attachedUpperArmOrigin[slot]))
+                    {
+                        return false;
+                    }
+                    attachedUpperArmValid[slot] = true;
+
+                    // Sleeve vertices near the seam may still carry clavicle or
+                    // chest weights. Copy every matching ancestor as well, so
+                    // those weights use the same body matrices as the torso mesh.
+                    int current = boneParents[
+                        static_cast<size_t>(chain.upperArm)];
+                    for (int guard = 0;
+                        guard < numBones && current >= 0 && current < numBones;
+                        ++guard)
+                    {
+                        const int bodyBone = bodyBoneForViewmodel[
+                            static_cast<size_t>(current)];
+                        if (bodyBone >= 0 &&
+                            bodyBone < static_cast<int>(bodyBones.size()) &&
+                            HooksNativeViewmodelHandsOnlyMatrixFinite(
+                                bodyBones[static_cast<size_t>(bodyBone)]))
+                        {
+                            attachedAncestorMask[
+                                static_cast<size_t>(current)] = 1u;
+                            attachedAncestorBones[
+                                static_cast<size_t>(current)] =
+                                bodyBones[static_cast<size_t>(bodyBone)];
+                        }
+
+                        const int parent = boneParents[
+                            static_cast<size_t>(current)];
+                        if (parent < 0 || parent >= numBones || parent == current)
+                            break;
+                        current = parent;
+                    }
+                    return true;
+                };
+
+            if (!attachSide(0, haveLeftChain, leftChain) ||
+                !attachSide(1, haveRightChain, rightChain))
+            {
+                HooksNativeViewmodelArmIkLogOnce(
+                    "body-skeleton-mismatch|" + lowerModel,
+                    "[VR][ViewmodelArmIK] body/viewmodel skeleton does not share matching upper-arm roots model=%s",
+                    lowerModel,
+                    nullptr,
+                    nullptr,
+                    nullptr);
+                return false;
+            }
+            haveAttachedBodySkeleton =
+                (!haveLeftChain || attachedUpperArmValid[0]) &&
+                (!haveRightChain || attachedUpperArmValid[1]);
         }
 
         // NativeViewmodelArm shares the cropped-hand map delay. Once that delay
@@ -18001,6 +18179,7 @@ namespace
                 std::memory_order_acquire);
         static std::mutex s_frozenPlacementMutex;
         static HooksNativeViewmodelArmIkFrozenPlacement s_frozenPlacement;
+        if (!haveAttachedBodySkeleton)
         {
             std::lock_guard<std::mutex> lock(s_frozenPlacementMutex);
             if (s_frozenPlacement.owner != vr ||
@@ -18011,12 +18190,7 @@ namespace
                 s_frozenPlacement.generation = placementGeneration;
             }
 
-            const bool placementSourceReady =
-                !vr->m_FirstPersonBodyEnabled ||
-                (havePublishedBodyShoulders &&
-                    publishedLeftValid && publishedRightValid);
             if (!s_frozenPlacement.valid &&
-                placementSourceReady &&
                 vr->m_NativeViewmodelLeftHandFreezeReady.load(
                     std::memory_order_acquire) != 0u)
             {
@@ -18060,20 +18234,28 @@ namespace
             }
         }
 
-        Vector leftShoulder =
-            shoulderCenter - shoulderLateralAxis * shoulderHalfWidth;
-        Vector rightShoulder =
-            shoulderCenter + shoulderLateralAxis * shoulderHalfWidth;
-        bool leftShoulderValid = true;
-        bool rightShoulderValid = true;
+        Vector leftShoulder = attachedUpperArmValid[0]
+            ? attachedUpperArmOrigin[0]
+            : shoulderCenter - shoulderLateralAxis * shoulderHalfWidth;
+        Vector rightShoulder = attachedUpperArmValid[1]
+            ? attachedUpperArmOrigin[1]
+            : shoulderCenter + shoulderLateralAxis * shoulderHalfWidth;
+        bool leftShoulderValid = !haveLeftChain ||
+            HooksNativeViewmodelHandsOnlyVectorFinite(leftShoulder);
+        bool rightShoulderValid = !haveRightChain ||
+            HooksNativeViewmodelHandsOnlyVectorFinite(rightShoulder);
 
         // User tuning is applied after the body-aligned shoulders have been
         // selected. Position offsets are independent per side and use the
         // unrotated torso frame: X=forward, Y=right, Z=up. Rotating an arm anchor
         // therefore never moves its shoulder position as a side effect.
         const Vector configuredAnchorOffsetMeters[2] = {
-            vr->m_NativeViewmodelLeftArmAnchorOffsetMeters,
-            vr->m_NativeViewmodelRightArmAnchorOffsetMeters,
+            haveAttachedBodySkeleton
+                ? Vector{}
+                : vr->m_NativeViewmodelLeftArmAnchorOffsetMeters,
+            haveAttachedBodySkeleton
+                ? Vector{}
+                : vr->m_NativeViewmodelRightArmAnchorOffsetMeters,
         };
         const Vector leftAnchorOffsetWorld =
             armFrameForward *
@@ -18098,10 +18280,12 @@ namespace
         // roots. It never re-reads animated survivor shoulder orientation.
         const Vector shoulderRightAxis = armFrameRight;
         const float spacingHalfDelta =
-            std::clamp(
-                vr->m_NativeViewmodelArmShoulderSpacingOffsetMeters,
-                -0.5f,
-                0.5f) *
+            (haveAttachedBodySkeleton
+                ? 0.0f
+                : std::clamp(
+                    vr->m_NativeViewmodelArmShoulderSpacingOffsetMeters,
+                    -0.5f,
+                    0.5f)) *
             sourceUnitsPerMeter * 0.5f;
         if (leftShoulderValid)
             leftShoulder -= shoulderRightAxis * spacingHalfDelta;
@@ -18112,8 +18296,12 @@ namespace
         // analytic IK pole/twist reference and the animation-free rest branch,
         // while the hand target itself remains controller/weapon anchored.
         const Vector configuredAnchorRotationOffsetDeg[2] = {
-            vr->m_NativeViewmodelLeftArmAnchorRotationOffsetDeg,
-            vr->m_NativeViewmodelRightArmAnchorRotationOffsetDeg,
+            haveAttachedBodySkeleton
+                ? Vector{}
+                : vr->m_NativeViewmodelLeftArmAnchorRotationOffsetDeg,
+            haveAttachedBodySkeleton
+                ? Vector{}
+                : vr->m_NativeViewmodelRightArmAnchorRotationOffsetDeg,
         };
         Vector armSolveForward[2]{};
         Vector armSolveRight[2]{};
@@ -18427,11 +18615,48 @@ namespace
                 return false;
             }
         }
+        if (haveAttachedBodySkeleton)
+        {
+            for (int bone = 0; bone < numBones; ++bone)
+            {
+                if (attachedAncestorMask[static_cast<size_t>(bone)] != 0u)
+                    solvedBones[bone] =
+                        attachedAncestorBones[static_cast<size_t>(bone)];
+            }
+        }
 
         bool solvedSide[2]{};
         Vector solvedBendWorld[2]{};
         bool solvedTwistValid[2]{};
         float solvedTwistRadians[2]{};
+        auto logSideSolveFailure = [&] (
+            const HooksNativeViewmodelArmIkChain& chain,
+            const char* stage)
+            {
+                static std::mutex s_failureLogMutex;
+                static std::unordered_set<std::string> s_failureLogged;
+                const char* const sideName = chain.side < 0 ? "left" : "right";
+                const std::string key =
+                    lowerModel + "|" + sideName + "|" +
+                    (stage ? stage : "unknown");
+                bool shouldLog = false;
+                {
+                    std::lock_guard<std::mutex> lock(s_failureLogMutex);
+                    shouldLog = s_failureLogged.insert(key).second;
+                }
+                if (shouldLog)
+                {
+                    Game::logMsg(
+                        "[VR][ViewmodelArmIK] %s arm solve failed stage=%s model=%s chain=(%d,%d,%d) bodySkeleton=%s",
+                        sideName,
+                        stage ? stage : "unknown",
+                        lowerModel.c_str(),
+                        chain.upperArm,
+                        chain.forearm,
+                        chain.hand,
+                        haveAttachedBodySkeleton ? "attached" : "unavailable");
+                }
+            };
         auto solveSide = [&](
             bool chainValid,
             bool targetValid,
@@ -18464,12 +18689,9 @@ namespace
                     }
                 }
 
-                // Rebuild the complete first-person arm branch from StudioHdr
-                // rest locals before solving. This removes every current Source
-                // shoulder/upper-arm/forearm animation and any viewmodel-root roll.
-                // HMD/controller tracking supplies positions; analytic IK supplies
-                // the arm rotations. Third-person rebuilds its own world-model
-                // rest chain in hooks_world_pose.inl.
+                // Descendants use the retained viewmodel rest locals. The root
+                // orientation stays in that rigid bind frame while shoulder is
+                // the exact matching body joint position.
                 if (!HooksNativeViewmodelArmIkResetFirstPersonBranchToRestPose(
                     vr,
                     drawState,
@@ -18486,6 +18708,18 @@ namespace
                     armAnchorRotationDelta[slot],
                     candidate))
                 {
+                    logSideSolveFailure(chain, "reset-rest-branch");
+                    return false;
+                }
+
+                std::vector<vr_vm_stabilize::Mat3x4> restCandidate;
+                try
+                {
+                    restCandidate.assign(candidate, candidate + numBones);
+                }
+                catch (...)
+                {
+                    logSideSolveFailure(chain, "snapshot-rest-branch");
                     return false;
                 }
 
@@ -18497,7 +18731,8 @@ namespace
                     : nullptr;
                 Vector bend{};
                 float twistRadians = 0.0f;
-                if (!HooksNativeViewmodelArmIkApplyArm(
+                const char* failureStage = nullptr;
+                bool armSolved = HooksNativeViewmodelArmIkApplyArm(
                     boneParents,
                     numBones,
                     chain,
@@ -18513,8 +18748,63 @@ namespace
                     previousTwist,
                     &twistRadians,
                     false,
-                    sharedUpperArmStretchScale))
+                    sharedUpperArmStretchScale,
+                    &failureStage);
+                if (!armSolved)
                 {
+                    // A shared scale chosen for the farther hand can over-extend
+                    // the nearer arm until its analytic elbow coincides with the
+                    // real palm target. Retry this side from the identical rigid
+                    // rest branch with only the extension it actually needs and
+                    // no stale continuity seed. The body shoulder and palm target
+                    // remain hard endpoints in both attempts.
+                    std::copy(
+                        restCandidate.begin(),
+                        restCandidate.end(),
+                        candidate);
+                    bend = Vector{};
+                    twistRadians = 0.0f;
+                    const char* retryFailureStage = nullptr;
+                    armSolved = HooksNativeViewmodelArmIkApplyArm(
+                        boneParents,
+                        numBones,
+                        chain,
+                        shoulder,
+                        target,
+                        armSolveForward[slot],
+                        armSolveRight[slot],
+                        armSolveUp[slot],
+                        nullptr,
+                        true,
+                        candidate,
+                        bend,
+                        nullptr,
+                        &twistRadians,
+                        false,
+                        1.0f,
+                        &retryFailureStage);
+                    if (!armSolved)
+                    {
+                        logSideSolveFailure(
+                            chain,
+                            retryFailureStage
+                                ? retryFailureStage
+                                : (failureStage ? failureStage : "analytic-unknown"));
+                        return false;
+                    }
+                    if (vr->m_VrHandsDebugLog)
+                    {
+                        Game::logMsg(
+                            "[VR][ViewmodelArmIK] %s arm recovered with per-side stretch initialStage=%s sharedScale=%.3f model=%s",
+                            chain.side < 0 ? "left" : "right",
+                            failureStage ? failureStage : "unknown",
+                            sharedUpperArmStretchScale,
+                            lowerModel.c_str());
+                    }
+                }
+                if (!armSolved)
+                {
+                    logSideSolveFailure(chain, "analytic-unknown");
                     return false;
                 }
 
@@ -18543,6 +18833,7 @@ namespace
                         sourceBones,
                         candidate))
                     {
+                        logSideSolveFailure(chain, "animated-fingers");
                         return false;
                     }
                 }
@@ -18559,6 +18850,7 @@ namespace
                     sourceBones,
                     candidate))
                 {
+                    logSideSolveFailure(chain, "cropped-empty-fingers");
                     return false;
                 }
 
@@ -18594,15 +18886,27 @@ namespace
             rightTarget,
             rightShoulder);
 
-        if (!solvedSide[0] && !solvedSide[1])
+        if (!solvedSide[0] || !solvedSide[1])
         {
             HooksNativeViewmodelArmIkLogOnce(
-                "solve|" + lowerModel,
-                "[VR][ViewmodelArmIK] analytic solve failed model=%s",
+                "atomic-solve|" + lowerModel,
+                "[VR][ViewmodelArmIK] atomic pair discarded because one arm solve failed model=%s",
                 lowerModel,
                 nullptr,
                 nullptr,
                 nullptr);
+            std::lock_guard<std::mutex> lock(s_continuityMutex);
+            if (s_continuity.owner == vr &&
+                s_continuity.studioHdr == studioHdr &&
+                s_continuity.numBones == numBones)
+            {
+                for (int slot = 0; slot < 2; ++slot)
+                {
+                    s_continuity.latestValid[slot] = false;
+                    s_continuity.latestTwistValid[slot] = false;
+                    s_continuity.latestTargetValid[slot] = false;
+                }
+            }
             return false;
         }
 
@@ -18719,7 +19023,9 @@ namespace
         }
         HooksNativeViewmodelArmIkLogOnce(
             "success|" + lowerModel,
-            "[VR][ViewmodelArmIK] active model=%s left=(%d:%s,%d:%s,%d:%s) right=(%d:%s,%d:%s,%d:%s)",
+            haveAttachedBodySkeleton
+                ? "[VR][ViewmodelArmIK] active bodySkeleton=attached manualArmAnchors=ignored model=%s left=(%d:%s,%d:%s,%d:%s) right=(%d:%s,%d:%s,%d:%s)"
+                : "[VR][ViewmodelArmIK] active bodySkeleton=unavailable cameraFallback=active model=%s left=(%d:%s,%d:%s,%d:%s) right=(%d:%s,%d:%s,%d:%s)",
             lowerModel,
             solvedSide[0] ? &leftChain : nullptr,
             solvedSide[1] ? &rightChain : nullptr,
@@ -20484,6 +20790,7 @@ namespace
         Vector animationFreeUpperChestFromHead{};
         Vector animationFreeLeftShoulderFromHead{};
         Vector animationFreeRightShoulderFromHead{};
+        std::vector<std::string> boneNames;
         std::vector<int> boneParents;
         std::vector<uint8_t> hideHeadMask;
         std::vector<uint8_t> hideLeftArmMask;
@@ -20533,6 +20840,7 @@ namespace
         }
         layout.boneIndex = boneIndex;
         layout.boneStride = stride;
+        layout.boneNames = boneNames;
 
         const std::vector<const char*> headSuffixes = {
             "bip01_head1", "bip01_head", "head1", "head",
@@ -21599,6 +21907,30 @@ namespace
             }
         }
 
+        // Capture the complete body skeleton after its final translation, torso
+        // rotation and upper-chest lean, but before head/arm render trimming. The
+        // viewmodel was authored by deleting body mesh while retaining this same
+        // skeleton, so matching these matrices by bone name gives it the real
+        // spine -> clavicle -> upper-arm attachment instead of a hand-placed point.
+        std::vector<vr_vm_stabilize::Mat3x4> viewmodelSkeletonBones;
+        if (static_cast<int>(s_layout.boneNames.size()) != s_layout.numBones)
+            return false;
+        try
+        {
+            viewmodelSkeletonBones.assign(
+                anchoredBones,
+                anchoredBones + s_layout.numBones);
+        }
+        catch (...)
+        {
+            return false;
+        }
+        for (const vr_vm_stabilize::Mat3x4& bone : viewmodelSkeletonBones)
+        {
+            if (!HooksNativeViewmodelHandsOnlyMatrixFinite(bone))
+                return false;
+        }
+
         auto collapseOriginForRoot = [&](int rootBone) -> Vector
             {
                 if (rootBone < 0 || rootBone >= s_layout.numBones)
@@ -21759,16 +22091,11 @@ namespace
             }
         }
 
-        // Publish only the animation-free rest-pose shoulder anchors. The visible
-        // survivor body may continue playing locomotion/fire/reload animation, but
-        // none of those matrices are allowed to seed the first-person arm IK.
-        HooksFirstPersonBodyPublishViewmodelShoulders(
+        HooksFirstPersonBodyPublishViewmodelSkeleton(
             vr,
             bodyState,
-            animationFreeLeftArmShoulder,
-            animationFreeLeftArmShoulderValid,
-            animationFreeRightArmShoulder,
-            animationFreeRightArmShoulderValid);
+            s_layout.boneNames,
+            viewmodelSkeletonBones);
 
         outBones = anchoredBones;
         return true;
@@ -23680,6 +24007,13 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
     const bool nativeViewmodelPendingFreezeHide =
         nativeViewmodelArmsOrHandsModel &&
         HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(m_VR);
+    // Full-arm IK is an all-or-nothing render product. If controller tracking,
+    // either arm chain, either target, or either analytic solve is unavailable,
+    // keep the original unanchored viewmodel branches hidden instead of falling
+    // back to a single floating native arm.
+    const bool nativeViewmodelFullArmIkFailClosed =
+        nativeViewmodelArmsOrHandsModel &&
+        HooksNativeViewmodelFullArmIkActive(m_VR);
     const bool hideMagazineInteractionCalibrationOriginalViewmodel =
         m_VR &&
         m_VR->m_MagazineInteractionCalibrationOverlayActive.load(std::memory_order_relaxed) &&
@@ -23883,7 +24217,8 @@ void Hooks::dDrawModelExecute(void* ecx, void* edx, void* state, const ModelRend
                     magazineInteractionCalibrationPreviewDrawnAsPrimary = true;
                 }
             }
-            else if (!nativeViewmodelPendingFreezeHide)
+            else if (!nativeViewmodelPendingFreezeHide &&
+                !nativeViewmodelFullArmIkFailClosed)
             {
                 ScopedNativeViewmodelHandsOnlyClipPlane nativeHandsOnlyClip(
                     m_VR,
