@@ -543,8 +543,10 @@ void VR::UpdateHudLiftGestureState(bool inGame)
     // Explicit ShowHUD input and focused VGUI (pause/menu/cursor) remain available.
     if (m_HudAlwaysHidden)
     {
-        stopLiftHudCapture(true);
-        m_HudToggleState = false;
+        // ShowHUD is an independent request. Ending/suppressing the lift gesture must
+        // not invalidate the HUD texture while the explicit hold action is active.
+        stopLiftHudCapture(!showHudHeld);
+        m_HudToggleState = showHudHeld;
         return;
     }
 
@@ -593,8 +595,11 @@ void VR::UpdateHudLiftGestureState(bool inGame)
 
     if (!active)
     {
-        stopLiftHudCapture(true);
-        m_HudToggleState = false;
+        // Only tear down HUD capture when no independent ShowHUD request remains.
+        // Clearing it every frame while ShowHUD is held leaves the absolute overlay
+        // visible but prevents RepositionOverlays() from following the HMD.
+        stopLiftHudCapture(!showHudHeld);
+        m_HudToggleState = showHudHeld;
         return;
     }
 

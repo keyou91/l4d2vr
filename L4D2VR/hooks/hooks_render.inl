@@ -5378,31 +5378,6 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 					state->renderBody = renderBody;
 					state->playerGeneration =
 						g_FirstPersonBodyPlayerGeneration.load(std::memory_order_acquire);
-					C_BasePlayer* const localPlayer =
-						g_FirstPersonBodyLocalPlayer.load(std::memory_order_acquire);
-					QAngle movementYaw(0.0f, view.angles.y, 0.0f);
-					Vector movementForward{};
-					QAngle::AngleVectors(
-						movementYaw,
-						&movementForward,
-						nullptr,
-						nullptr);
-					float forwardMovementFraction = 0.0f;
-					bool crouched = false;
-					if (localPlayer)
-					{
-						HooksFirstPersonBodyReadForwardMovementFractionSafe(
-							localPlayer,
-							movementForward.x,
-							movementForward.y,
-							&forwardMovementFraction);
-						HooksFirstPersonBodyReadCrouchedSafe(
-							localPlayer,
-							&crouched);
-					}
-					state->forwardMovementFraction =
-						forwardMovementFraction;
-					state->crouched = crouched;
 					state->localPlayerIndex =
 						g_FirstPersonBodyLocalPlayerIndex.load(std::memory_order_acquire);
 					state->localPlayerRenderable = localRenderable;

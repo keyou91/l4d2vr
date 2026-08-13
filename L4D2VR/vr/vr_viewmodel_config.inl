@@ -1545,24 +1545,6 @@ void VR::ParseConfigFile()
     m_FirstPersonBodyCameraOffsetMeters.x = std::clamp(m_FirstPersonBodyCameraOffsetMeters.x, -0.5f, 0.5f);
     m_FirstPersonBodyCameraOffsetMeters.y = std::clamp(m_FirstPersonBodyCameraOffsetMeters.y, -0.5f, 0.5f);
     m_FirstPersonBodyCameraOffsetMeters.z = std::clamp(m_FirstPersonBodyCameraOffsetMeters.z, -0.5f, 0.5f);
-    m_FirstPersonBodyMovementCameraCompensationMeters = std::clamp(
-        getFloat(
-            "FirstPersonBodyMovementCameraCompensationMeters",
-            m_FirstPersonBodyMovementCameraCompensationMeters),
-        -0.25f,
-        0.25f);
-    m_FirstPersonBodyBackwardMovementCameraCompensationMeters = std::clamp(
-        getFloat(
-            "FirstPersonBodyBackwardMovementCameraCompensationMeters",
-            m_FirstPersonBodyBackwardMovementCameraCompensationMeters),
-        -0.25f,
-        0.25f);
-    m_FirstPersonBodyCrouchCameraCompensationMeters = std::clamp(
-        getFloat(
-            "FirstPersonBodyCrouchCameraCompensationMeters",
-            m_FirstPersonBodyCrouchCameraCompensationMeters),
-        -0.25f,
-        0.25f);
     m_FirstPersonBodyHideWorldWeapon = getBool(
         "FirstPersonBodyHideWorldWeapon",
         m_FirstPersonBodyHideWorldWeapon);
