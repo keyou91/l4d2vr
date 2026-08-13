@@ -18323,20 +18323,16 @@ namespace
             }
         }
 
-        // The two native viewmodel arms belong to one body and must not acquire
-        // different upper-arm lengths merely because one tracked hand is farther
-        // from its shoulder.  Older code grew each upper arm independently until
-        // its palm could be welded to the controller/weapon target.  That made the
-        // farther side visibly project out of the torso even though the shoulder
-        // roots above were perfectly mirrored.  Resolve the largest required
-        // proportional extension once, then apply that same anthropometric scale
-        // to both sides.  Each elbow can still bend independently to its own hand.
+        // Shoulder roots and palm targets are hard endpoints, but reach extension
+        // is strictly local to each arm. Sharing the farther hand's scale with the
+        // nearer side changes that side's segment lengths while its target stays
+        // fixed, forcing the unaffected elbow to fold or flip merely because the
+        // opposite controller moved.
         float armUpperLength[2] = { 0.0f, 0.0f };
         float armLowerLength[2] = { 0.0f, 0.0f };
         float armTargetDistance[2] = { 0.0f, 0.0f };
         float armRequiredStretchScale[2] = { 1.0f, 1.0f };
         bool armGeometryValid[2] = { false, false };
-        float sharedUpperArmStretchScale = 1.0f;
         auto accumulateRequiredStretch = [&] (
             int slot,
             bool chainValid,
@@ -18413,9 +18409,6 @@ namespace
                 armTargetDistance[slot] = targetDistance;
                 armRequiredStretchScale[slot] = requiredScale;
                 armGeometryValid[slot] = true;
-                sharedUpperArmStretchScale = std::max(
-                    sharedUpperArmStretchScale,
-                    requiredScale);
             };
         accumulateRequiredStretch(
             0,
@@ -18732,6 +18725,10 @@ namespace
                 Vector bend{};
                 float twistRadians = 0.0f;
                 const char* failureStage = nullptr;
+                const float perSideUpperArmStretchScale =
+                    armGeometryValid[slot]
+                    ? armRequiredStretchScale[slot]
+                    : 1.0f;
                 bool armSolved = HooksNativeViewmodelArmIkApplyArm(
                     boneParents,
                     numBones,
@@ -18748,16 +18745,14 @@ namespace
                     previousTwist,
                     &twistRadians,
                     false,
-                    sharedUpperArmStretchScale,
+                    perSideUpperArmStretchScale,
                     &failureStage);
                 if (!armSolved)
                 {
-                    // A shared scale chosen for the farther hand can over-extend
-                    // the nearer arm until its analytic elbow coincides with the
-                    // real palm target. Retry this side from the identical rigid
-                    // rest branch with only the extension it actually needs and
-                    // no stale continuity seed. The body shoulder and palm target
-                    // remain hard endpoints in both attempts.
+                    // Retry from the identical rigid rest branch without stale
+                    // bend/twist continuity. Passing 1.0 lets ApplyArm derive this
+                    // side's missing reach internally; neither opposite-arm state
+                    // nor either hard endpoint participates.
                     std::copy(
                         restCandidate.begin(),
                         restCandidate.end(),
@@ -18795,10 +18790,10 @@ namespace
                     if (vr->m_VrHandsDebugLog)
                     {
                         Game::logMsg(
-                            "[VR][ViewmodelArmIK] %s arm recovered with per-side stretch initialStage=%s sharedScale=%.3f model=%s",
+                            "[VR][ViewmodelArmIK] %s arm recovered with independent stretch initialStage=%s sideScale=%.3f model=%s",
                             chain.side < 0 ? "left" : "right",
                             failureStage ? failureStage : "unknown",
-                            sharedUpperArmStretchScale,
+                            perSideUpperArmStretchScale,
                             lowerModel.c_str());
                     }
                 }
@@ -19007,7 +19002,7 @@ namespace
                     leftShoulder - rightShoulder,
                     armFrameForward);
                 Game::logMsg(
-                    "[VR][ViewmodelArmIK] symmetric stretch model=%s shoulderForwardDelta=%.3f upper=(%.2f %.2f) lower=(%.2f %.2f) targetDistance=(%.2f %.2f) requiredScale=(%.3f %.3f) sharedScale=%.3f",
+                    "[VR][ViewmodelArmIK] independent stretch model=%s shoulderForwardDelta=%.3f upper=(%.2f %.2f) lower=(%.2f %.2f) targetDistance=(%.2f %.2f) sideScale=(%.3f %.3f)",
                     lowerModel.c_str(),
                     shoulderForwardDelta,
                     armUpperLength[0],
@@ -19017,8 +19012,7 @@ namespace
                     armTargetDistance[0],
                     armTargetDistance[1],
                     armRequiredStretchScale[0],
-                    armRequiredStretchScale[1],
-                    sharedUpperArmStretchScale);
+                    armRequiredStretchScale[1]);
             }
         }
         HooksNativeViewmodelArmIkLogOnce(
