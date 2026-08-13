@@ -23,6 +23,10 @@
 #include <cctype>
 #include <cfloat>
 
+extern "C" bool __cdecl L4D2VR_QueryDataCacheUsage(
+    uint32_t* currentBytes,
+    uint32_t* totalBytes);
+
 namespace
 {
     constexpr int kCfgOverlayW = 1280;
@@ -825,6 +829,14 @@ namespace
         bool configWriteTimeValid = false;
         std::filesystem::file_time_type configWriteTime{};
         uint32_t lastConfigStatMs = 0;
+        uint32_t runtimeUsageLastRefreshMs = 0;
+        bool runtimeDcValid = false;
+        uint32_t runtimeDcCurrentBytes = 0;
+        uint32_t runtimeDcTotalBytes = 0;
+        bool runtimeAvValid = false;
+        uint64_t runtimeAvRemainingBytes = 0;
+        bool runtimeEntValid = false;
+        int runtimeEntUsed = 0;
 
         // The config editor is a world-fixed panel. When opened, capture the current HMD
         // pose once, place the panel in front of it, then keep that absolute transform.
@@ -6194,6 +6206,146 @@ FlashlightEnhancementEnabled=false
     }
 
 
+    static uint32_t CfgBytesToMiB(uint64_t bytes)
+    {
+        constexpr uint64_t kMiB = 1024ull * 1024ull;
+        return static_cast<uint32_t>(bytes / kMiB);
+    }
+
+    static void CfgRefreshRuntimeUsage(CfgOverlayState& s)
+    {
+        const uint32_t now = GetTickCount();
+        if (s.runtimeUsageLastRefreshMs != 0 &&
+            now - s.runtimeUsageLastRefreshMs < 1000u)
+        {
+            return;
+        }
+        s.runtimeUsageLastRefreshMs = now;
+
+        uint32_t dcCurrentBytes = 0;
+        uint32_t dcTotalBytes = 0;
+        const bool dcValid =
+            L4D2VR_QueryDataCacheUsage(&dcCurrentBytes, &dcTotalBytes);
+
+        MEMORYSTATUSEX memoryStatus{};
+        memoryStatus.dwLength = sizeof(memoryStatus);
+        const bool avValid = GlobalMemoryStatusEx(&memoryStatus) != FALSE;
+        const uint64_t avRemainingBytes =
+            avValid ? memoryStatus.ullAvailVirtual : 0ull;
+
+        bool entValid = false;
+        int entUsed = 0;
+        if (g_Game && g_Game->m_ClientEntityList)
+        {
+#ifdef _MSC_VER
+            __try
+            {
+                entUsed = g_Game->m_ClientEntityList->NumberOfEntities(true);
+                entValid = entUsed >= 0;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                entUsed = 0;
+                entValid = false;
+            }
+#else
+            entUsed = g_Game->m_ClientEntityList->NumberOfEntities(true);
+            entValid = entUsed >= 0;
+#endif
+        }
+
+        s.runtimeDcValid = dcValid;
+        s.runtimeDcCurrentBytes = dcCurrentBytes;
+        s.runtimeDcTotalBytes = dcTotalBytes;
+        s.runtimeAvValid = avValid;
+        s.runtimeAvRemainingBytes = avRemainingBytes;
+        s.runtimeEntValid = entValid;
+        s.runtimeEntUsed = entUsed;
+        // Repaint every sample so threshold colors switch at the exact byte/count
+        // boundary even when the rounded MB text itself has not changed.
+        s.dirty = true;
+    }
+
+    static CfgRgb CfgDcUsageColor(const CfgOverlayState& s)
+    {
+        const CfgRgb normal{ 226, 232, 242 };
+        if (!s.runtimeDcValid || s.runtimeDcTotalBytes == 0)
+            return normal;
+
+        const double ratio =
+            static_cast<double>(s.runtimeDcCurrentBytes) /
+            static_cast<double>(s.runtimeDcTotalBytes);
+        if (ratio >= 0.90)
+            return { 255, 105, 105 };
+        if (ratio > 0.70)
+            return { 255, 214, 80 };
+        return normal;
+    }
+
+    static CfgRgb CfgAvUsageColor(const CfgOverlayState& s)
+    {
+        const CfgRgb normal{ 226, 232, 242 };
+        if (!s.runtimeAvValid)
+            return normal;
+
+        const uint32_t remainingMiB = CfgBytesToMiB(s.runtimeAvRemainingBytes);
+        if (remainingMiB <= 200u)
+            return { 255, 105, 105 };
+        if (remainingMiB <= 400u)
+            return { 255, 214, 80 };
+        return normal;
+    }
+
+    static CfgRgb CfgEntUsageColor(const CfgOverlayState& s)
+    {
+        const CfgRgb normal{ 226, 232, 242 };
+        if (!s.runtimeEntValid)
+            return normal;
+        if (s.runtimeEntUsed >= 1900)
+            return { 255, 105, 105 };
+        if (s.runtimeEntUsed >= 1600)
+            return { 255, 214, 80 };
+        return normal;
+    }
+
+    static void CfgRenderRuntimeUsage(CfgOverlayState& s, CfgGdiSurface& g)
+    {
+        const CfgRgb label{ 150, 162, 180 };
+        const CfgRgb normal{ 226, 232, 242 };
+        const int y = kCfgAdvancedY;
+        const int h = kCfgAdvancedH;
+
+        CfgGdiText(g, 40, y, 34, h, "DC", g.headerFont, label);
+        CfgGdiText(
+            g, 78, y, 64, h,
+            s.runtimeDcValid ? std::to_string(CfgBytesToMiB(s.runtimeDcCurrentBytes)) : "--",
+            g.normalFont, CfgDcUsageColor(s), DT_RIGHT);
+        CfgGdiText(g, 146, y, 12, h, "/", g.normalFont, label, DT_CENTER);
+        CfgGdiText(
+            g, 162, y, 64, h,
+            s.runtimeDcValid ? std::to_string(CfgBytesToMiB(s.runtimeDcTotalBytes)) : "--",
+            g.normalFont, normal, DT_RIGHT);
+        CfgGdiText(g, 230, y, 34, h, "MB", g.smallFont, label);
+
+        CfgGdiFill(g, 286, y + 8, 1, h - 16, { 68, 78, 100 });
+        CfgGdiText(
+            g, 310, y, 70, h,
+            s.useChinese ? "AV \xE4\xBD\x99" : "AV free",
+            g.headerFont, label);
+        CfgGdiText(
+            g, 384, y, 72, h,
+            s.runtimeAvValid ? std::to_string(CfgBytesToMiB(s.runtimeAvRemainingBytes)) : "--",
+            g.normalFont, CfgAvUsageColor(s), DT_RIGHT);
+        CfgGdiText(g, 460, y, 34, h, "MB", g.smallFont, label);
+
+        CfgGdiFill(g, 530, y + 8, 1, h - 16, { 68, 78, 100 });
+        CfgGdiText(g, 554, y, 48, h, "ENT", g.headerFont, label);
+        CfgGdiText(
+            g, 608, y, 76, h,
+            s.runtimeEntValid ? std::to_string(s.runtimeEntUsed) : "--",
+            g.normalFont, CfgEntUsageColor(s), DT_RIGHT);
+    }
+
     static void CfgRender(CfgOverlayState& s)
     {
         CfgGdiSurface g;
@@ -6224,19 +6376,7 @@ FlashlightEnhancementEnabled=false
         }
 
         CfgGdiText(g, 26, 84, 1228, 24, std::string(s.useChinese ? "\351\205\215\347\275\256\346\226\207\344\273\266\357\274\232" : "Config: ") + s.configPath, g.smallFont, { 150, 162, 180 });
-        CfgGdiFill(g, 26, 112, 840, 36, { 24, 36, 56 });
-        CfgGdiFrame(g, 26, 112, 840, 36, { 68, 86, 116 }, 1);
-        CfgGdiText(
-            g,
-            40,
-            112,
-            820,
-            36,
-            s.advancedMode
-                ? (s.useChinese ? "\xE9\xAB\x98\xE7\xBA\xA7\xE6\xA8\xA1\xE5\xBC\x8F\xEF\xBC\x9A\xE5\xB1\x95\xE5\xBC\x80\xE5\xB7\xB2\xE5\x90\xAF\xE7\x94\xA8\xE5\x8A\x9F\xE8\x83\xBD\xE7\x9A\x84\xE5\xAD\x90\xE5\x8A\x9F\xE8\x83\xBD\xE5\x92\x8C\xE8\xB0\x83\xE8\x8A\x82\xE5\x8F\x82\xE6\x95\xB0\xE3\x80\x82" : "Advanced: child features and tuning are shown for enabled parent features.")
-                : (s.useChinese ? "\xE7\xAE\x80\xE6\x98\x93\xE6\xA8\xA1\xE5\xBC\x8F\xEF\xBC\x9A\xE4\xBB\x85\xE6\x98\xBE\xE7\xA4\xBA\xE4\xB8\xBB\xE8\xA6\x81\xE5\x8A\x9F\xE8\x83\xBD\xEF\xBC\x8C\xE7\x82\xB9\xE2\x80\x9C\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE\xE2\x80\x9D\xE5\xB1\x95\xE5\xBC\x80\xE4\xBB\x8E\xE5\xB1\x9E\xE9\xA1\xB9\xE3\x80\x82" : "Simple: main features only. Open Advanced to show child settings."),
-            g.normalFont,
-            { 112, 125, 145 });
+        CfgRenderRuntimeUsage(s, g);
         CfgGdiButton(
             g,
             kCfgAdvancedX,
@@ -9419,6 +9559,8 @@ FlashlightEnhancementEnabled=false
             if (s.materialVisible)
                 continue;
             CfgMarkDirtyIfCalibrationSnapshotChanged(s);
+            if (s.panelMode == CfgPanelMode::Config)
+                CfgRefreshRuntimeUsage(s);
 
             if (s.dirty)
                 CfgRender(s);

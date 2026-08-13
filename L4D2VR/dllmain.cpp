@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <unordered_set>
 #include "game.h"
 #include "hooks.h"
@@ -35,6 +36,73 @@ namespace
     constexpr wchar_t kWorkshopUpdateItemId[] = L"3724995607";
     constexpr wchar_t kWorkshopUpdateVpkName[] = L"3724995607.vpk";
     constexpr wchar_t kConfigMigrationsStateFile[] = L"config_migrations_applied.txt";
+    constexpr char kForcedDataCacheHeapSizeKiB[] = "2097151";
+    constexpr uint32_t kForcedDataCacheSizeBytes = 2097152u * 1024u;
+
+    static_assert(kForcedDataCacheSizeBytes == 0x80000000u,
+        "The forced datacache budget must be exactly 2 GiB.");
+
+    // L4D2's tier0 command-line interface. Keep this ABI-only declaration in the
+    // same order as ICommandLine; adding a virtual destructor would shift every slot.
+    class SourceCommandLine
+    {
+    public:
+        virtual void CreateCmdLine(const char* commandline) = 0;
+        virtual void CreateCmdLine(int argc, char** argv) = 0;
+        virtual const char* GetCmdLine() const = 0;
+        virtual const char* CheckParm(const char* parameter, const char** value = nullptr) const = 0;
+        virtual void RemoveParm(const char* parameter) = 0;
+        virtual void AppendParm(const char* parameter, const char* values) = 0;
+    };
+
+    struct SourceDataCacheStatus
+    {
+        uint32_t bytes = 0;
+        uint32_t items = 0;
+        uint32_t bytesLocked = 0;
+        uint32_t itemsLocked = 0;
+        uint32_t findRequests = 0;
+        uint32_t findHits = 0;
+    };
+
+    struct SourceDataCacheLimits
+    {
+        uint32_t maxBytes = UINT32_MAX;
+        uint32_t maxItems = UINT32_MAX;
+        uint32_t minBytes = 0;
+        uint32_t minItems = 0;
+    };
+
+    // VDataCache003 in L4D2 has the five legacy IAppSystem methods followed by
+    // IDataCache. Only SetSize/GetStatus are used here, but the preceding slots
+    // must be declared to preserve their vtable indices (5 and 8 respectively).
+    class SourceDataCache
+    {
+    public:
+        virtual bool Connect(void* factory) = 0;
+        virtual void Disconnect() = 0;
+        virtual void* QueryInterface(const char* interfaceName) = 0;
+        virtual int Init() = 0;
+        virtual void Shutdown() = 0;
+        virtual void SetSize(int maxBytes) = 0;
+        virtual void SetOptions(uint32_t options) = 0;
+        virtual void SetSectionLimits(const char* sectionName, const SourceDataCacheLimits& limits) = 0;
+        virtual void GetStatus(SourceDataCacheStatus* status, SourceDataCacheLimits* limits = nullptr) = 0;
+    };
+
+    struct DataCacheForceState
+    {
+        bool enabled = false;
+        bool commandLineOverridden = false;
+        bool interfaceFound = false;
+        bool alreadyAtTarget = false;
+        bool safeLimitApplied = false;
+        bool exactLimitApplied = false;
+        uint32_t observedLimitBytes = 0;
+        size_t exactLimitCandidateCount = 0;
+    };
+
+    DataCacheForceState g_DataCacheForceState;
 
     struct WindowSearchContext
     {
@@ -183,7 +251,6 @@ namespace
 
     struct LaunchArgumentState
     {
-        bool hasHeapSize = false;
         bool hasWidth = false;
         bool hasHeight = false;
     };
@@ -237,9 +304,7 @@ namespace
 
         for (int i = 0; i < nArgs; ++i)
         {
-            if (IsLaunchArgName(szArglist[i], L"-heapsize"))
-                state.hasHeapSize = true;
-            else if (IsExactLaunchArg(szArglist[i], L"-w"))
+            if (IsExactLaunchArg(szArglist[i], L"-w"))
                 state.hasWidth = true;
             else if (IsExactLaunchArg(szArglist[i], L"-h"))
                 state.hasHeight = true;
@@ -290,13 +355,168 @@ namespace
         return removed && !FileExistsNoThrow(path);
     }
 
-    std::filesystem::path GetLeft4NekoDllPath()
+    bool IsWritableMemoryRange(const void* address, size_t size, size_t& bytesAvailable)
     {
-        const std::filesystem::path gameRootPath = GetGameRootPath();
-        if (gameRootPath.empty())
-            return {};
+        bytesAvailable = 0;
+        if (!address || size == 0)
+            return false;
 
-        return gameRootPath / L"bin" / L"left4neko.dll";
+        MEMORY_BASIC_INFORMATION memoryInfo{};
+        if (VirtualQuery(address, &memoryInfo, sizeof(memoryInfo)) != sizeof(memoryInfo) ||
+            memoryInfo.State != MEM_COMMIT ||
+            (memoryInfo.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        {
+            return false;
+        }
+
+        const DWORD writableProtection =
+            PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+        if ((memoryInfo.Protect & writableProtection) == 0)
+            return false;
+
+        const uintptr_t start = reinterpret_cast<uintptr_t>(address);
+        const uintptr_t regionStart = reinterpret_cast<uintptr_t>(memoryInfo.BaseAddress);
+        const uintptr_t regionEnd = regionStart + memoryInfo.RegionSize;
+        if (start < regionStart || start >= regionEnd)
+            return false;
+
+        bytesAvailable = static_cast<size_t>(regionEnd - start);
+        return bytesAvailable >= size;
+    }
+
+    bool OverrideSourceHeapSizeCommandLine()
+    {
+        using CommandLineFactory = SourceCommandLine* (__cdecl*)();
+
+        HMODULE tier0 = GetModuleHandleW(L"tier0.dll");
+        if (!tier0)
+            tier0 = GetModuleHandleW(L"tier0_s.dll");
+        if (!tier0)
+            return false;
+
+        auto commandLineFactory = reinterpret_cast<CommandLineFactory>(
+            GetProcAddress(tier0, "CommandLine_Tier0"));
+        if (!commandLineFactory)
+            return false;
+
+        SourceCommandLine* commandLine = commandLineFactory();
+        if (!commandLine)
+            return false;
+
+        // 2097152 KiB cannot pass through the engine's signed KB-to-byte path.
+        // Lock the parsed value to the largest non-overflowing KiB value; the
+        // datacache field is corrected to the exact unsigned 2 GiB value below.
+        commandLine->RemoveParm("-heapsize");
+        commandLine->AppendParm("-heapsize", kForcedDataCacheHeapSizeKiB);
+        return true;
+    }
+
+    SourceDataCache* FindSourceDataCache()
+    {
+        using CreateInterfaceFn = void* (__cdecl*)(const char* name, int* returnCode);
+
+        HMODULE dataCacheModule = GetModuleHandleW(L"datacache.dll");
+        if (!dataCacheModule)
+            return nullptr;
+
+        auto createInterface = reinterpret_cast<CreateInterfaceFn>(
+            GetProcAddress(dataCacheModule, "CreateInterface"));
+        if (!createInterface)
+            return nullptr;
+
+        int returnCode = 0;
+        return static_cast<SourceDataCache*>(createInterface("VDataCache003", &returnCode));
+    }
+
+    bool ApplyExactTwoGiBDataCacheLimit()
+    {
+        SourceDataCache* dataCache = FindSourceDataCache();
+        if (!dataCache)
+            return false;
+
+        g_DataCacheForceState.interfaceFound = true;
+
+        SourceDataCacheStatus status{};
+        SourceDataCacheLimits limits{};
+        dataCache->GetStatus(&status, &limits);
+        g_DataCacheForceState.observedLimitBytes = limits.maxBytes;
+        if (limits.maxBytes == kForcedDataCacheSizeBytes)
+        {
+            g_DataCacheForceState.alreadyAtTarget = true;
+            g_DataCacheForceState.exactLimitApplied = true;
+            return true;
+        }
+
+        constexpr uint32_t kSafeLimitBytes = kForcedDataCacheSizeBytes - 1024u;
+        static_assert(kSafeLimitBytes <= static_cast<uint32_t>(std::numeric_limits<int>::max()),
+            "Safe datacache limit must fit the signed SetSize ABI.");
+
+        dataCache->SetSize(static_cast<int>(kSafeLimitBytes));
+        status = {};
+        limits = {};
+        dataCache->GetStatus(&status, &limits);
+        g_DataCacheForceState.safeLimitApplied = (limits.maxBytes == kSafeLimitBytes);
+        g_DataCacheForceState.observedLimitBytes = limits.maxBytes;
+        if (limits.maxBytes == 0)
+            return false;
+
+        // SetSize takes a signed int and therefore cannot carry 0x80000000. Some
+        // engine states also reject a late size increase and leave the old limit
+        // in place. In either case, find the single writable backing field whose
+        // value GetStatus just returned instead of hard-coding a member offset.
+        // An unknown build with zero or multiple candidates remains unchanged.
+        size_t bytesAvailable = 0;
+        constexpr size_t kDataCacheObjectScanBytes = 128;
+        if (!IsWritableMemoryRange(dataCache, sizeof(uint32_t), bytesAvailable))
+            return false;
+
+        const size_t scanBytes = (std::min)(bytesAvailable, kDataCacheObjectScanBytes);
+        auto* objectBytes = reinterpret_cast<uint8_t*>(dataCache);
+        volatile LONG* exactLimitField = nullptr;
+        size_t candidateCount = 0;
+        for (size_t offset = 0; offset + sizeof(uint32_t) <= scanBytes; offset += alignof(uint32_t))
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, objectBytes + offset, sizeof(value));
+            if (value == limits.maxBytes)
+            {
+                ++candidateCount;
+                exactLimitField = reinterpret_cast<volatile LONG*>(objectBytes + offset);
+            }
+        }
+
+        g_DataCacheForceState.exactLimitCandidateCount = candidateCount;
+        if (candidateCount != 1 || !exactLimitField)
+            return false;
+
+        InterlockedExchange(exactLimitField, static_cast<LONG>(kForcedDataCacheSizeBytes));
+
+        status = {};
+        limits = {};
+        dataCache->GetStatus(&status, &limits);
+        g_DataCacheForceState.observedLimitBytes = limits.maxBytes;
+        g_DataCacheForceState.exactLimitApplied = (limits.maxBytes == kForcedDataCacheSizeBytes);
+        return g_DataCacheForceState.exactLimitApplied;
+    }
+
+    void FinalizeForcedDataCachePolicy()
+    {
+        // Judge the effective cache capacity rather than the presence of any
+        // Left4Neko artifact. A working memory plugin has already set 2 GiB and
+        // becomes a no-op here; stale files/modules/commands cannot suppress it.
+        g_DataCacheForceState.enabled = true;
+        g_DataCacheForceState.commandLineOverridden = OverrideSourceHeapSizeCommandLine();
+        const bool exactLimitApplied = ApplyExactTwoGiBDataCacheLimit();
+        Game::logMsg(
+            "[VR][DataCache] forced=%d commandLine=%d interface=%d already=%d safe=%d exact=%d limit=%u bytes candidates=%zu",
+            g_DataCacheForceState.enabled ? 1 : 0,
+            g_DataCacheForceState.commandLineOverridden ? 1 : 0,
+            g_DataCacheForceState.interfaceFound ? 1 : 0,
+            g_DataCacheForceState.alreadyAtTarget ? 1 : 0,
+            g_DataCacheForceState.safeLimitApplied ? 1 : 0,
+            exactLimitApplied ? 1 : 0,
+            g_DataCacheForceState.observedLimitBytes,
+            g_DataCacheForceState.exactLimitCandidateCount);
     }
 
     bool ShouldUseChineseLaunchArgumentPrompt()
@@ -345,7 +565,7 @@ namespace
 
         output << L"LaunchArgumentNoticeShown=1\n";
         output << L"LaunchArgumentNoticeVersion=2\n";
-        output << L"CheckedArgs=-heapsize,-w,-h,left4neko.dll\n";
+        output << L"CheckedArgs=-w,-h\n";
     }
 
     void ShowLaunchArgumentNoticeIfNeeded()
@@ -355,10 +575,8 @@ namespace
             return;
 
         const LaunchArgumentState state = ReadLaunchArgumentState();
-        const bool left4NekoExists = FileExistsNoThrow(GetLeft4NekoDllPath());
-        const bool missingHeapSize = !state.hasHeapSize && !left4NekoExists;
         const bool hasResolutionLaunchArgs = state.hasWidth || state.hasHeight;
-        if (!missingHeapSize && !hasResolutionLaunchArgs)
+        if (!hasResolutionLaunchArgs)
             return;
 
         const bool useChinese = ShouldUseChineseLaunchArgumentPrompt();
@@ -368,8 +586,6 @@ namespace
         if (useChinese)
         {
             message = L"\u68c0\u6d4b\u5230\u5f53\u524d\u542f\u52a8\u53c2\u6570\u53ef\u80fd\u4e0d\u9002\u5408 L4D2VR\uff1a\n\n";
-            if (missingHeapSize)
-                message += L"- \u672a\u68c0\u6d4b\u5230 -heapsize\uff0c\u4e14\u672a\u68c0\u6d4b\u5230 bin\\left4neko.dll\u3002\u5efa\u8bae\u5728 Steam \u542f\u52a8\u53c2\u6570\u4e2d\u52a0\u5165 -heapsize 524288\u3002\n";
             if (hasResolutionLaunchArgs)
                 message += L"- \u68c0\u6d4b\u5230 -w \u6216 -h\u3002\u5efa\u8bae\u4ece Steam \u542f\u52a8\u53c2\u6570\u4e2d\u5220\u9664\u5b83\u4eec\uff0c\u907f\u514d\u8986\u76d6\u63d2\u4ef6\u7ba1\u7406\u7684\u7a97\u53e3\u5206\u8fa8\u7387\u3002\n";
             message += L"\n\u6b64\u63d0\u793a\u53ea\u663e\u793a\u4e00\u6b21\u3002";
@@ -377,8 +593,6 @@ namespace
         else
         {
             message = L"The current launch options may not be suitable for L4D2VR:\n\n";
-            if (missingHeapSize)
-                message += L"- -heapsize was not detected, and bin\\left4neko.dll was not found. Add -heapsize 524288 to the Steam launch options.\n";
             if (hasResolutionLaunchArgs)
                 message += L"- -w or -h was detected. Remove them from the Steam launch options to avoid overriding the window resolution managed by the plugin.\n";
             message += L"\nThis notice will only be shown once.";
@@ -2613,6 +2827,43 @@ namespace
     }
 }
 
+extern "C" bool __cdecl L4D2VR_QueryDataCacheUsage(
+    uint32_t* currentBytes,
+    uint32_t* totalBytes)
+{
+    if (!currentBytes || !totalBytes)
+        return false;
+
+    *currentBytes = 0;
+    *totalBytes = 0;
+
+    SourceDataCache* dataCache = FindSourceDataCache();
+    if (!dataCache)
+        return false;
+
+    SourceDataCacheStatus status{};
+    SourceDataCacheLimits limits{};
+#ifdef _MSC_VER
+    __try
+    {
+        dataCache->GetStatus(&status, &limits);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+#else
+    dataCache->GetStatus(&status, &limits);
+#endif
+
+    if (limits.maxBytes == 0)
+        return false;
+
+    *currentBytes = status.bytes;
+    *totalBytes = limits.maxBytes;
+    return true;
+}
+
 bool L4D2VR_ApplyRecommendedVideoSettings()
 {
     ApplyRuntimeVideoSettings();
@@ -2644,7 +2895,6 @@ DWORD WINAPI InitL4D2VR(HMODULE hModule)
     MigrateExistingConfigOnce();
     EnsureVrConfigTxtFromSample();
     EnsureUiFontFixVpkAndConfig();
-
     if (IsNoHmdLaunchArgPresent())
     {
         EnsureNoHmdAutoexecCrosshair();
@@ -2652,6 +2902,7 @@ DWORD WINAPI InitL4D2VR(HMODULE hModule)
 		// intentionally skips it.  Keep a passive, material-only Neko probe alive
 		// for desktop/VR output comparison without changing desktop rendering.
 		Hooks::InitializeNoHmdNekoPostProbe();
+        FinalizeForcedDataCachePolicy();
         return 0;
     }
 
@@ -2668,6 +2919,7 @@ DWORD WINAPI InitL4D2VR(HMODULE hModule)
         EnsureVideoCfgSettings();
 
     g_Game = new Game();
+    FinalizeForcedDataCachePolicy();
 
     if (CheckWorkshopUpdateOnce())
         return 0;

@@ -9,11 +9,13 @@
 #include <ctime>
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "sdk.h"
 #include "vr.h"
@@ -51,14 +53,272 @@ namespace
     static tGetSpewOutputFunc s_GetSpewOutputFunc = nullptr;
     static SpewOutputFunc_t s_OriginalSpewOutputFunc = nullptr;
     static bool s_VertexFormatWarningFilterInstalled = false;
+    static bool FixCacheSummaryNegativePercent(std::string& text, const char* suffix)
+    {
+        bool changed = false;
+        size_t searchFrom = 0;
+        while (suffix && *suffix)
+        {
+            const size_t suffixPos = text.find(suffix, searchFrom);
+            if (suffixPos == std::string::npos)
+                return changed;
+
+            size_t numberEnd = suffixPos;
+            while (numberEnd > 0 && std::isspace(static_cast<unsigned char>(text[numberEnd - 1])))
+                --numberEnd;
+
+            size_t numberStart = numberEnd;
+            while (numberStart > 0)
+            {
+                const unsigned char c = static_cast<unsigned char>(text[numberStart - 1]);
+                if (!std::isdigit(c) && c != '.')
+                    break;
+                --numberStart;
+            }
+
+            if (numberStart > 0 && text[numberStart - 1] == '-')
+            {
+                text.erase(numberStart - 1, 1);
+                searchFrom = suffixPos - 1 + std::strlen(suffix);
+                changed = true;
+            }
+            else
+            {
+                searchFrom = suffixPos + std::strlen(suffix);
+            }
+        }
+        return changed;
+    }
+
+    static bool FormatCacheSummaryBytesAsMiB(const char* message, std::string& output)
+    {
+        if (!message || !*message)
+            return false;
+
+        output = message;
+        // The engine may emit the command output on a different thread from the
+        // ConCommand callback. Identify only cache summary rows by their stable
+        // labels instead of relying on thread-local dispatch state.
+        if (output.find("Section [") == std::string::npos &&
+            output.find("Summary:") == std::string::npos)
+        {
+            return false;
+        }
+
+        bool changed = false;
+        size_t searchFrom = 0;
+        constexpr char kBytesSuffix[] = " bytes";
+        while (true)
+        {
+            const size_t suffixPos = output.find(kBytesSuffix, searchFrom);
+            if (suffixPos == std::string::npos)
+                break;
+
+            size_t numberStart = suffixPos;
+            while (numberStart > 0)
+            {
+                const unsigned char c = static_cast<unsigned char>(output[numberStart - 1]);
+                if (!std::isdigit(c) && c != ',')
+                    break;
+                --numberStart;
+            }
+            if (numberStart > 0 && output[numberStart - 1] == '-')
+                --numberStart;
+
+            if (numberStart == suffixPos)
+            {
+                searchFrom = suffixPos + std::strlen(kBytesSuffix);
+                continue;
+            }
+
+            std::string numberText = output.substr(numberStart, suffixPos - numberStart);
+            numberText.erase(
+                std::remove(numberText.begin(), numberText.end(), ','),
+                numberText.end());
+
+            char* parseEnd = nullptr;
+            const long long signedValue = std::strtoll(numberText.c_str(), &parseEnd, 10);
+            if (!parseEnd || parseEnd == numberText.c_str() || *parseEnd != '\0')
+            {
+                searchFrom = suffixPos + std::strlen(kBytesSuffix);
+                continue;
+            }
+
+            uint64_t byteCount = 0;
+            if (signedValue < 0 && signedValue >= static_cast<long long>(INT32_MIN))
+            {
+                // cache_print_summary formats the unsigned 0x80000000 limit as
+                // a signed int. Reinterpret that bit pattern before converting.
+                byteCount = static_cast<uint32_t>(static_cast<int32_t>(signedValue));
+            }
+            else if (signedValue >= 0)
+            {
+                byteCount = static_cast<uint64_t>(signedValue);
+            }
+            else
+            {
+                searchFrom = suffixPos + std::strlen(kBytesSuffix);
+                continue;
+            }
+
+            char replacement[64] = {};
+            std::snprintf(
+                replacement,
+                sizeof(replacement),
+                "%.2f MB",
+                static_cast<double>(byteCount) / (1024.0 * 1024.0));
+
+            const size_t replaceLength =
+                suffixPos + std::strlen(kBytesSuffix) - numberStart;
+            output.replace(numberStart, replaceLength, replacement);
+            searchFrom = numberStart + std::strlen(replacement);
+            changed = true;
+        }
+
+        changed = FixCacheSummaryNegativePercent(output, "% of limit") || changed;
+        changed = FixCacheSummaryNegativePercent(output, "% of capacity") || changed;
+        return changed;
+    }
+
+    using Tier0MsgFn = void(__cdecl*)(const char* format, ...);
+    static Tier0MsgFn s_OriginalDataCacheMsg = nullptr;
+    static void** s_DataCacheMsgIatSlot = nullptr;
+    static bool s_DataCacheMsgIatHookInstalled = false;
+
+    static void __cdecl HookedDataCacheMsg(const char* format, ...)
+    {
+        Tier0MsgFn original = s_OriginalDataCacheMsg;
+        if (!original || !format)
+            return;
+
+        // datacache.dll uses tier0!Msg for cache_print_summary. Resolve its
+        // varargs here, transform only the stable summary row formats, and send
+        // the final text through the real Msg entry point as a plain string.
+        char rendered[8192] = {};
+        va_list args;
+        va_start(args, format);
+        _vsnprintf_s(rendered, _countof(rendered), _TRUNCATE, format, args);
+        va_end(args);
+
+        std::string transformed;
+        if (FormatCacheSummaryBytesAsMiB(rendered, transformed))
+            original("%s", transformed.c_str());
+        else
+            original("%s", rendered);
+    }
+
+    static void** FindImportedFunctionSlot(
+        HMODULE module,
+        const char* importedModuleName,
+        const char* importedFunctionName)
+    {
+        if (!module || !importedModuleName || !importedFunctionName)
+            return nullptr;
+
+        __try
+        {
+            auto* base = reinterpret_cast<uint8_t*>(module);
+            auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+                return nullptr;
+
+            auto* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE ||
+                nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+            {
+                return nullptr;
+            }
+
+            const IMAGE_DATA_DIRECTORY& imports =
+                nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+            if (imports.VirtualAddress == 0 || imports.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR))
+                return nullptr;
+
+            auto* descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+                base + imports.VirtualAddress);
+            for (; descriptor->Name != 0; ++descriptor)
+            {
+                const char* moduleName = reinterpret_cast<const char*>(base + descriptor->Name);
+                if (_stricmp(moduleName, importedModuleName) != 0)
+                    continue;
+
+                if (descriptor->OriginalFirstThunk == 0 || descriptor->FirstThunk == 0)
+                    return nullptr;
+
+                auto* names = reinterpret_cast<IMAGE_THUNK_DATA32*>(
+                    base + descriptor->OriginalFirstThunk);
+                auto* slots = reinterpret_cast<IMAGE_THUNK_DATA32*>(
+                    base + descriptor->FirstThunk);
+                for (size_t index = 0; names[index].u1.AddressOfData != 0; ++index)
+                {
+                    if (IMAGE_SNAP_BY_ORDINAL32(names[index].u1.Ordinal))
+                        continue;
+
+                    auto* importedName = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+                        base + names[index].u1.AddressOfData);
+                    if (std::strcmp(
+                        reinterpret_cast<const char*>(importedName->Name),
+                        importedFunctionName) == 0)
+                    {
+                        return reinterpret_cast<void**>(&slots[index].u1.Function);
+                    }
+                }
+                return nullptr;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return nullptr;
+        }
+
+        return nullptr;
+    }
+
+    static bool InstallDataCacheMsgIatHook()
+    {
+        if (s_DataCacheMsgIatHookInstalled)
+            return true;
+
+        HMODULE dataCache = GetModuleHandleA("datacache.dll");
+        void** slot = FindImportedFunctionSlot(dataCache, "tier0.dll", "Msg");
+        if (!slot || !*slot)
+            return false;
+
+        DWORD oldProtection = 0;
+        if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection))
+            return false;
+
+        Tier0MsgFn original = reinterpret_cast<Tier0MsgFn>(*slot);
+        s_OriginalDataCacheMsg = original;
+        InterlockedExchangePointer(
+            reinterpret_cast<PVOID volatile*>(slot),
+            reinterpret_cast<PVOID>(&HookedDataCacheMsg));
+
+        DWORD ignoredProtection = 0;
+        VirtualProtect(slot, sizeof(void*), oldProtection, &ignoredProtection);
+        FlushInstructionCache(GetCurrentProcess(), slot, sizeof(void*));
+
+        s_DataCacheMsgIatSlot = slot;
+        s_DataCacheMsgIatHookInstalled = (*slot == reinterpret_cast<void*>(&HookedDataCacheMsg));
+        if (!s_DataCacheMsgIatHookInstalled)
+            s_OriginalDataCacheMsg = nullptr;
+        return s_DataCacheMsgIatHookInstalled;
+    }
 
     static int __cdecl FilterVertexFormatWarningSpew(int spewType, const char* pMsg)
     {
         if (pMsg && std::strstr(pMsg, kVertexFormatSpamMessage) != nullptr)
             return 1; // SPEW_CONTINUE
 
+        std::string formattedCacheSummary;
+        const char* forwardedMessage = pMsg;
+        if (FormatCacheSummaryBytesAsMiB(pMsg, formattedCacheSummary))
+        {
+            forwardedMessage = formattedCacheSummary.c_str();
+        }
+
         if (s_OriginalSpewOutputFunc && s_OriginalSpewOutputFunc != &FilterVertexFormatWarningSpew)
-            return s_OriginalSpewOutputFunc(spewType, pMsg);
+            return s_OriginalSpewOutputFunc(spewType, forwardedMessage);
 
         return 1; // SPEW_CONTINUE
     }
@@ -507,6 +767,8 @@ namespace
     constexpr char kL4D2VRPoseAckCommandName[] = "l4d2vr_pose_ack";
     constexpr char kL4D2VRPoseReceiveCommandName[] = "l4d2vr_pose_receive";
     constexpr char kVRConfigCommandName[] = "vrconfig";
+    constexpr char kCachePrintSummaryCommandName[] = "cache_print_summary";
+    SourceRegisteredConCommand* g_OriginalCachePrintSummaryCommand = nullptr;
 
     bool ParseUnsignedCommandArgument(
         const SourceCCommand& command,
@@ -596,6 +858,17 @@ namespace
         L4D2VRConfigOverlay_Open();
     }
 
+    void __cdecl OnCachePrintSummaryCommand(const SourceCCommand& command)
+    {
+        if (!g_OriginalCachePrintSummaryCommand)
+        {
+            Game::logMsg("[VR][DataCache] original cache_print_summary command is unavailable");
+            return;
+        }
+
+        g_OriginalCachePrintSummaryCommand->Dispatch(command);
+    }
+
     SourceRegisteredConCommand g_L4D2VRServerAckCommand(
         kL4D2VRServerAckCommandName,
         &OnL4D2VRServerAckCommand,
@@ -616,6 +889,11 @@ namespace
         &OnVRConfigCommand,
         "Opens the L4D2VR configuration overlay.",
         0);
+    SourceRegisteredConCommand g_CachePrintSummaryCommand(
+        kCachePrintSummaryCommandName,
+        &OnCachePrintSummaryCommand,
+        "Prints the engine datacache summary using MB units.",
+        0);
 
     bool g_L4D2VRCommandsRegistered = false;
 
@@ -635,13 +913,26 @@ namespace
                 cvar->RegisterConCommand(&g_L4D2VRPoseReceiveCommand);
             if (!cvar->FindCommandBase(kVRConfigCommandName))
                 cvar->RegisterConCommand(&g_VRConfigCommand);
+
+            SourceConCommandBase* cachePrintSummary =
+                cvar->FindCommandBase(kCachePrintSummaryCommandName);
+            if (cachePrintSummary &&
+                cachePrintSummary != reinterpret_cast<SourceConCommandBase*>(&g_CachePrintSummaryCommand))
+            {
+                g_OriginalCachePrintSummaryCommand =
+                    reinterpret_cast<SourceRegisteredConCommand*>(cachePrintSummary);
+                g_CachePrintSummaryCommand.m_nFlags = cachePrintSummary->m_nFlags;
+                cvar->UnregisterConCommand(cachePrintSummary);
+                cvar->RegisterConCommand(&g_CachePrintSummaryCommand);
+            }
             g_L4D2VRCommandsRegistered = true;
             Game::logMsg(
-                "[VR][Commands] registered commands: %s, %s, %s, %s",
+                "[VR][Commands] registered commands: %s, %s, %s, %s; cache summary hook=%d",
                 kL4D2VRServerAckCommandName,
                 kL4D2VRPoseAckCommandName,
                 kL4D2VRPoseReceiveCommandName,
-                kVRConfigCommandName);
+                kVRConfigCommandName,
+                g_OriginalCachePrintSummaryCommand ? 1 : 0);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -688,6 +979,11 @@ Game::Game()
     if (!m_Cvar)
         m_Cvar = TryInterfaceNoError("vstdlib.dll", "VEngineCvar004");
     RegisterL4D2VRCommands(m_Cvar);
+    const bool dataCacheMsgHookInstalled = InstallDataCacheMsgIatHook();
+    Game::logMsg(
+        "[VR][DataCache] cache_print_summary direct Msg hook=%d slot=%p",
+        dataCacheMsgHookInstalled ? 1 : 0,
+        s_DataCacheMsgIatSlot);
 
     m_Offsets = new Offsets();
     m_VR = new VR(this);
