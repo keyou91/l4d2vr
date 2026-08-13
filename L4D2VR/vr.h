@@ -393,10 +393,20 @@ public:
 	// Rotates the logical weapon hand's OpenVR grip pose around its local right
 	// axis before the pose is used by the viewmodel, aim line, and gameplay aim.
 	float m_WeaponAimPitchOffsetDeg = -45.0f;
+	// Additional aim-basis offsets layered on top of the default pitch tweak.
+	float m_WeaponAimYawOffsetDeg = 0.0f;
+	float m_WeaponAimRollOffsetDeg = 0.0f;
+	// Separate bullet-aim tuning so the gun pose can stay fixed while the shot
+	// ray and hit marker are nudged independently.
+	Vector m_BulletAimPosOffset = { 0,0,0 };
+	QAngle m_BulletAimRotationOffsetDeg = { 0,0,0 };
 
 	Vector m_ViewmodelForward;
 	Vector m_ViewmodelRight;
 	Vector m_ViewmodelUp;
+	// Global weapon-pose offsets layered under the per-weapon manual tuning.
+	Vector m_ViewmodelPosePosOffset = { 0,0,0 };
+	QAngle m_ViewmodelPoseAngOffset = { 0,0,0 };
 
 	Vector m_HmdPosAbs = { 0,0,0 };
 	Vector m_HmdPosAbsPrev = { 0,0,0 };
@@ -544,6 +554,8 @@ public:
 	std::atomic<float> m_RenderViewmodelAngOffsetY{ 0.0f };
 	std::atomic<float> m_RenderViewmodelAngOffsetZ{ 0.0f };
 	std::atomic<float> m_RenderWeaponAimPitchOffsetDeg{ -45.0f };
+	std::atomic<float> m_RenderWeaponAimYawOffsetDeg{ 0.0f };
+	std::atomic<float> m_RenderWeaponAimRollOffsetDeg{ 0.0f };
 
 	// Local-player & camera state snapshot for the render thread (mat_queue_mode!=0).
 	// NOTE: These are written under the same seqlock as m_RenderViewParamsSeq.
@@ -3928,6 +3940,9 @@ public:
 	QAngle GetRightControllerAbsAngle();
 	Vector GetRightControllerAbsPos();
 	Vector GetRightControllerViewmodelAbsPos();
+	QAngle GetBulletAimAbsAngle();
+	bool GetBulletAimRay(Vector& origin, Vector& direction);
+	bool ApplyBulletAimOffset(Vector& origin, Vector& direction, const Vector& referenceUp) const;
 	bool ResolvePavlovTwoHandedAimBasis(
 		const Vector& leftControllerPosAbs,
 		const Vector& rightControllerPosAbs,
