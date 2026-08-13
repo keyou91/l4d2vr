@@ -1764,7 +1764,7 @@ public:
 	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
 	// Body-yaw-local meters: X=forward, Y=right, Z=up.
 	Vector m_FirstPersonBodyAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
-	// Body-yaw-local pitch/yaw/roll applied around the rigid torso anchor.
+	// Model-specific pitch/yaw/roll calibration around the rigid torso anchor.
 	Vector m_FirstPersonBodyAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	// Camera position relative to the body anchor. Positive X places the camera farther forward.
 	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.08f, 0.0f, 0.0f };

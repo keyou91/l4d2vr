@@ -20766,6 +20766,7 @@ namespace
         bool frozenPoseCaptured = false;
         bool animationFreeArmAnchorsCaptured = false;
         bool animationFreeUpperChestValid = false;
+        bool animationFreeTorsoFrameValid = false;
         bool animationFreeLeftShoulderValid = false;
         bool animationFreeRightShoulderValid = false;
         int numBones = 0;
@@ -20793,6 +20794,59 @@ namespace
         std::vector<uint8_t> freezeRightArmMask;
         std::vector<vr_vm_stabilize::Mat3x4> frozenLocalPose;
     };
+
+    inline bool HooksFirstPersonBodyBuildGeometricTorsoFrame(
+        const Vector& upperChest,
+        const Vector& leftShoulder,
+        const Vector& rightShoulder,
+        const Vector& head,
+        vr_vm_stabilize::Mat3x4& outFrame)
+    {
+        if (!HooksNativeViewmodelHandsOnlyVectorFinite(upperChest) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(leftShoulder) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(rightShoulder) ||
+            !HooksNativeViewmodelHandsOnlyVectorFinite(head))
+        {
+            return false;
+        }
+
+        // Source model space is forward/left/up. Deriving the frame from visible
+        // landmarks avoids assuming that a replacement model's chest bone uses
+        // any particular local matrix-axis convention.
+        Vector leftAxis = leftShoulder - rightShoulder;
+        Vector upHint = head - upperChest;
+        if (VectorNormalize(leftAxis) == 0.0f)
+            return false;
+        upHint -= leftAxis * DotProduct(upHint, leftAxis);
+        if (VectorNormalize(upHint) == 0.0f)
+            return false;
+        Vector forwardAxis = CrossProduct(leftAxis, upHint);
+        if (VectorNormalize(forwardAxis) == 0.0f)
+            return false;
+
+        return HooksViewmodelAutoGripBuildRigidMatrix(
+            upperChest,
+            forwardAxis,
+            leftAxis,
+            upHint,
+            outFrame);
+    }
+
+    inline bool HooksFirstPersonBodyBuildProperBodyFrame(
+        const QAngle& angles,
+        vr_vm_stabilize::Mat3x4& outFrame)
+    {
+        Vector forward{};
+        Vector right{};
+        Vector up{};
+        QAngle::AngleVectors(angles, &forward, &right, &up);
+        return HooksViewmodelAutoGripBuildRigidMatrix(
+            Vector(0.0f, 0.0f, 0.0f),
+            forward,
+            right * -1.0f,
+            up,
+            outFrame);
+    }
 
     inline bool HooksFirstPersonBodyBuildBoneLayout(
         void* drawState,
@@ -20993,25 +21047,13 @@ namespace
                 layout.rightClavicleBone < layout.numBones)
             ? layout.rightClavicleBone
             : layout.rightUpperArmBone;
-        const bool hideResolvedNeck =
-            layout.neckBone >= 0 &&
-            layout.neckBone < layout.numBones &&
-            layout.neckBone != layout.headBone;
         for (int bone = 0; bone < layout.numBones; ++bone)
         {
-            const bool hideHeadDescendant =
-                HooksNativeViewmodelHandsOnlyIsAncestor(
+            if (HooksNativeViewmodelHandsOnlyIsAncestor(
                     layout.boneParents,
                     bone,
                     layout.headBone,
-                    layout.numBones);
-            // Head-weighted vertices were already collapsed, but neck-weighted
-            // skin remained live and could enter the HMD during jump/crouch poses.
-            // Add only the resolved neck bone itself; do not hide every neck
-            // descendant, because replacement rigs may parent clothing helpers or
-            // shoulder accessories there.
-            if (hideHeadDescendant ||
-                (hideResolvedNeck && bone == layout.neckBone))
+                    layout.numBones))
             {
                 layout.hideHeadMask[static_cast<size_t>(bone)] = 1u;
                 ++hiddenHeadBones;
@@ -21197,6 +21239,35 @@ namespace
             layout.upperChestBone,
             layout.animationFreeUpperChestFromHead,
             layout.animationFreeUpperChestValid);
+        layout.animationFreeTorsoFrameValid = false;
+        if (layout.animationFreeUpperChestValid &&
+            layout.leftUpperArmBone >= 0 &&
+            layout.leftUpperArmBone < layout.numBones &&
+            layout.rightUpperArmBone >= 0 &&
+            layout.rightUpperArmBone < layout.numBones &&
+            resolved[static_cast<size_t>(layout.leftUpperArmBone)] &&
+            resolved[static_cast<size_t>(layout.rightUpperArmBone)])
+        {
+            const Vector restUpperChest = vr_vm_stabilize::GetOrigin(
+                restWorld[static_cast<size_t>(layout.upperChestBone)]);
+            const Vector restLeftShoulder = vr_vm_stabilize::GetOrigin(
+                restWorld[static_cast<size_t>(layout.leftUpperArmBone)]);
+            const Vector restRightShoulder = vr_vm_stabilize::GetOrigin(
+                restWorld[static_cast<size_t>(layout.rightUpperArmBone)]);
+            vr_vm_stabilize::Mat3x4 restTorsoFrame{};
+            if (HooksFirstPersonBodyBuildGeometricTorsoFrame(
+                    restUpperChest,
+                    restLeftShoulder,
+                    restRightShoulder,
+                    restHead,
+                    restTorsoFrame))
+            {
+                // The rest frame is only a landmark-validity check. Its rotation
+                // is already expressed in model space and must not be multiplied
+                // into the target body frame a second time.
+                layout.animationFreeTorsoFrameValid = true;
+            }
+        }
         captureOffset(
             layout.leftUpperArmBone,
             layout.animationFreeLeftShoulderFromHead,
@@ -21425,6 +21496,58 @@ namespace
             bones);
     }
 
+    inline bool HooksFirstPersonBodyLockAnimatedUpperChestFrame(
+        const HooksFirstPersonBodyBoneLayout& layout,
+        const vr_vm_stabilize::Mat3x4& desiredUpperChest,
+        vr_vm_stabilize::Mat3x4* bones)
+    {
+        if (!bones || layout.numBones <= 0 || layout.numBones > 128 ||
+            layout.upperChestBone < 0 ||
+            layout.upperChestBone >= layout.numBones ||
+            layout.headBone < 0 ||
+            layout.headBone >= layout.numBones ||
+            layout.leftUpperArmBone < 0 ||
+            layout.leftUpperArmBone >= layout.numBones ||
+            layout.rightUpperArmBone < 0 ||
+            layout.rightUpperArmBone >= layout.numBones ||
+            !HooksNativeViewmodelHandsOnlyMatrixFinite(desiredUpperChest))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 currentRigid{};
+        if (!HooksFirstPersonBodyBuildGeometricTorsoFrame(
+                vr_vm_stabilize::GetOrigin(bones[layout.upperChestBone]),
+                vr_vm_stabilize::GetOrigin(bones[layout.leftUpperArmBone]),
+                vr_vm_stabilize::GetOrigin(bones[layout.rightUpperArmBone]),
+                vr_vm_stabilize::GetOrigin(bones[layout.headBone]),
+                currentRigid))
+        {
+            return false;
+        }
+
+        vr_vm_stabilize::Mat3x4 currentInverse{};
+        vr_vm_stabilize::Mat3x4 correctionDelta{};
+        vr_vm_stabilize::InvertTR(currentRigid, currentInverse);
+        vr_vm_stabilize::Mul(
+            desiredUpperChest,
+            currentInverse,
+            correctionDelta);
+        if (!HooksNativeViewmodelHandsOnlyMatrixFinite(correctionDelta))
+            return false;
+
+        // Correct only the upper-chest branch around its own origin. The chest
+        // stays attached at the same point while its neck/shoulder descendants
+        // are made camera-safe. Pelvis and legs keep the native grounded pose;
+        // child-local breathing, hit and airborne animation remains intact.
+        return HooksNativeViewmodelArmIkApplyDeltaToBranch(
+            layout.boneParents,
+            layout.numBones,
+            layout.upperChestBone,
+            correctionDelta,
+            bones);
+    }
+
     inline bool HooksFirstPersonBodyBuildAnchoredBones(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
@@ -21545,7 +21668,8 @@ namespace
             ? std::fabs(vr->m_VRScale)
             : 43.2f;
         const Vector& bodyOffsetMeters = vr->m_FirstPersonBodyAnchorOffsetMeters;
-        const Vector& anchorRotationOffsetDeg = vr->m_FirstPersonBodyAnchorRotationOffsetDeg;
+        const Vector& anchorRotationOffsetDeg =
+            vr->m_FirstPersonBodyAnchorRotationOffsetDeg;
         const Vector& cameraOffsetMeters = vr->m_FirstPersonBodyCameraOffsetMeters;
 
         // Reserve the clamped physical HMD planar offset for upper-body lean.
@@ -21780,31 +21904,62 @@ namespace
         if (!HooksNativeViewmodelHandsOnlyMatrixFinite(targetHeadTransform))
             return false;
 
-        // Native animation remains completely intact.  We only apply one rigid
-        // post-animation correction to the complete render skeleton.  Anchoring
+        Vector desiredUpperChestPosition{};
+        bool desiredUpperChestPositionValid = false;
+        if (animationFreeAnchorsCaptured &&
+            s_layout.animationFreeUpperChestValid)
+        {
+            desiredUpperChestPosition = HooksTransformPoint(
+                targetHeadTransform,
+                s_layout.animationFreeUpperChestFromHead);
+            desiredUpperChestPositionValid =
+                HooksNativeViewmodelHandsOnlyVectorFinite(
+                    desiredUpperChestPosition);
+        }
+
+        vr_vm_stabilize::Mat3x4 desiredUpperChestTransform{};
+        bool desiredUpperChestTransformValid = false;
+        if (desiredUpperChestPositionValid &&
+            s_layout.animationFreeTorsoFrameValid)
+        {
+            if (HooksFirstPersonBodyBuildProperBodyFrame(
+                    targetAnchorAngles,
+                    desiredUpperChestTransform))
+            {
+                desiredUpperChestTransform.m[0][3] =
+                    desiredUpperChestPosition.x;
+                desiredUpperChestTransform.m[1][3] =
+                    desiredUpperChestPosition.y;
+                desiredUpperChestTransform.m[2][3] =
+                    desiredUpperChestPosition.z;
+                desiredUpperChestTransformValid =
+                    HooksNativeViewmodelHandsOnlyMatrixFinite(
+                        desiredUpperChestTransform);
+            }
+        }
+
+        // Native animation remains completely intact. We apply only rigid
+        // post-animation corrections to the complete render skeleton. Anchoring
         // the visible upper chest (rather than the hidden animated head) prevents
-        // walk, breath, hit and airborne poses from carrying the torso away from
-        // the HMD while preserving every bone-to-bone animated transform.
+        // locomotion poses from carrying the torso through the HMD while preserving
+        // every bone-to-bone animated transform.
         int rigidAnchorBone = s_layout.headBone;
         Vector currentRigidAnchor = vr_vm_stabilize::GetOrigin(frozenHead);
         Vector desiredRigidAnchor = desiredHeadPosition;
         bool usingStableTorsoAnchor = false;
-        if (animationFreeAnchorsCaptured &&
-            s_layout.animationFreeUpperChestValid &&
+        if (desiredUpperChestPositionValid &&
             s_layout.upperChestBone >= 0 &&
             s_layout.upperChestBone < s_layout.numBones)
         {
             const Vector currentUpperChest = vr_vm_stabilize::GetOrigin(
                 anchoredBones[s_layout.upperChestBone]);
-            const Vector desiredUpperChest = HooksTransformPoint(
-                targetHeadTransform,
-                s_layout.animationFreeUpperChestFromHead);
             if (HooksNativeViewmodelHandsOnlyVectorFinite(currentUpperChest) &&
-                HooksNativeViewmodelHandsOnlyVectorFinite(desiredUpperChest))
+                HooksNativeViewmodelHandsOnlyVectorFinite(
+                    desiredUpperChestPosition))
             {
                 rigidAnchorBone = s_layout.upperChestBone;
                 currentRigidAnchor = currentUpperChest;
-                desiredRigidAnchor = desiredUpperChest;
+                desiredRigidAnchor = desiredUpperChestPosition;
                 usingStableTorsoAnchor = true;
             }
         }
@@ -21857,45 +22012,55 @@ namespace
             anchoredBones,
             s_layout.numBones);
 
-        // ModelInfo yaw only describes the entity transform. Source can also
-        // inject live view/aim yaw into the animated spine pose, which previously
-        // let physical HMD yaw bypass WorldModelVRPoseBodyYawDeadzoneDeg even
-        // after the whole model had been rotated to visualBodyYaw. Measure the
-        // actual frozen shoulder line against the resolved body-right axis and remove
-        // that residual yaw from the complete spine branch. Pitch/roll, breathing,
-        // locomotion and the explicit body-anchor rotation remain intact.
+        // A complete rest-pose upper-chest frame lets the stable path remove
+        // residual animated yaw, pitch and roll with one whole-skeleton rigid
+        // correction. Rigs lacking that reference retain the older yaw-only
+        // shoulder solve and positional anchor as a compatibility fallback.
         float animatedTorsoYawCorrectionDeg = 0.0f;
-        if (!HooksFirstPersonBodyLockAnimatedTorsoYaw(
-                s_layout,
-                targetAnchorTransform,
-                anchoredBones,
-                animatedTorsoYawCorrectionDeg))
+        const bool usingStableTorsoFrame =
+            usingStableTorsoAnchor && desiredUpperChestTransformValid;
+        if (usingStableTorsoFrame)
+        {
+            if (!HooksFirstPersonBodyLockAnimatedUpperChestFrame(
+                    s_layout,
+                    desiredUpperChestTransform,
+                    anchoredBones))
+            {
+                return false;
+            }
+        }
+        else if (!HooksFirstPersonBodyLockAnimatedTorsoYaw(
+                     s_layout,
+                     targetAnchorTransform,
+                     anchoredBones,
+                     animatedTorsoYawCorrectionDeg))
         {
             return false;
         }
 
-        // The residual aim-yaw correction pivots the spine at its lowest torso
-        // root and can therefore move the upper-chest origin by a small amount.
-        // Re-establish the same rigid anchor after every orientation correction.
-        // Applying this delta to all bones preserves the complete native pose.
-        const Vector orientedRigidAnchor = vr_vm_stabilize::GetOrigin(
-            anchoredBones[rigidAnchorBone]);
-        const Vector orientationAnchorCorrection =
-            desiredRigidAnchor - orientedRigidAnchor;
-        if (!HooksNativeViewmodelHandsOnlyVectorFinite(
-                orientationAnchorCorrection))
+        if (!usingStableTorsoFrame)
         {
-            return false;
+            // The fallback residual-yaw correction pivots only the spine branch,
+            // so restore its positional anchor afterwards.
+            const Vector orientedRigidAnchor = vr_vm_stabilize::GetOrigin(
+                anchoredBones[rigidAnchorBone]);
+            const Vector orientationAnchorCorrection =
+                desiredRigidAnchor - orientedRigidAnchor;
+            if (!HooksNativeViewmodelHandsOnlyVectorFinite(
+                    orientationAnchorCorrection))
+            {
+                return false;
+            }
+            vr_vm_stabilize::Mat3x4 orientationAnchorDelta =
+                vr_vm_stabilize::Identity();
+            orientationAnchorDelta.m[0][3] = orientationAnchorCorrection.x;
+            orientationAnchorDelta.m[1][3] = orientationAnchorCorrection.y;
+            orientationAnchorDelta.m[2][3] = orientationAnchorCorrection.z;
+            vr_vm_stabilize::ApplyDelta(
+                orientationAnchorDelta,
+                anchoredBones,
+                s_layout.numBones);
         }
-        vr_vm_stabilize::Mat3x4 orientationAnchorDelta =
-            vr_vm_stabilize::Identity();
-        orientationAnchorDelta.m[0][3] = orientationAnchorCorrection.x;
-        orientationAnchorDelta.m[1][3] = orientationAnchorCorrection.y;
-        orientationAnchorDelta.m[2][3] = orientationAnchorCorrection.z;
-        vr_vm_stabilize::ApplyDelta(
-            orientationAnchorDelta,
-            anchoredBones,
-            s_layout.numBones);
 
         {
             static std::mutex s_torsoYawLogMutex;
@@ -21915,7 +22080,7 @@ namespace
                 if (!std::isfinite(turnYaw))
                     turnYaw = vr->m_RotationOffset;
                 Game::logMsg(
-                    "[VR][FirstPersonBody] torso yaw lock deadzone=%.1f headYaw=%.1f turnYaw=%.1f visualYaw=%.1f modelYaw=%.1f animatedResidual=%.1f root=%d rigidAnchor=%s bone=%d",
+                    "[VR][FirstPersonBody] torso frame lock deadzone=%.1f headYaw=%.1f turnYaw=%.1f visualYaw=%.1f modelYaw=%.1f animatedResidualYaw=%.1f root=%d rigidAnchor=%s bone=%d",
                     vr->m_WorldModelVRPoseBodyYawDeadzoneDeg,
                     bodyState->view.angles.y,
                     turnYaw,
@@ -21995,16 +22160,8 @@ namespace
                     : desiredHeadPosition;
             };
 
-        // Collapse the complete hidden head/neck group below the visible neck
-        // seam.  Using the neck parent (normally upper chest) avoids leaving a
-        // single collapsed skin point at the animated neck origin.
-        const int headHideRoot =
-            (s_layout.neckBone >= 0 &&
-                s_layout.neckBone < s_layout.numBones)
-            ? s_layout.neckBone
-            : s_layout.headBone;
         const Vector headCollapseOrigin =
-            collapseOriginForRoot(headHideRoot);
+            collapseOriginForRoot(s_layout.headBone);
         const vr_vm_stabilize::Mat3x4 collapsedHead =
             HooksNativeViewmodelHandsOnlyCollapsedBoneAt(headCollapseOrigin);
 
