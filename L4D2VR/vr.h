@@ -1765,10 +1765,14 @@ public:
 	float m_FirstPersonBodyVisibleUpperArmLengthMeters = 0.10f;
 	// Body-yaw-local meters: X=forward, Y=right, Z=up.
 	Vector m_FirstPersonBodyAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
+	// Independent calibration for rigs whose Studio eye position is missing/stale.
+	Vector m_FirstPersonBodyFallbackAnchorOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	// Model-specific pitch/yaw/roll calibration around the rigid torso anchor.
 	Vector m_FirstPersonBodyAnchorRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	// Camera position relative to the body anchor in body-yaw-local meters.
 	Vector m_FirstPersonBodyCameraOffsetMeters = { 0.0f, 0.0f, 0.06f };
+	// Independent camera calibration for rigs anchored from the head fallback.
+	Vector m_FirstPersonBodyFallbackCameraOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	bool m_FirstPersonBodyHideWorldWeapon = true;
 	bool m_HideArms = false;
 	bool m_NativeViewmodelHandsOnly = false;

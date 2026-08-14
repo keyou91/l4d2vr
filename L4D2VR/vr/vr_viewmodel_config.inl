@@ -1534,6 +1534,12 @@ void VR::ParseConfigFile()
     m_FirstPersonBodyAnchorOffsetMeters.x = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.x, -0.5f, 0.5f);
     m_FirstPersonBodyAnchorOffsetMeters.y = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.y, -0.5f, 0.5f);
     m_FirstPersonBodyAnchorOffsetMeters.z = std::clamp(m_FirstPersonBodyAnchorOffsetMeters.z, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackAnchorOffsetMeters = getVector3(
+        "FirstPersonBodyFallbackAnchorOffsetMeters",
+        m_FirstPersonBodyFallbackAnchorOffsetMeters);
+    m_FirstPersonBodyFallbackAnchorOffsetMeters.x = std::clamp(m_FirstPersonBodyFallbackAnchorOffsetMeters.x, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackAnchorOffsetMeters.y = std::clamp(m_FirstPersonBodyFallbackAnchorOffsetMeters.y, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackAnchorOffsetMeters.z = std::clamp(m_FirstPersonBodyFallbackAnchorOffsetMeters.z, -0.5f, 0.5f);
     m_FirstPersonBodyAnchorRotationOffsetDeg = getVector3(
         "FirstPersonBodyAnchorRotationOffsetDeg",
         m_FirstPersonBodyAnchorRotationOffsetDeg);
@@ -1546,6 +1552,12 @@ void VR::ParseConfigFile()
     m_FirstPersonBodyCameraOffsetMeters.x = std::clamp(m_FirstPersonBodyCameraOffsetMeters.x, -0.5f, 0.5f);
     m_FirstPersonBodyCameraOffsetMeters.y = std::clamp(m_FirstPersonBodyCameraOffsetMeters.y, -0.5f, 0.5f);
     m_FirstPersonBodyCameraOffsetMeters.z = std::clamp(m_FirstPersonBodyCameraOffsetMeters.z, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackCameraOffsetMeters = getVector3(
+        "FirstPersonBodyFallbackCameraOffsetMeters",
+        m_FirstPersonBodyFallbackCameraOffsetMeters);
+    m_FirstPersonBodyFallbackCameraOffsetMeters.x = std::clamp(m_FirstPersonBodyFallbackCameraOffsetMeters.x, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackCameraOffsetMeters.y = std::clamp(m_FirstPersonBodyFallbackCameraOffsetMeters.y, -0.5f, 0.5f);
+    m_FirstPersonBodyFallbackCameraOffsetMeters.z = std::clamp(m_FirstPersonBodyFallbackCameraOffsetMeters.z, -0.5f, 0.5f);
     m_FirstPersonBodyHideWorldWeapon = getBool(
         "FirstPersonBodyHideWorldWeapon",
         m_FirstPersonBodyHideWorldWeapon);

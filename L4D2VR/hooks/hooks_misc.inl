@@ -899,6 +899,8 @@ namespace
         return vr->m_HideArms && !emptyHandsPlaceholderActive;
     }
 
+    inline bool HooksNativeViewmodelEffectiveArmCroppingEnabled(VR* vr);
+
     inline bool HooksNativeViewmodelFullArmIkActive(VR* vr)
     {
         return HooksNativeViewmodelHandsOnlyActive(vr) &&
@@ -908,7 +910,7 @@ namespace
                 vr->m_NativeViewmodelLeftHandFreezeReady.load(
                     std::memory_order_acquire) != 0u) &&
             !HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) &&
-            !vr->m_NativeViewmodelArmCroppingEnabled;
+            !HooksNativeViewmodelEffectiveArmCroppingEnabled(vr);
     }
 
     inline bool HooksNativeViewmodelFullArmControllerPairReady(VR* vr)
@@ -15270,6 +15272,7 @@ namespace
         std::uint64_t sceneSerial = 0;
         std::uint64_t playerGeneration = 0;
         int localPlayerIndex = -1;
+        bool forceNativeViewmodelArmCropping = false;
         std::vector<std::string> boneNames;
         std::vector<vr_vm_stabilize::Mat3x4> bones;
     };
@@ -15299,6 +15302,7 @@ namespace
     inline void HooksFirstPersonBodyPublishViewmodelSkeleton(
         VR* vr,
         const HooksFirstPersonBodyEyeSceneState* bodyState,
+        bool forceNativeViewmodelArmCropping,
         const std::vector<std::string>& boneNames,
         const std::vector<vr_vm_stabilize::Mat3x4>& bones)
     {
@@ -15329,6 +15333,8 @@ namespace
         snapshot.sceneSerial = bodyState->sceneSerial;
         snapshot.playerGeneration = bodyState->playerGeneration;
         snapshot.localPlayerIndex = bodyState->localPlayerIndex;
+        snapshot.forceNativeViewmodelArmCropping =
+            forceNativeViewmodelArmCropping;
         snapshot.boneNames = boneNames;
         snapshot.bones = bones;
 
@@ -15365,6 +15371,39 @@ namespace
 
         outBodyState = bodyState;
         return true;
+    }
+
+    inline bool HooksFirstPersonBodyCurrentSceneForcesNativeViewmodelArmCropping(
+        VR* vr)
+    {
+        const HooksFirstPersonBodyEyeSceneState* bodyState = nullptr;
+        if (!HooksFirstPersonBodyCurrentSceneWantsViewmodelSkeleton(
+                vr, bodyState) || !bodyState)
+        {
+            return false;
+        }
+
+        const int slot = HooksFirstPersonBodyEyeSlot(bodyState->eyeIndex);
+        if (slot < 0)
+            return false;
+
+        std::lock_guard<std::mutex> lock(
+            HooksFirstPersonBodyViewmodelSkeletonMutex());
+        const HooksFirstPersonBodyViewmodelSkeleton& snapshot =
+            HooksFirstPersonBodyViewmodelSkeletonStorage()[slot];
+        return snapshot.owner == vr &&
+            snapshot.sceneState == bodyState &&
+            snapshot.sceneSerial == bodyState->sceneSerial &&
+            snapshot.playerGeneration == bodyState->playerGeneration &&
+            snapshot.localPlayerIndex == bodyState->localPlayerIndex &&
+            snapshot.forceNativeViewmodelArmCropping;
+    }
+
+    inline bool HooksNativeViewmodelEffectiveArmCroppingEnabled(VR* vr)
+    {
+        return vr &&
+            (vr->m_NativeViewmodelArmCroppingEnabled ||
+                HooksFirstPersonBodyCurrentSceneForcesNativeViewmodelArmCropping(vr));
     }
 
     inline bool HooksFirstPersonBodyReadViewmodelSkeleton(
@@ -19252,7 +19291,8 @@ namespace
             HooksNativeViewmodelHandsOnlyShouldHidePendingFreeze(vr);
         if (!HooksNativeViewmodelHandsOnlyActive(vr) ||
             HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) ||
-            (!vr->m_NativeViewmodelArmCroppingEnabled && !hidePendingFreeze) ||
+            (!HooksNativeViewmodelEffectiveArmCroppingEnabled(vr) &&
+                !hidePendingFreeze) ||
             !drawState || !pCustomBoneToWorld)
             return false;
 
@@ -19485,7 +19525,7 @@ namespace
         {
             if (!HooksNativeViewmodelHandsOnlyActive(vr) ||
                 HooksNativeViewmodelHandsOnlyHideArmsRequested(vr) ||
-                !vr->m_NativeViewmodelArmCroppingEnabled ||
+                !HooksNativeViewmodelEffectiveArmCroppingEnabled(vr) ||
                 !pCustomBoneToWorld)
                 return;
 
@@ -20977,6 +21017,7 @@ namespace
         bool animationFreeLeftShoulderValid = false;
         bool animationFreeRightShoulderValid = false;
         bool animationFreeAnchorUsesModelEye = false;
+        bool animationFreeAnchorRejectedDistantModelEye = false;
         int numBones = 0;
         int boneIndex = 0;
         int boneStride = 0;
@@ -21427,12 +21468,14 @@ namespace
         if (!HooksNativeViewmodelHandsOnlyVectorFinite(restHead))
             return false;
 
-        // StudioHdr::eyeposition is the model-authored viewpoint. Replacement
-        // survivors put their skeleton and head origins at different model-space
-        // coordinates, so derive every positional landmark from this point. Only
-        // malformed legacy models fall back to the bind-pose head origin.
+        // StudioHdr::eyeposition is useful only when it belongs to the replacement
+        // skeleton. Some workshop models retain the stock survivor eye position
+        // while moving the entire replacement skeleton elsewhere. Treat a distant
+        // eye as stale and anchor those fallback rigs from the bind-pose head.
         Vector restAnchor = restHead;
         layout.animationFreeAnchorUsesModelEye = false;
+        layout.animationFreeAnchorRejectedDistantModelEye = false;
+        constexpr float kMaxModelEyeToHeadDistanceUnits = 16.0f;
         int studioLength = 0;
         float eyeX = 0.0f;
         float eyeY = 0.0f;
@@ -21449,10 +21492,28 @@ namespace
             const float eyeToHeadDistance = (restHead - modelEye).Length();
             if (HooksNativeViewmodelHandsOnlyVectorFinite(modelEye) &&
                 std::isfinite(eyeMagnitude) && eyeMagnitude > 1.0f &&
-                std::isfinite(eyeToHeadDistance) && eyeToHeadDistance <= 256.0f)
+                std::isfinite(eyeToHeadDistance) &&
+                eyeToHeadDistance <= kMaxModelEyeToHeadDistanceUnits)
             {
                 restAnchor = modelEye;
                 layout.animationFreeAnchorUsesModelEye = true;
+            }
+            else if (HooksNativeViewmodelHandsOnlyVectorFinite(modelEye) &&
+                std::isfinite(eyeMagnitude) && eyeMagnitude > 1.0f &&
+                std::isfinite(eyeToHeadDistance) &&
+                eyeToHeadDistance > kMaxModelEyeToHeadDistanceUnits)
+            {
+                layout.animationFreeAnchorRejectedDistantModelEye = true;
+                Game::logMsg(
+                    "[VR][FirstPersonBody] rejected stale Studio eyeposition eye=(%.2f %.2f %.2f) head=(%.2f %.2f %.2f) distance=%.2f max=%.2f",
+                    modelEye.x,
+                    modelEye.y,
+                    modelEye.z,
+                    restHead.x,
+                    restHead.y,
+                    restHead.z,
+                    eyeToHeadDistance,
+                    kMaxModelEyeToHeadDistanceUnits);
             }
         }
 
@@ -21528,7 +21589,11 @@ namespace
         layout.animationFreeArmAnchorsCaptured = true;
         Game::logMsg(
             "[VR][FirstPersonBody] positional anchor=%s modelAnchor=(%.2f %.2f %.2f) headFromAnchor=(%.2f %.2f %.2f)",
-            layout.animationFreeAnchorUsesModelEye ? "studio-eyeposition" : "head-fallback",
+            layout.animationFreeAnchorUsesModelEye
+                ? "studio-eyeposition"
+                : (layout.animationFreeAnchorRejectedDistantModelEye
+                    ? "head-fallback-stale-eye"
+                    : "head-fallback"),
             restAnchor.x,
             restAnchor.y,
             restAnchor.z,
@@ -21921,12 +21986,16 @@ namespace
             (std::isfinite(vr->m_VRScale) && std::fabs(vr->m_VRScale) > 0.001f)
             ? std::fabs(vr->m_VRScale)
             : 43.2f;
-        const Vector& bodyOffsetMeters =
-            vr->m_FirstPersonBodyAnchorOffsetMeters;
         const Vector& anchorRotationOffsetDeg =
             vr->m_FirstPersonBodyAnchorRotationOffsetDeg;
-        const Vector& cameraOffsetMeters =
-            vr->m_FirstPersonBodyCameraOffsetMeters;
+        const bool useFallbackBodyCalibration =
+            !s_layout.animationFreeAnchorUsesModelEye;
+        const Vector& bodyOffsetMeters = useFallbackBodyCalibration
+            ? vr->m_FirstPersonBodyFallbackAnchorOffsetMeters
+            : vr->m_FirstPersonBodyAnchorOffsetMeters;
+        const Vector& cameraOffsetMeters = useFallbackBodyCalibration
+            ? vr->m_FirstPersonBodyFallbackCameraOffsetMeters
+            : vr->m_FirstPersonBodyCameraOffsetMeters;
 
         // Reserve the clamped physical HMD planar offset for upper-body lean.
         // Subtracting it from the tracked eye center keeps the body anchor fixed
@@ -22569,6 +22638,7 @@ namespace
         HooksFirstPersonBodyPublishViewmodelSkeleton(
             vr,
             bodyState,
+            useFallbackBodyCalibration,
             s_layout.boneNames,
             viewmodelSkeletonBones);
 
