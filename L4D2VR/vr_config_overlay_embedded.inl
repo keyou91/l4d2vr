@@ -7162,7 +7162,6 @@ FlashlightEnhancementEnabled=false
 
         s.visible = true;
         s.resetConfirmVisible = false;
-        s.advancedMode = false;
         s.selected = 0;
         s.scroll = 0;
         CfgLoad(s);
@@ -9500,7 +9499,6 @@ FlashlightEnhancementEnabled=false
                 s.hoveredItem = -1;
                 if (s.visible)
                 {
-                    s.advancedMode = false;
                     s.selected = 0;
                     s.scroll = 0;
                     CfgLoad(s);
@@ -9622,7 +9620,6 @@ void L4D2VRConfigOverlay_Open()
         return;
     }
 
-    s.advancedMode = false;
     s.selected = 0;
     s.scroll = 0;
     s.hoveredItem = -1;
