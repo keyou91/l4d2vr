@@ -552,16 +552,15 @@ namespace
 				return true;
 		}
 
-		QAngle controllerAng = vr->GetRightControllerAbsAngle();
-		Vector direction{}, right{}, up{};
-		QAngle::AngleVectors(controllerAng, &direction, &right, &up);
+		Vector direction{};
+		if (!vr->GetBulletAimRay(start, direction))
+			return false;
 		if (direction.IsZero())
 			direction = vr->m_LastAimDirection.IsZero() ? vr->m_HmdForward : vr->m_LastAimDirection;
 		if (direction.IsZero())
 			return false;
 
 		VectorNormalize(direction);
-		start = vr->GetRightControllerViewmodelAbsPos() + direction * 2.0f;
         if (vr->m_ForceNonVRServerMovement && vr->m_HasNonVRAimSolution)
             end = vr->m_NonVRAimHitPoint;
         else
@@ -1133,7 +1132,23 @@ int Hooks::dServerFireTerrorBullets(int playerId, const Vector& vecOrigin, const
 	if (m_VR->m_IsVREnabled && playerId == m_Game->m_EngineClient->GetLocalPlayer())
 	{
 		const bool scopeActive = m_VR->IsScopeActive();
-		vecNewOrigin = m_VR->m_MouseModeEnabled ? GetMouseModeGunOriginAbs(m_VR) : m_VR->GetRightControllerViewmodelAbsPos();
+		if (m_VR->m_MouseModeEnabled)
+		{
+			vecNewOrigin = GetMouseModeGunOriginAbs(m_VR);
+		}
+		else
+		{
+			Vector bulletDirection{};
+			if (m_VR->GetBulletAimRay(vecNewOrigin, bulletDirection))
+			{
+				QAngle::VectorAngles(bulletDirection, vecNewAngles);
+				NormalizeAndClampViewAngles(vecNewAngles);
+			}
+			else
+			{
+				vecNewOrigin = m_VR->GetRightControllerViewmodelAbsPos();
+			}
+		}
 		if (!scopeActive)
 			TryBuildLocalAimLineBulletVisualRay(m_VR, vecNewOrigin, vecNewAngles);
 
@@ -1178,7 +1193,7 @@ int Hooks::dServerFireTerrorBullets(int playerId, const Vector& vecOrigin, const
 			}
 			else
 			{
-				vecNewAngles = m_VR->m_MouseModeEnabled ? GetMouseModeFallbackAimAngles(m_VR) : m_VR->GetRightControllerAbsAngle();
+				vecNewAngles = m_VR->m_MouseModeEnabled ? GetMouseModeFallbackAimAngles(m_VR) : m_VR->GetBulletAimAbsAngle();
 			}
 		}
 		else if (m_VR->m_MouseModeEnabled)
@@ -1195,7 +1210,7 @@ int Hooks::dServerFireTerrorBullets(int playerId, const Vector& vecOrigin, const
 		}
 		else
 		{
-			vecNewAngles = m_VR->GetRightControllerAbsAngle();
+			vecNewAngles = m_VR->GetBulletAimAbsAngle();
 		}
 	}
 	// Clients
@@ -1276,7 +1291,16 @@ int Hooks::dClientFireTerrorBullets(
 				}
 				else
 				{
-					vecNewOrigin = m_VR->GetRightControllerViewmodelAbsPos();
+					Vector bulletDirection{};
+					if (m_VR->GetBulletAimRay(vecNewOrigin, bulletDirection))
+					{
+						QAngle::VectorAngles(bulletDirection, vecNewAngles);
+						NormalizeAndClampViewAngles(vecNewAngles);
+					}
+					else
+					{
+						vecNewOrigin = m_VR->GetRightControllerViewmodelAbsPos();
+					}
 
 					if (TryBuildLocalAimLineBulletVisualRay(m_VR, vecNewOrigin, vecNewAngles))
 					{
@@ -1299,12 +1323,12 @@ int Hooks::dClientFireTerrorBullets(
 						}
 						else
 						{
-							vecNewAngles = m_VR->GetRightControllerAbsAngle();
+							vecNewAngles = m_VR->GetBulletAimAbsAngle();
 						}
 					}
 					else
 					{
-						vecNewAngles = m_VR->GetRightControllerAbsAngle();
+						vecNewAngles = m_VR->GetBulletAimAbsAngle();
 					}
 				}
 			}
@@ -1321,7 +1345,16 @@ int Hooks::dClientFireTerrorBullets(
 				}
 				else
 				{
-					vecNewOrigin = m_VR->m_MouseModeEnabled ? GetMouseModeGunOriginAbs(m_VR) : m_VR->GetRightControllerViewmodelAbsPos();
+					if (m_VR->m_MouseModeEnabled)
+					{
+						vecNewOrigin = GetMouseModeGunOriginAbs(m_VR);
+					}
+					else
+					{
+						Vector bulletDirection{};
+						if (!m_VR->GetBulletAimRay(vecNewOrigin, bulletDirection))
+							vecNewOrigin = m_VR->GetRightControllerViewmodelAbsPos();
+					}
 					if (!m_VR->m_MouseModeEnabled)
 						TryBuildLocalAimLineBulletVisualRay(m_VR, vecNewOrigin, vecNewAngles);
 				}
@@ -1352,12 +1385,12 @@ int Hooks::dClientFireTerrorBullets(
 							}
 							else
 							{
-								vecNewAngles = m_VR->GetRightControllerAbsAngle();
+								vecNewAngles = m_VR->GetBulletAimAbsAngle();
 							}
 						}
 						else
 						{
-							vecNewAngles = m_VR->GetRightControllerAbsAngle();
+							vecNewAngles = m_VR->GetBulletAimAbsAngle();
 						}
 					}
 				}
@@ -2375,6 +2408,48 @@ int Hooks::dWriteUsercmd(void* buf, CUserCmd* to, CUserCmd* from)
 			controllerAngles))
 	{
 		return hkWriteUsercmd.fOriginal(buf, to, from);
+	}
+
+	// The server consumes the controller pose decoded from this exact usercmd when
+	// resolving a VR-aware shot. Render aim-line state can be stale by a frame and,
+	// more importantly, is not guaranteed to exist when the line is hidden. Encode
+	// the logical bullet ray directly on firing commands so BulletAimOffset reaches
+	// authoritative hit registration without changing the normal hand pose.
+	const bool primaryAttack = to && (to->buttons & (1 << 0)) != 0;
+	bool activeWeaponIsThrowable = false;
+	if (m_Game && m_Game->m_EngineClient)
+	{
+		const int localPlayerIndex = m_Game->m_EngineClient->GetLocalPlayer();
+		C_BasePlayer* localPlayer = localPlayerIndex > 0
+			? reinterpret_cast<C_BasePlayer*>(m_Game->GetClientEntity(localPlayerIndex))
+			: nullptr;
+		C_WeaponCSBase* activeWeapon = localPlayer
+			? reinterpret_cast<C_WeaponCSBase*>(localPlayer->GetActiveWeapon())
+			: nullptr;
+		activeWeaponIsThrowable = activeWeapon && m_VR->IsThrowableWeapon(activeWeapon);
+	}
+	if (!objectPullOverridePose &&
+		primaryAttack &&
+		!localUsingMountedWeapon &&
+		m_Game &&
+		!m_Game->m_IsMeleeWeaponActive &&
+		!activeWeaponIsThrowable)
+	{
+		Vector bulletDirection{};
+		Vector bulletOrigin{};
+		if (m_VR->GetBulletAimRay(bulletOrigin, bulletDirection) &&
+			IsFiniteControllerPosition(bulletOrigin) &&
+			VectorNormalize(bulletDirection) > 0.0001f)
+		{
+			QAngle bulletAngles{};
+			QAngle::VectorAngles(bulletDirection, bulletAngles);
+			NormalizeAndClampViewAngles(bulletAngles);
+			if (IsFiniteViewAngle(bulletAngles))
+			{
+				controllerPos = bulletOrigin;
+				controllerAngles = bulletAngles;
+			}
+		}
 	}
 	const int originalWeaponSelect = to->weaponselect;
 	const int originalWeaponSubtype = to->weaponsubtype;
