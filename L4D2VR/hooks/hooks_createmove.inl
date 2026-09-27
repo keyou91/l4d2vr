@@ -518,10 +518,10 @@ bool __fastcall Hooks::dCreateMove(void* ecx, void* edx, float flInputSampleTime
 				const int lpIdxForAim = m_Game->m_EngineClient->GetLocalPlayer();
 				C_BasePlayer* lpForAim = (lpIdxForAim > 0) ? (C_BasePlayer*)m_Game->GetClientEntity(lpIdxForAim) : nullptr;
 				if (lpForAim)
-					m_VR->UpdateNonVRAimSolution(lpForAim, true);
+					m_VR->UpdateNonVRAimSolution(lpForAim, true, true);
 			}
 
-			QAngle aim = m_VR->GetRightControllerAbsAngle();
+			QAngle aim = m_VR->GetBulletAimAbsAngle();
 			if (m_VR->m_MouseModeEnabled)
 			{
 				if (m_VR->m_HasNonVRAimSolution)

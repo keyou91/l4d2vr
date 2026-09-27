@@ -79,6 +79,10 @@ namespace
     constexpr int kCfgResetY = 112;
     constexpr int kCfgResetW = 158;
     constexpr int kCfgResetH = 36;
+    constexpr int kCfgCalibAdvancedX = 1088;
+    constexpr int kCfgCalibAdvancedY = 88;
+    constexpr int kCfgCalibAdvancedW = 164;
+    constexpr int kCfgCalibAdvancedH = 30;
     constexpr int kCfgResetConfirmPanelX = 320;
     constexpr int kCfgResetConfirmPanelY = 292;
     constexpr int kCfgResetConfirmPanelW = 640;
@@ -276,10 +280,18 @@ namespace
         { "ViewmodelAdjustCombo", CfgOptionType::String, "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "\xE6\xAD\xA6\xE5\x99\xA8\xE4\xBD\x8D\xE7\xBD\xAE\xE8\xB0\x83\xE6\x95\xB4\xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", 0.0f, 0.0f, "Reload+SecondaryAttack" },
         { "ViewmodelAdjustMoveSpeed", CfgOptionType::Float, "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "\xE8\xA7\x86\xE6\xA8\xA1\xE8\xB0\x83\xE6\x95\xB4\xE7\xA7\xBB\xE5\x8A\xA8\xE9\x80\x9F\xE5\xBA\xA6", 0.1f, 5.0f, "1.0" },
         { "ViewmodelAdjustRotateSpeed", CfgOptionType::Float, "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "\xE8\xA7\x86\xE6\xA8\xA1\xE8\xB0\x83\xE6\x95\xB4\xE6\x97\x8B\xE8\xBD\xAC\xE9\x80\x9F\xE5\xBA\xA6", 0.1f, 5.0f, "1.0" },
+        { "ViewmodelPoseOffset", CfgOptionType::Vec3, "Weapons / Viewmodel", "Weapon Pose Offset", -10.0f, 10.0f, "0,0,0" },
+        { "ViewmodelPoseRotationOffsetDeg", CfgOptionType::Vec3, "Weapons / Viewmodel", "Weapon Pose Rotation (pitch,yaw,roll)", -180.0f, 180.0f, "0,0,0" },
         { "ViewmodelDisableMoveBob", CfgOptionType::Bool, "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "\xE7\xA6\x81\xE7\x94\xA8\xE6\xAD\xA6\xE5\x99\xA8\xE7\xA7\xBB\xE5\x8A\xA8\xE6\x99\x83\xE5\x8A\xA8", 0.0f, 0.0f, "false" },
         { "ViewmodelAutoGripAlignEnabled", CfgOptionType::Bool, "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "\xE8\x87\xAA\xE5\x8A\xA8\xE5\xAF\xB9\xE9\xBD\x90\xE6\xAD\xA6\xE5\x99\xA8\xE6\x8F\xA1\xE6\x8A\x8A", 0.0f, 0.0f, "true" },
         
         { "WeaponAimPitchOffsetDeg", CfgOptionType::Float, "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "\xE6\xAD\xA6\xE5\x99\xA8\xE5\x9E\x82\xE7\x9B\xB4\xE8\xA7\x92\xE5\xBA\xA6", -90.0f, 90.0f, "-45.0" },
+        { "WeaponAimYawOffsetDeg", CfgOptionType::Float, "Weapons / Fire", "Weapon Aim Yaw", -180.0f, 180.0f, "0.0" },
+        { "WeaponAimRollOffsetDeg", CfgOptionType::Float, "Weapons / Fire", "Weapon Aim Roll", -180.0f, 180.0f, "0.0" },
+        { "BulletAimOffset", CfgOptionType::Vec3, "Weapons / Fire", "Bullet Origin Offset (units)", -10.0f, 10.0f, "0,0,0" },
+        { "BulletAimRotationPitchDeg", CfgOptionType::Float, "Weapons / Fire", "Bullet Aim Pitch", -180.0f, 180.0f, "0.0" },
+        { "BulletAimRotationYawDeg", CfgOptionType::Float, "Weapons / Fire", "Bullet Aim Yaw", -180.0f, 180.0f, "0.0" },
+        { "BulletAimRotationRollDeg", CfgOptionType::Float, "Weapons / Fire", "Bullet Aim Roll", -180.0f, 180.0f, "0.0" },
         { "AutoRepeatSemiAutoFire", CfgOptionType::Bool, "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "\xE5\x8D\x95\xE5\x8F\x91\xE6\x9E\xAA\xE9\x95\xBF\xE6\x8C\x89\xE8\xBF\x9E\xE5\x8F\x91", 0.0f, 0.0f, "false" },
         { "AutoRepeatSemiAutoFireHz", CfgOptionType::Float, "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "\xE8\xBF\x9E\xE7\x82\xB9\xE9\xA2\x91\xE7\x8E\x87 (Hz)", 1.0f, 12.0f, "20.0" },
         { "AutoRepeatSprayPushEnabled", CfgOptionType::Bool, "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "\xE8\x87\xAA\xE5\x8A\xA8 Spray-Push", 0.0f, 0.0f, "false" },
@@ -417,6 +429,12 @@ namespace
     static const CfgOptionTextSpec kCfgOptionTextSpecs[] =
     {
         { "WeaponAimPitchOffsetDeg", "Weapons / Fire", "\xE6\xAD\xA6\xE5\x99\xA8 / \xE5\xBC\x80\xE7\x81\xAB", "Weapon Vertical Angle", "\xE6\xAD\xA6\xE5\x99\xA8\xE5\x9E\x82\xE7\x9B\xB4\xE8\xA7\x92\xE5\xBA\xA6", "Adjusts the weapon-hand grip pitch in degrees. The gun model, aim line, scope, and shots stay aligned.", "\xE4\xBB\xA5\xE5\xBA\xA6\xE4\xB8\xBA\xE5\x8D\x95\xE4\xBD\x8D\xE8\xB0\x83\xE6\x95\xB4\xE6\x8C\x81\xE6\x9E\xAA\xE6\x89\x8B\xE7\x9A\x84\xE6\x8F\xA1\xE6\x8C\x81\xE4\xBF\xAF\xE4\xBB\xB0\xE8\xA7\x92\xE3\x80\x82\xE6\x9E\xAA\xE6\xA2\xB0\xE6\xA8\xA1\xE5\x9E\x8B\xE3\x80\x81\xE7\x9E\x84\xE5\x87\x86\xE7\xBA\xBF\xE3\x80\x81\xE7\x9E\x84\xE5\x87\x86\xE9\x95\x9C\xE5\x92\x8C\xE5\xB0\x84\xE5\x87\xBB\xE6\x96\xB9\xE5\x90\x91\xE4\xBC\x9A\xE4\xBF\x9D\xE6\x8C\x81\xE5\xAF\xB9\xE9\xBD\x90\xE3\x80\x82", "More-negative values tilt the weapon farther downward. Default -45 preserves the original behavior.", "\xE6\x9B\xB4\xE5\xB0\x8F\xE7\x9A\x84\xE8\xB4\x9F\xE5\x80\xBC\xE4\xBC\x9A\xE8\xAE\xA9\xE6\xAD\xA6\xE5\x99\xA8\xE8\xBF\x9B\xE4\xB8\x80\xE6\xAD\xA5\xE5\x90\x91\xE4\xB8\x8B\xE5\x80\xBE\xE6\x96\x9C\xE3\x80\x82\xE9\xBB\x98\xE8\xAE\xA4\xE5\x80\xBC -45 \xE4\xBF\x9D\xE6\x8C\x81\xE5\x8E\x9F\xE6\x9C\x89\xE8\xA1\x8C\xE4\xB8\xBA\xE3\x80\x82" },
+        { "WeaponAimYawOffsetDeg", "Weapons / Fire", "Weapons / Fire", "Weapon Aim Yaw", "Weapon Aim Yaw", "Rotates the aim basis left or right around the up axis before the weapon pose is resolved.", "Rotates the aim basis left or right around the up axis before the weapon pose is resolved.", "Use this for left/right aim corrections.", "Use this for left/right aim corrections." },
+        { "WeaponAimRollOffsetDeg", "Weapons / Fire", "Weapons / Fire", "Weapon Aim Roll", "Weapon Aim Roll", "Rotates the aim basis around the forward axis before the weapon pose is resolved.", "Rotates the aim basis around the forward axis before the weapon pose is resolved.", "Use this for a twist around the barrel axis.", "Use this for a twist around the barrel axis." },
+        { "BulletAimOffset", "Weapons / Fire", "Weapons / Fire", "Bullet Origin Offset (units)", "Bullet Origin Offset (units)", "Moves the real shot-ray origin without changing the held gun pose. Components are X=forward, Y=right, Z=up in Source units.", "Moves the real shot-ray origin without changing the held gun pose. Components are X=forward, Y=right, Z=up in Source units.", "Use small values to align the ray with the barrel. Use pitch or yaw to correct impacts that drift with distance.", "Use small values to align the ray with the barrel. Use pitch or yaw to correct impacts that drift with distance." },
+        { "BulletAimRotationPitchDeg", "Weapons / Fire", "Weapons / Fire", "Bullet Aim Pitch", "Bullet Aim Pitch", "Tilts the shot ray up or down without changing the gun model.", "Tilts the shot ray up or down without changing the gun model.", "Use this when the gun looks right but bullets land high or low.", "Use this when the gun looks right but bullets land high or low." },
+        { "BulletAimRotationYawDeg", "Weapons / Fire", "Weapons / Fire", "Bullet Aim Yaw", "Bullet Aim Yaw", "Turns the shot ray left or right without changing the gun model.", "Turns the shot ray left or right without changing the gun model.", "Use this when the gun looks right but bullets land left or right.", "Use this when the gun looks right but bullets land left or right." },
+        { "BulletAimRotationRollDeg", "Weapons / Fire", "Weapons / Fire", "Bullet Aim Roll", "Bullet Aim Roll", "Rotates the bullet-offset right/up frame around the forward ray without changing the gun model.", "Rotates the bullet-offset right/up frame around the forward ray without changing the gun model.", "Roll alone does not move the impact; it only changes how Y/Z origin offsets are oriented.", "Roll alone does not move the impact; it only changes how Y/Z origin offsets are oriented." },
         { "VRScale", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "World Scale", "\344\270\226\347\225\214\347\274\251\346\224\276", "Adjusts overall world scale (distance and size perception).", "\350\260\203\346\225\264\346\225\264\344\275\223\344\270\226\347\225\214\345\260\272\345\272\246\357\274\210\350\267\235\347\246\273\344\270\216\345\244\247\345\260\217\346\204\237\347\237\245\357\274\211\343\200\202", "Keep close to real-world meter scale. 43.2 covers most play spaces.", "\345\260\275\351\207\217\344\277\235\346\214\201\344\270\216\347\234\237\345\256\236\344\270\226\347\225\214\346\216\245\350\277\221\343\200\20243.2\344\270\200\350\210\254\346\234\200\345\220\210\351\200\202\343\200\202" },
         { "IPDScale", "View / Scale", "\350\247\206\350\247\222 / \345\260\272\345\272\246", "IPD Scale", "\347\236\263\350\267\235\347\274\251\346\224\276", "Multiplies headset IPD to fine-tune stereo separation.", "\346\214\211\346\257\224\344\276\213\350\260\203\346\225\264\345\244\264\346\230\276\347\236\263\350\267\235\344\273\245\345\276\256\350\260\203\347\253\213\344\275\223\345\210\206\347\246\273\345\272\246\343\200\202", "Use for small comfort tweaks only.", "\344\273\205\347\224\250\344\272\216\345\260\217\345\271\205\350\210\222\351\200\202\345\272\246\345\276\256\350\260\203\343\200\202" },
         
@@ -545,6 +563,8 @@ namespace
         { "ViewmodelAdjustCombo", "Interaction / Combos", "\344\272\244\344\272\222 / \347\273\204\345\220\210\351\224\256", "Weapon Position Adjust Combo", "\346\255\246\345\231\250\344\275\215\347\275\256\350\260\203\346\225\264\347\273\204\345\220\210\351\224\256", "Action combo to toggle weapon position adjustment mode.", "\347\224\250\344\272\216\345\210\207\346\215\242\346\255\246\345\231\250\344\275\215\347\275\256\350\260\203\346\225\264\346\250\241\345\274\217\347\232\204\347\273\204\345\220\210\345\212\250\344\275\234\343\200\202", "Set to \"false\" to disable if you never edit offsets.", "\350\213\245\344\270\215\351\234\200\350\246\201\345\217\257\350\256\276\344\270\272 \"false\" \347\246\201\347\224\250\343\200\202" },
         { "ViewmodelAdjustMoveSpeed", "Interaction / Combos", "\344\272\244\344\272\222 / \347\273\204\345\220\210\351\224\256", "Viewmodel Adjust Move Speed", "\350\247\206\346\250\241\350\260\203\346\225\264\347\247\273\345\212\250\351\200\237\345\272\246", "Multiplier for weapon model translation while moving the left controller in adjustment mode.", "\347\247\273\345\212\250\346\211\213\346\237\204\346\227\266\350\247\206\346\250\241\345\201\217\347\247\273\347\232\204\345\200\215\347\216\207\343\200\202", "Lower is slower; higher is faster.", "\350\260\203\344\275\216\346\233\264\346\205\242\357\274\214\350\260\203\351\253\230\346\233\264\345\277\253\343\200\202" },
         { "ViewmodelAdjustRotateSpeed", "Interaction / Combos", "\344\272\244\344\272\222 / \347\273\204\345\220\210\351\224\256", "Viewmodel Adjust Rotate Speed", "\350\247\206\346\250\241\350\260\203\346\225\264\346\227\213\350\275\254\351\200\237\345\272\246", "Multiplier for weapon model rotation. Also controls left-stick pitch/yaw rotation in adjustment mode.", "\350\260\203\346\225\264\346\250\241\345\274\217\344\270\213\345\267\246\346\221\207\346\235\206\345\222\214\346\211\213\346\237\204\346\227\213\350\275\254\345\257\271\350\247\206\346\250\241\350\247\222\345\272\246\347\232\204\345\200\215\347\216\207\343\200\202", "Left stick only rotates the viewmodel in adjustment mode; it no longer moves the player.", "\345\267\246\346\221\207\346\235\206\345\234\250\350\260\203\346\225\264\346\250\241\345\274\217\344\270\213\345\217\252\346\227\213\350\275\254\350\247\206\346\250\241\357\274\214\344\270\215\345\206\215\347\247\273\345\212\250\344\272\272\347\211\251\343\200\202" },
+        { "ViewmodelPoseOffset", "Weapons / Viewmodel", "Weapons / Viewmodel", "Weapon Pose Offset", "Weapon Pose Offset", "Global forward/right/up offset layered under the per-weapon manual tuning values.", "Global forward/right/up offset layered under the per-weapon manual tuning values.", "Use this to re-center the gun after a rotation tweak.", "Use this to re-center the gun after a rotation tweak." },
+        { "ViewmodelPoseRotationOffsetDeg", "Weapons / Viewmodel", "Weapons / Viewmodel", "Weapon Pose Rotation", "Weapon Pose Rotation", "Global pitch/yaw/roll offset layered under the per-weapon manual tuning values.", "Global pitch/yaw/roll offset layered under the per-weapon manual tuning values.", "If the gun swings off-center, adjust the position offset too.", "If the gun swings off-center, adjust the position offset too." },
         { "ViewmodelDisableMoveBob", "Interaction / Combos", "\344\272\244\344\272\222 / \347\273\204\345\220\210\351\224\256", "Disable Weapon Move Bob", "\347\246\201\347\224\250\346\255\246\345\231\250\347\247\273\345\212\250\346\231\203\345\212\250", "Disables movement bob/sway on the first-person weapon model.", "\347\246\201\347\224\250\347\254\254\344\270\200\344\272\272\347\247\260\346\255\246\345\231\250\346\250\241\345\236\213\351\232\217\347\247\273\345\212\250\344\272\247\347\224\237\347\232\204\346\231\203\345\212\250/\346\221\206\345\212\250\343\200\202", "When enabled, the weapon model appears more stable while moving.", "\345\274\200\345\220\257\345\220\216\357\274\214\347\247\273\345\212\250\346\227\266\346\255\246\345\231\250\346\250\241\345\236\213\344\274\232\346\233\264\347\250\263\345\256\232\343\200\202" },
         { "ViewmodelAutoGripAlignEnabled", "Interaction / Combos", "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "Auto-align Weapon Grip", "\xE8\x87\xAA\xE5\x8A\xA8\xE5\xAF\xB9\xE9\xBD\x90\xE6\xAD\xA6\xE5\x99\xA8\xE6\x8F\xA1\xE6\x8A\x8A", "Automatically aligns the weapon grip to the controller.", "\xE8\x87\xAA\xE5\x8A\xA8\xE5\xB0\x86\xE6\xAD\xA6\xE5\x99\xA8\xE6\x8F\xA1\xE6\x8A\x8A\xE4\xB8\x8E\xE6\x8E\xA7\xE5\x88\xB6\xE5\x99\xA8\xE5\xAF\xB9\xE9\xBD\x90\xE3\x80\x82", "Helps with weapon handling and immersion.", "\xE6\x9C\x89\xE5\x8A\xA9\xE4\xBA\x8E\xE6\xAD\xA6\xE5\x99\xA8\xE6\x93\x8D\xE6\x8E\xA7\xE5\x92\x8C\xE6\xB2\x89\xE6\xB5\xB8\xE6\x84\x9F\xE3\x80\x82" },
         { "ViewmodelAutoGripTargetOffsetMeters", "Interaction / Combos", "\xE4\xBA\xA4\xE4\xBA\x92 / \xE7\xBB\x84\xE5\x90\x88\xE9\x94\xAE", "Grip Target Offset (m)", "\xE6\x8F\xA1\xE6\x8A\x8A\xE7\x9B\xAE\xE6\xA0\x87\xE5\x81\x8F\xE7\xA7\xBB\x20\x28\xE7\xB1\xB3\x29", "Offset for the grip target in meters.", "\xE6\x8F\xA1\xE6\x8A\x8A\xE7\x9B\xAE\xE6\xA0\x87\xE7\x9A\x84\xE5\x81\x8F\xE7\xA7\xBB\xEF\xBC\x88\xE7\xB1\xB3\xEF\xBC\x89\xE3\x80\x82", "Fine-tune the grip position for comfort.", "\xE5\xBE\xAE\xE8\xB0\x83\xE6\x8F\xA1\xE6\x8A\x8A\xE4\xBD\x8D\xE7\xBD\xAE\xE4\xBB\xA5\xE8\x8E\xB7\xE5\xBE\x97\xE6\x9B\xB4\xE5\xA5\xBD\xE7\x9A\x84\xE8\x88\x92\xE9\x80\x82\xE5\xBA\xA6\xE3\x80\x82" },
@@ -1242,6 +1262,10 @@ namespace
     {
         if (spec.key && std::strcmp(spec.key, "WeaponAimPitchOffsetDeg") == 0)
             return 1.0f;
+        if (spec.key && (
+            std::strcmp(spec.key, "WeaponAimYawOffsetDeg") == 0 ||
+            std::strcmp(spec.key, "WeaponAimRollOffsetDeg") == 0))
+            return 1.0f;
 
         const float range = spec.maxValue - spec.minValue;
         if (range > 0.0f)
@@ -1361,6 +1385,19 @@ namespace
             return 1.0f;
         if (spec.key && std::strcmp(spec.key, "MagazineInteractionFreshMagazinePickupOffsetMeters") == 0)
             return 0.02f;
+        if (spec.key && std::strcmp(spec.key, "ViewmodelPoseOffset") == 0)
+            return 0.01f;
+        if (spec.key && (
+            std::strcmp(spec.key, "ViewmodelPoseRotationOffsetDeg") == 0 ||
+            std::strcmp(spec.key, "ViewmodelAutoGripTargetRotationOffsetDeg") == 0))
+            return 1.0f;
+        if (spec.key && std::strcmp(spec.key, "BulletAimOffset") == 0)
+            return 0.01f;
+        if (spec.key && (
+            std::strcmp(spec.key, "BulletAimRotationPitchDeg") == 0 ||
+            std::strcmp(spec.key, "BulletAimRotationYawDeg") == 0 ||
+            std::strcmp(spec.key, "BulletAimRotationRollDeg") == 0))
+            return 0.1f;
         return CfgStepForFloat(spec, current);
     }
 
@@ -1368,6 +1405,19 @@ namespace
     {
         if (spec.key && std::strcmp(spec.key, "MagazineInteractionFreshMagazinePickupOffsetMeters") == 0)
             return 0.01f;
+        if (spec.key && std::strcmp(spec.key, "ViewmodelPoseOffset") == 0)
+            return 0.01f;
+        if (spec.key && (
+            std::strcmp(spec.key, "ViewmodelPoseRotationOffsetDeg") == 0 ||
+            std::strcmp(spec.key, "ViewmodelAutoGripTargetRotationOffsetDeg") == 0))
+            return 1.0f;
+        if (spec.key && std::strcmp(spec.key, "BulletAimOffset") == 0)
+            return 0.01f;
+        if (spec.key && (
+            std::strcmp(spec.key, "BulletAimRotationPitchDeg") == 0 ||
+            std::strcmp(spec.key, "BulletAimRotationYawDeg") == 0 ||
+            std::strcmp(spec.key, "BulletAimRotationRollDeg") == 0))
+            return 0.1f;
         return CfgComponentStep(spec, index, current);
     }
 
@@ -1669,6 +1719,20 @@ namespace
     static bool CfgHitKillIndicatorsEnabled(const CfgOverlayState& s)
     {
         return CfgIsEnabled(s, "KillIndicatorEnabled", false) || CfgIsEnabled(s, "HitIndicatorEnabled", false);
+    }
+
+    static void CfgToggleAdvancedMode(CfgOverlayState& s)
+    {
+        s.advancedMode = !s.advancedMode;
+        s.selected = 0;
+        s.scroll = 0;
+        s.hoveredItem = -1;
+        s.hoverSelectionSuppressedUntilMs = 0;
+        CfgRebuildVisibleIndexes(s);
+        s.status = s.advancedMode
+            ? (s.useChinese ? "\xE5\xB7\xB2\xE5\xB1\x95\xE5\xBC\x80\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE\xEF\xBC\x9A\xE6\x98\xBE\xE7\xA4\xBA\xE5\xB7\xB2\xE5\x90\xAF\xE7\x94\xA8\xE5\x8A\x9F\xE8\x83\xBD\xE7\x9A\x84\xE4\xBB\x8E\xE5\xB1\x9E\xE5\x8F\x82\xE6\x95\xB0\xE3\x80\x82" : "Advanced settings expanded. Child parameters are shown for enabled features.")
+            : (s.useChinese ? "\xE5\xB7\xB2\xE5\x88\x87\xE5\x9B\x9E\xE7\xAE\x80\xE6\x98\x93\xE8\xAE\xBE\xE7\xBD\xAE\xE3\x80\x82" : "Simple settings enabled.");
+        s.dirty = true;
     }
 
     // Simple mode contains only the main user-facing feature switches plus the
@@ -2233,6 +2297,12 @@ FixedHudYOffset=0.25
 FixedHudDistanceOffset=0.25
 ControllerSmoothing=0.0
 WeaponAimPitchOffsetDeg=-45.0
+WeaponAimYawOffsetDeg=0.0
+WeaponAimRollOffsetDeg=0.0
+BulletAimOffset=0,0,0
+BulletAimRotationPitchDeg=0.0
+BulletAimRotationYawDeg=0.0
+BulletAimRotationRollDeg=0.0
 FirstPersonBodyEnabled=true
 FirstPersonBodyHideHead=true
 FirstPersonBodyHideArms=true
@@ -2411,6 +2481,8 @@ TextToSpeechWhitelistRegexes=
 TextToSpeechWhitelistSeparator=__VR_REGEX_SPLIT__
 QuickTurnCombo=SecondaryAttack+Crouch
 ViewmodelAdjustEnabled=false
+ViewmodelPoseOffset=0,0,0
+ViewmodelPoseRotationOffsetDeg=0,0,0
 ViewmodelAdjustCombo=Reload+SecondaryAttack
 ViewmodelAutoGripAlignEnabled=true
 ViewmodelAutoGripAlignRotation=false
@@ -6064,6 +6136,15 @@ FlashlightEnhancementEnabled=false
             std::string title = std::to_string(i + 1) + ". " + CfgCalibrationStepTitle(s, i);
             CfgGdiText(g, x + 6, 126, tabW - 12, 42, title, active ? g.boldFont : g.smallFont, { 238, 243, 248 }, DT_CENTER);
         }
+        CfgGdiButton(
+            g,
+            kCfgCalibAdvancedX,
+            kCfgCalibAdvancedY,
+            kCfgCalibAdvancedW,
+            kCfgCalibAdvancedH,
+            s.advancedMode
+                ? (s.useChinese ? "\xE7\xAE\x80\xE6\x98\x93\xE8\xAE\xBE\xE7\xBD\xAE" : "Simple")
+                : (s.useChinese ? "\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE" : "Advanced"));
 
         if (!hasSnapshot)
         {
@@ -9134,16 +9215,15 @@ FlashlightEnhancementEnabled=false
             mx >= kCfgAdvancedX && mx < kCfgAdvancedX + kCfgAdvancedW &&
             my >= kCfgAdvancedY && my < kCfgAdvancedY + kCfgAdvancedH)
         {
-            s.advancedMode = !s.advancedMode;
-            s.selected = 0;
-            s.scroll = 0;
-            s.hoveredItem = -1;
-            s.hoverSelectionSuppressedUntilMs = 0;
-            CfgRebuildVisibleIndexes(s);
-            s.status = s.advancedMode
-                ? (s.useChinese ? "\xE5\xB7\xB2\xE5\xB1\x95\xE5\xBC\x80\xE9\xAB\x98\xE7\xBA\xA7\xE8\xAE\xBE\xE7\xBD\xAE\xEF\xBC\x9A\xE6\x98\xBE\xE7\xA4\xBA\xE5\xB7\xB2\xE5\x90\xAF\xE7\x94\xA8\xE5\x8A\x9F\xE8\x83\xBD\xE7\x9A\x84\xE4\xBB\x8E\xE5\xB1\x9E\xE5\x8F\x82\xE6\x95\xB0\xE3\x80\x82" : "Advanced settings expanded. Child parameters are shown for enabled features.")
-                : (s.useChinese ? "\xE5\xB7\xB2\xE5\x88\x87\xE5\x9B\x9E\xE7\xAE\x80\xE6\x98\x93\xE8\xAE\xBE\xE7\xBD\xAE\xE3\x80\x82" : "Simple settings enabled.");
-            s.dirty = true;
+            CfgToggleAdvancedMode(s);
+            return;
+        }
+
+        if (s.panelMode == CfgPanelMode::MagazineCalibration &&
+            mx >= kCfgCalibAdvancedX && mx < kCfgCalibAdvancedX + kCfgCalibAdvancedW &&
+            my >= kCfgCalibAdvancedY && my < kCfgCalibAdvancedY + kCfgCalibAdvancedH)
+        {
+            CfgToggleAdvancedMode(s);
             return;
         }
 

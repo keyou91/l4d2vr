@@ -3155,6 +3155,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			Vector viewmodelPosOffset{};
 			QAngle viewmodelAngOffset{};
 			float weaponAimPitchOffsetDeg = -45.0f;
+			float weaponAimYawOffsetDeg = 0.0f;
+			float weaponAimRollOffsetDeg = 0.0f;
 
 			// Extra render-thread state (written by VR::UpdateTracking under the same seqlock).
 			bool hasLocalPlayer = false;
@@ -3225,6 +3227,10 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			vp.viewmodelAngOffset.z = m_VR->m_RenderViewmodelAngOffsetZ.load(std::memory_order_relaxed);
 			vp.weaponAimPitchOffsetDeg =
 				m_VR->m_RenderWeaponAimPitchOffsetDeg.load(std::memory_order_relaxed);
+			vp.weaponAimYawOffsetDeg =
+				m_VR->m_RenderWeaponAimYawOffsetDeg.load(std::memory_order_relaxed);
+			vp.weaponAimRollOffsetDeg =
+				m_VR->m_RenderWeaponAimRollOffsetDeg.load(std::memory_order_relaxed);
 			vp.hasLocalPlayer = (m_VR->m_RenderHasLocalPlayer.load(std::memory_order_relaxed) != 0);
 			vp.localEyePos.x = m_VR->m_RenderLocalEyePosX.load(std::memory_order_relaxed);
 			vp.localEyePos.y = m_VR->m_RenderLocalEyePosY.load(std::memory_order_relaxed);
@@ -3312,6 +3318,10 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				vp.viewmodelAngOffset.z = m_VR->m_RenderViewmodelAngOffsetZ.load(std::memory_order_relaxed);
 				vp.weaponAimPitchOffsetDeg =
 					m_VR->m_RenderWeaponAimPitchOffsetDeg.load(std::memory_order_relaxed);
+				vp.weaponAimYawOffsetDeg =
+					m_VR->m_RenderWeaponAimYawOffsetDeg.load(std::memory_order_relaxed);
+				vp.weaponAimRollOffsetDeg =
+					m_VR->m_RenderWeaponAimRollOffsetDeg.load(std::memory_order_relaxed);
 				vp.hasLocalPlayer = (m_VR->m_RenderHasLocalPlayer.load(std::memory_order_relaxed) != 0);
 				vp.localEyePos.x = m_VR->m_RenderLocalEyePosX.load(std::memory_order_relaxed);
 				vp.localEyePos.y = m_VR->m_RenderLocalEyePosY.load(std::memory_order_relaxed);
@@ -4161,8 +4171,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 						// Match the configurable weapon-hand calibration used by
 						// the main tracking/gameplay path.
+						ctrlF = VectorRotate(ctrlF, ctrlU, vp.weaponAimYawOffsetDeg);
+						ctrlR = VectorRotate(ctrlR, ctrlU, vp.weaponAimYawOffsetDeg);
 						ctrlF = VectorRotate(ctrlF, ctrlR, vp.weaponAimPitchOffsetDeg);
 						ctrlU = VectorRotate(ctrlU, ctrlR, vp.weaponAimPitchOffsetDeg);
+						ctrlR = VectorRotate(ctrlR, ctrlF, vp.weaponAimRollOffsetDeg);
+						ctrlU = VectorRotate(ctrlU, ctrlF, vp.weaponAimRollOffsetDeg);
 
 						rightCtrlPosAbs = cameraAnchor - Vector(0, 0, 64) + (ctrlPosCorrected * vp.vrScale);
 						rightCtrlViewmodelPosAbs = rightCtrlPosAbs;

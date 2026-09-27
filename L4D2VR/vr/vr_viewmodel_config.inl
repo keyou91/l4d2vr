@@ -2964,6 +2964,43 @@ void VR::ParseConfigFile()
         getFloat("WeaponAimPitchOffsetDeg", m_WeaponAimPitchOffsetDeg),
         -90.0f,
         90.0f);
+    m_WeaponAimYawOffsetDeg = std::clamp(
+        getFloat("WeaponAimYawOffsetDeg", m_WeaponAimYawOffsetDeg),
+        -180.0f,
+        180.0f);
+    m_WeaponAimRollOffsetDeg = std::clamp(
+        getFloat("WeaponAimRollOffsetDeg", m_WeaponAimRollOffsetDeg),
+        -180.0f,
+        180.0f);
+    m_BulletAimPosOffset = getVector3("BulletAimOffset", m_BulletAimPosOffset);
+    m_BulletAimPosOffset.x = std::clamp(m_BulletAimPosOffset.x, -10.0f, 10.0f);
+    m_BulletAimPosOffset.y = std::clamp(m_BulletAimPosOffset.y, -10.0f, 10.0f);
+    m_BulletAimPosOffset.z = std::clamp(m_BulletAimPosOffset.z, -10.0f, 10.0f);
+    m_BulletAimRotationOffsetDeg = QAngle(
+        std::clamp(
+            getFloat("BulletAimRotationPitchDeg", m_BulletAimRotationOffsetDeg.x),
+            -180.0f,
+            180.0f),
+        std::clamp(
+            getFloat("BulletAimRotationYawDeg", m_BulletAimRotationOffsetDeg.y),
+            -180.0f,
+            180.0f),
+        std::clamp(
+            getFloat("BulletAimRotationRollDeg", m_BulletAimRotationOffsetDeg.z),
+            -180.0f,
+            180.0f));
+    m_ViewmodelPosePosOffset = getVector3("ViewmodelPoseOffset", m_ViewmodelPosePosOffset);
+    m_ViewmodelPosePosOffset.x = std::clamp(m_ViewmodelPosePosOffset.x, -10.0f, 10.0f);
+    m_ViewmodelPosePosOffset.y = std::clamp(m_ViewmodelPosePosOffset.y, -10.0f, 10.0f);
+    m_ViewmodelPosePosOffset.z = std::clamp(m_ViewmodelPosePosOffset.z, -10.0f, 10.0f);
+    const Vector viewmodelPoseAngOffset = getVector3("ViewmodelPoseRotationOffsetDeg", Vector(
+        m_ViewmodelPoseAngOffset.x,
+        m_ViewmodelPoseAngOffset.y,
+        m_ViewmodelPoseAngOffset.z));
+    m_ViewmodelPoseAngOffset = QAngle(
+        std::clamp(viewmodelPoseAngOffset.x, -180.0f, 180.0f),
+        std::clamp(viewmodelPoseAngOffset.y, -180.0f, 180.0f),
+        std::clamp(viewmodelPoseAngOffset.z, -180.0f, 180.0f));
 
     float headSmoothingValue = m_HeadSmoothing;
     if (hasHeadSmoothing)
