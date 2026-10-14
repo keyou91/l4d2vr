@@ -20,10 +20,17 @@
 #include "sdk.h"
 #include "vr.h"
 #include "hooks.h"
+#include "vr_interaction_protocol.h"
+#include "vr_recv_interface.h"
+#include "vr_edict_identity.h"
+#include "vr_client_command.h"
 #include "offsets.h"
 #include "sigscanner.h"
 #include "vr_pose_protocol.h"
 #include "sdk/ivdebugoverlay.h"
+
+static_assert(sizeof(edict_t) == sizeof(l4d2vr_edict::Layout32), "Unexpected L4D2 native edict size");
+static_assert(offsetof(CBaseEdict, m_NetworkSerialNumber) == 4u, "Unexpected L4D2 native serial offset");
 
 static std::mutex logMutex;
 static std::once_flag logResetOnce;
@@ -506,20 +513,6 @@ namespace
         virtual SourceConVar* FindVar(const char* varName) = 0;
     };
 
-    // Small, stable interface exposed by engine.dll specifically for sending a
-    // command to one client. A listen server can use it directly from d3d9.dll.
-    class SourceIServerPluginHelpersPoseRelay
-    {
-    public:
-        virtual void CreateMessage(
-            edict_t*,
-            int,
-            void*,
-            void*) = 0;
-        virtual void ClientCommand(edict_t*, const char*) = 0;
-        virtual int StartQueryCvarValue(edict_t*, const char*) = 0;
-    };
-
     class SourceCCommand
     {
     public:
@@ -651,20 +644,6 @@ namespace
         int m_ClassID = 0;
     };
 
-    class SourceBaseClientDLL
-    {
-    public:
-        virtual int Connect(void* appSystemFactory, void* pGlobals) = 0;
-        virtual int Disconnect(void) = 0;
-        virtual int Init(void* appSystemFactory, void* pGlobals) = 0;
-        virtual void PostInit() = 0;
-        virtual void Shutdown(void) = 0;
-        virtual void LevelInitPreEntity(char const* pMapName) = 0;
-        virtual void LevelInitPostEntity() = 0;
-        virtual void LevelFastReload(void) = 0;
-        virtual void LevelShutdown(void) = 0;
-        virtual void* GetAllClasses(void) = 0;
-    };
 }
 
 static_assert(sizeof(SourceConCommandBase) == 24, "Unexpected ConCommandBase size for Source IConVar bridge.");
@@ -764,6 +743,7 @@ namespace
 {
     constexpr int kFcvarServerCanExecute = (1 << 28);
     constexpr char kL4D2VRServerAckCommandName[] = "l4d2vr_server_ack";
+    constexpr char kL4D2VRInteractionAckCommandName[] = "l4d2vr_interaction_ack";
     constexpr char kL4D2VRPoseAckCommandName[] = "l4d2vr_pose_ack";
     constexpr char kL4D2VRPoseReceiveCommandName[] = "l4d2vr_pose_receive";
     constexpr char kVRConfigCommandName[] = "vrconfig";
@@ -805,7 +785,7 @@ namespace
         }
 
         if (!wasKnown)
-            Game::logMsg("[VR][ServerAck] dedicated server plugin acknowledged VR usercmd support");
+            Game::logMsg("[VR][ServerAck] server acknowledged VR usercmd support");
 
         // Combined-server protocol 3+ advertises pose wire protocol 2.
         // Version 2 of that plugin relays the older 40-byte pose packet and
@@ -831,6 +811,103 @@ namespace
 
         g_Game->HandleVRPoseServerAck(
             static_cast<int>(protocolVersion));
+    }
+    void __cdecl OnL4D2VRInteractionAckCommand(const SourceCCommand& command)
+    {
+        unsigned long version = 0;
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 2 ||
+            !ParseUnsignedCommandArgument(command, 1, 255u, version) ||
+            !l4d2vr_wire::SupportsPhysicalVersion(static_cast<unsigned>(version))) return;
+        const unsigned previous = g_Game->m_VR->m_ServerPhysicalInteractionVersion.exchange(
+            static_cast<unsigned>(version), std::memory_order_acq_rel);
+        if (previous != version)
+            Game::logMsg("[VR][InteractionAck] server supports physical interaction protocol %lu", version);
+    }
+
+    void __cdecl OnL4D2VRShellCapability(const SourceCCommand& command)
+    {
+        uint32_t version = 0u, token = 0u;
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 3 ||
+            !l4d2vr_shell::ParseNumber(command.Arg(1), 255u, version) ||
+            !l4d2vr_shell::ParseNumber(command.Arg(2), 0xffffffffu, token)) return;
+        g_Game->m_VR->OfferRemoteShellProtocol(version, token);
+    }
+    void __cdecl OnL4D2VRShellResult(const SourceCCommand& command)
+    {
+        if (!g_Game || !g_Game->m_VR || command.ArgC() != 11) return;
+        uint32_t values[10]{};
+        constexpr uint32_t limits[10] = {0xffffffffu, 0xffffffffu, (1u << 22) - 1u,
+            0x7fffffffu, 64u, 128u, 5000u, 7u, 128u, 5000u};
+        for (int arg = 1; arg <= 10; ++arg)
+            if (!l4d2vr_shell::ParseNumber(command.Arg(arg), limits[arg - 1], values[arg - 1])) return;
+        l4d2vr_shell::Reply reply{};
+        reply.request = {values[0], values[1], values[2], values[3], static_cast<int>(values[4]),
+            static_cast<int>(values[5]), static_cast<int>(values[6])};
+        reply.status = static_cast<l4d2vr_shell::Status>(values[7]);
+        reply.clip = static_cast<int>(values[8]); reply.reserve = static_cast<int>(values[9]);
+        g_Game->m_VR->ReceiveRemoteShellReply(reply);
+    }
+
+    void __cdecl OnL4D2VRMagazineCapability(const SourceCCommand& command)
+    {
+        uint32_t version = 0, token = 0;
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 3 ||
+            !l4d2vr_shell::ParseNumber(command.Arg(1), 255u, version) ||
+            !l4d2vr_shell::ParseNumber(command.Arg(2), 0xffffffffu, token)) return;
+        g_Game->m_VR->OfferRemoteMagazineProtocol(version, token);
+    }
+    void __cdecl OnL4D2VRPistolAmmoCapability(const SourceCCommand& command)
+    {
+        uint32_t version = 0u, token = 0u;
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 3 ||
+            !l4d2vr_shell::ParseNumber(command.Arg(1), 255u, version) ||
+            !l4d2vr_shell::ParseNumber(command.Arg(2), 0xffffffffu, token)) return;
+        g_Game->m_VR->OfferPistolAmmoProtocol(version, token);
+    }
+    void __cdecl OnL4D2VRPistolAmmoState(const SourceCCommand& command)
+    {
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 15) return;
+        uint32_t values[14]{};
+        constexpr uint32_t limits[14] = {0xffffffffu, 0xffffffffu, (1u << 22) - 1u,
+            0x7fffffffu, 15u, 30u, 15u, 15u, 1u, 1u, 3u, 3u, 3u, 0xffffffffu};
+        for (int arg = 1; arg <= 14; ++arg)
+            if (!l4d2vr_shell::ParseNumber(command.Arg(arg), limits[arg - 1], values[arg - 1])) return;
+        l4d2vr_pistol_sync::State state{values[0], values[1], values[2], values[3],
+            static_cast<int>(values[4]), static_cast<int>(values[5]), static_cast<int>(values[6]),
+            static_cast<int>(values[7]), values[8] != 0u, values[9] != 0u, values[10], values[11], values[12], values[13]};
+        g_Game->m_VR->ReceivePistolAmmoState(state);
+    }
+    void __cdecl OnL4D2VRPistolMagazineResult(const SourceCCommand& command)
+    {
+        if (!g_Game || !g_Game->m_VR || !Hooks::s_ServerUnderstandsVR || command.ArgC() != 18) return;
+        uint32_t values[17]{};
+        constexpr uint32_t limits[17] = {0xffffffffu, 0xffffffffu, (1u << 22) - 1u, 0x7fffffffu,
+            30u, 5000u, 2u, 3u, 7u, 30u, 5000u, 15u, 15u, 15u, 3u, 3u, 3u};
+        for (int arg = 1; arg <= 17; ++arg)
+            if (!l4d2vr_shell::ParseNumber(command.Arg(arg), limits[arg - 1], values[arg - 1])) return;
+        l4d2vr_pistol_reload::Reply reply{};
+        reply.request = {values[0], values[1], values[2], values[3], static_cast<int>(values[4]), static_cast<int>(values[5]),
+            static_cast<l4d2vr_pistol::Hand>(values[6]), static_cast<l4d2vr_pistol::MagazineAction>(values[7])};
+        reply.status = static_cast<l4d2vr_shell::Status>(values[8]);
+        reply.result = {static_cast<int>(values[9]), static_cast<int>(values[10]), static_cast<int>(values[11]),
+            static_cast<int>(values[12]), static_cast<int>(values[13]), {values[14], values[15], values[16]}};
+        g_Game->m_VR->ReceivePistolMagazineReply(reply);
+    }
+    void __cdecl OnL4D2VRMagazineResult(const SourceCCommand& command)
+    {
+        if (!g_Game || !g_Game->m_VR || command.ArgC() != 12) return;
+        uint32_t values[11]{};
+        constexpr uint32_t limits[11] = {0xffffffffu, 0xffffffffu, (1u << 22) - 1u,
+            0x7fffffffu, 64u, l4d2vr_remote_mag::kMaxClip, 5000u, 2u, 7u,
+            l4d2vr_remote_mag::kMaxClip, 5000u};
+        for (int arg = 1; arg <= 11; ++arg)
+            if (!l4d2vr_shell::ParseNumber(command.Arg(arg), limits[arg - 1], values[arg - 1])) return;
+        l4d2vr_remote_mag::Reply reply{};
+        reply.request = {values[0], values[1], values[2], values[3], static_cast<int>(values[4]),
+            static_cast<int>(values[5]), static_cast<int>(values[6]), static_cast<l4d2vr_remote_mag::Action>(values[7])};
+        reply.status = static_cast<l4d2vr_remote_mag::Status>(values[8]);
+        reply.clip = static_cast<int>(values[9]); reply.reserve = static_cast<int>(values[10]);
+        g_Game->m_VR->ReceiveRemoteMagazineReply(reply);
     }
 
     void __cdecl OnL4D2VRPoseReceiveCommand(const SourceCCommand& command)
@@ -879,6 +956,30 @@ namespace
         &OnL4D2VRPoseAckCommand,
         "Accepts L4D2VR world-pose relay acknowledgement.",
         kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRInteractionAckCommand(
+        kL4D2VRInteractionAckCommandName, &OnL4D2VRInteractionAckCommand,
+        "Accepts the physical-interaction capability of a matching server build.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRShellCapabilityCommand(
+        "l4d2vr_shell_capability", &OnL4D2VRShellCapability,
+        "Negotiate authoritative physical shell insertion.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRShellResultCommand(
+        "l4d2vr_shell_result", &OnL4D2VRShellResult,
+        "Receive a physical shell transaction result.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRMagazineCapabilityCommand(
+        "l4d2vr_mag_capability", &OnL4D2VRMagazineCapability,
+        "Negotiate authoritative physical magazine handling.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRMagazineResultCommand(
+        "l4d2vr_mag_result", &OnL4D2VRMagazineResult,
+        "Receive a physical magazine transaction result.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRPistolAmmoCapabilityCommand(
+        "l4d2vr_pistol_ammo_cap", &OnL4D2VRPistolAmmoCapability,
+        "Negotiate per-hand pistol ammunition snapshots.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRPistolAmmoStateCommand(
+        "l4d2vr_pistol_ammo_state", &OnL4D2VRPistolAmmoState,
+        "Receive authoritative per-hand pistol ammunition.", kFcvarServerCanExecute);
+    SourceRegisteredConCommand g_L4D2VRPistolMagazineResultCommand(
+        "l4d2vr_pistol_mag_result", &OnL4D2VRPistolMagazineResult,
+        "Receive an independent pistol magazine transaction result.", kFcvarServerCanExecute);
     SourceRegisteredConCommand g_L4D2VRPoseReceiveCommand(
         kL4D2VRPoseReceiveCommandName,
         &OnL4D2VRPoseReceiveCommand,
@@ -907,6 +1008,22 @@ namespace
         {
             if (!cvar->FindCommandBase(kL4D2VRServerAckCommandName))
                 cvar->RegisterConCommand(&g_L4D2VRServerAckCommand);
+            if (!cvar->FindCommandBase(kL4D2VRInteractionAckCommandName))
+                cvar->RegisterConCommand(&g_L4D2VRInteractionAckCommand);
+            if (!cvar->FindCommandBase("l4d2vr_shell_capability"))
+                cvar->RegisterConCommand(&g_L4D2VRShellCapabilityCommand);
+            if (!cvar->FindCommandBase("l4d2vr_shell_result"))
+                cvar->RegisterConCommand(&g_L4D2VRShellResultCommand);
+            if (!cvar->FindCommandBase("l4d2vr_mag_capability"))
+                cvar->RegisterConCommand(&g_L4D2VRMagazineCapabilityCommand);
+            if (!cvar->FindCommandBase("l4d2vr_mag_result"))
+                cvar->RegisterConCommand(&g_L4D2VRMagazineResultCommand);
+            if (!cvar->FindCommandBase("l4d2vr_pistol_ammo_cap"))
+                cvar->RegisterConCommand(&g_L4D2VRPistolAmmoCapabilityCommand);
+            if (!cvar->FindCommandBase("l4d2vr_pistol_ammo_state"))
+                cvar->RegisterConCommand(&g_L4D2VRPistolAmmoStateCommand);
+            if (!cvar->FindCommandBase("l4d2vr_pistol_mag_result"))
+                cvar->RegisterConCommand(&g_L4D2VRPistolMagazineResultCommand);
             if (!cvar->FindCommandBase(kL4D2VRPoseAckCommandName))
                 cvar->RegisterConCommand(&g_L4D2VRPoseAckCommand);
             if (!cvar->FindCommandBase(kL4D2VRPoseReceiveCommandName))
@@ -1009,13 +1126,13 @@ void Game::logMsg(const char* fmt, ...)
 {
     if (fmt && std::strncmp(fmt, "[VR][DesktopHUD]", 16) == 0)
         return;
-    if (fmt &&
-        (std::strncmp(fmt, "[VR][UseAim]", 12) == 0 ||
-            std::strncmp(fmt, "[VR][MagazineInteraction]", 25) == 0 ||
-            std::strncmp(fmt, "[VR][MagazineInteractionFresh]", 30) == 0))
-    {
+    if (fmt && std::strncmp(fmt, "[VR][UseAim]", 12) == 0)
         return;
-    }
+    if (fmt &&
+        (std::strncmp(fmt, "[VR][MagazineInteraction]", 25) == 0 ||
+            std::strncmp(fmt, "[VR][MagazineInteractionFresh]", 30) == 0) &&
+        (!Hooks::m_VR || !Hooks::m_VR->m_VrHandsDebugLog))
+        return;
 
     std::lock_guard<std::mutex> lock(logMutex);
     std::call_once(logResetOnce, []()
@@ -1124,8 +1241,30 @@ bool Game::IsValidPlayerIndex(int index) const
     return index >= 0 && index < static_cast<int>(m_PlayersVRInfo.size());
 }
 
+void Game::ResetPistolAmmo()
+{
+    std::lock_guard<std::mutex> lock(m_PistolAmmoMutex);
+    for (auto& ammo : m_PistolAmmo) ammo.Reset();
+}
+
+void Game::ResetServerPistolCommands()
+{
+    std::lock_guard<std::mutex> lock(m_ServerPistolCommandsMutex);
+    for (auto& commands : m_ServerPistolCommands) commands.Reset();
+    for (auto& reloads : m_ServerReloadCommands) reloads.Reset();
+}
+
 void Game::ResetAllPlayerVRInfo()
 {
+    ResetPistolAmmoServerClients();
+    if (m_VR) m_VR->DisconnectPistolAmmoProtocol();
+    ResetPistolAmmo();
+    ResetServerPistolCommands();
+    ResetRemoteShellServerClients();
+    if (m_VR) m_VR->DisconnectRemoteShellProtocol();
+    ResetRemoteMagazineServerClients();
+    if (m_VR) m_VR->DisconnectRemoteMagazineProtocol();
+    if (m_VR) m_VR->m_ServerPhysicalInteractionVersion.store(0u, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(m_VRPoseMutex);
         m_PlayersVRInfo.fill(Player{});
@@ -1143,6 +1282,15 @@ void Game::ResetAllPlayerVRInfo()
 
 void Game::ResetVRPoseServerSession()
 {
+    ResetPistolAmmoServerClients();
+    if (m_VR) m_VR->DisconnectPistolAmmoProtocol();
+    ResetPistolAmmo();
+    ResetServerPistolCommands();
+    ResetRemoteShellServerClients();
+    if (m_VR) m_VR->DisconnectRemoteShellProtocol();
+    ResetRemoteMagazineServerClients();
+    if (m_VR) m_VR->DisconnectRemoteMagazineProtocol();
+    if (m_VR) m_VR->m_ServerPhysicalInteractionVersion.store(0u, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(m_VRPoseMutex);
         for (Player& player : m_PlayersVRInfo)
@@ -1152,7 +1300,8 @@ void Game::ResetVRPoseServerSession()
             player.worldPoseBlendWeight = 0.0f;
             player.worldPoseBlendTickMs = 0u;
             player.worldPoseUserID = -1;
-            player.pPlayer = nullptr;
+            player.worldPoseEntity = nullptr;
+            ++player.worldPoseRevision;
         }
         m_VRPoseServerCapable.store(false, std::memory_order_release);
         m_VRPoseHelloSent.store(false, std::memory_order_release);
@@ -1178,7 +1327,10 @@ namespace
     constexpr int kSourceEdictFreeFlag = (1 << 1);
     constexpr char kVRPoseRelayHelloCommand[] = "l4d2vr_pose_hello";
     constexpr char kVRPoseRelayUploadCommand[] = "l4d2vr_pose_upload";
-    constexpr char kVRPoseRelayAckCommand[] = "l4d2vr_pose_ack 2\n";
+    // The built-in listen server also decodes VR usercmds. Advertise both
+    // capabilities so remote clients can leave the standard-input fallback.
+    // A pose-only dedicated relay must continue to send l4d2vr_pose_ack 2.
+    constexpr char kVRPoseRelayAckCommand[] = "l4d2vr_server_ack 3\n";
 
     struct VRPoseRelayCommandView
     {
@@ -1229,37 +1381,19 @@ namespace
 #endif
     }
 
-    bool VRPoseRelayReadEdictIdentity(
-        edict_t* entity,
-        int& outPlayerIndex,
-        std::int16_t& outSerial)
+    bool VRPoseRelayReadEdictIdentity(edict_t* entity, int& outPlayerIndex, unsigned& outSerial)
     {
-        outPlayerIndex = -1;
-        outSerial = 0;
-        if (!entity)
-            return false;
-#ifdef _MSC_VER
-        __try
-        {
-#endif
-            if ((entity->m_fStateFlags & kSourceEdictFreeFlag) != 0 ||
-                !entity->m_pUnk)
-            {
-                return false;
-            }
-            outPlayerIndex = static_cast<int>(entity->m_EdictIndex);
-            outSerial = entity->m_NetworkSerialNumber;
-            return outPlayerIndex >= 1 &&
-                outPlayerIndex <= kVRPoseRelayMaxPlayerIndex;
-#ifdef _MSC_VER
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            outPlayerIndex = -1;
-            outSerial = 0;
-            return false;
-        }
-#endif
+        if (g_Game && g_Game->ReadServerEdictIdentity(entity, outPlayerIndex, outSerial) &&
+            outPlayerIndex >= 1 && outPlayerIndex <= kVRPoseRelayMaxPlayerIndex) return true;
+        outPlayerIndex = -1; outSerial = 0u;
+        return false;
+    }
+
+    void* VRPoseCommandEngine()
+    {
+        // Keep interface lookup's C++ temporaries outside the SEH function.
+        static void* engineServer = TryInterfaceNoError("engine.dll", "VEngineServer022");
+        return engineServer;
     }
 
     bool VRPoseRelaySendClientCommand(
@@ -1273,9 +1407,25 @@ namespace
         __try
         {
 #endif
-            static_cast<SourceIServerPluginHelpersPoseRelay*>(
-                serverPluginHelpers)->ClientCommand(entity, command);
-            return true;
+            // IServerPluginHelpers::ClientCommand is a fake client command on
+            // the server. Replies need the engine's server-to-client transport.
+            void* engineServer = VRPoseCommandEngine();
+            if (!engineServer) return false;
+            const auto module = reinterpret_cast<std::uintptr_t>(GetModuleHandleA("engine.dll"));
+            if (!module) return false;
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000)
+                return false;
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(module + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                return false;
+            const auto target = (*reinterpret_cast<const std::uintptr_t* const*>(engineServer))[
+                l4d2vr_client_command::EngineSlot];
+            if (!l4d2vr_recv::Contains(module, nt->OptionalHeader.SizeOfImage, target, 30u) ||
+                !l4d2vr_client_command::SupportedCode(reinterpret_cast<const unsigned char*>(target), 30u))
+                return false;
+            using NativeSend = void (__cdecl*)(void*, edict_t*, const char*, ...);
+            return l4d2vr_client_command::Send(reinterpret_cast<NativeSend>(target), engineServer, entity, command);
 #ifdef _MSC_VER
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1491,12 +1641,15 @@ namespace
     {
         outPlayer = nullptr;
         outUserID = -1;
-        if (!game || playerIndex <= 0)
+        if (!game || playerIndex <= 0 || !game->IsValidPlayerIndex(playerIndex) ||
+            !game->m_ClientEntityList || !game->m_EngineClient)
             return;
 #ifdef _MSC_VER
         __try
         {
 #endif
+            if (!game->m_EngineClient->IsInGame())
+                return;
             if (game->m_ClientEntityList)
             {
                 outPlayer = reinterpret_cast<C_BasePlayer*>(
@@ -1594,6 +1747,10 @@ namespace
     }
 }
 
+#include "game_remote_shells.inl"
+#include "game_remote_magazines.inl"
+#include "game_pistol_ammo.inl"
+
 void Game::ObserveBuiltinVRPoseRelayClient(
     int playerIndex,
     edict_t* entity)
@@ -1608,7 +1765,7 @@ void Game::ObserveBuiltinVRPoseRelayClient(
     }
 
     int edictPlayerIndex = -1;
-    std::int16_t edictSerial = 0;
+    unsigned edictSerial = 0u;
     if (!VRPoseRelayReadEdictIdentity(
             entity,
             edictPlayerIndex,
@@ -1645,11 +1802,17 @@ void Game::ObserveBuiltinVRPoseRelayClient(
 
     client.lastAckTickMs = nowMs;
     ++client.ackAttempts;
-    if (VRPoseRelaySendClientCommand(
+    const bool poseAckSent = VRPoseRelaySendClientCommand(
             m_ServerPluginHelpers,
             entity,
-            kVRPoseRelayAckCommand) &&
-        client.ackAttempts == 1)
+            kVRPoseRelayAckCommand);
+    if (poseAckSent && Hooks::hkPhysicalGunReload.isEnabled && Hooks::hkPhysicalShotgunReload.isEnabled &&
+        m_Offsets && m_Offsets->ManualInventoryWeaponDrop.valid && m_Offsets->PistolRemoveDualWeapons.valid)
+        VRPoseRelaySendClientCommand(m_ServerPluginHelpers, entity, "l4d2vr_interaction_ack 1\n");
+    if (poseAckSent) OfferRemoteShellProtocol(entity);
+    if (poseAckSent) OfferRemoteMagazineProtocol(entity);
+    if (poseAckSent) OfferPistolAmmoProtocol(entity);
+    if (poseAckSent && client.ackAttempts == 1)
     {
         Game::logMsg(
             "[VR][WorldPose] built-in listen relay offered protocol %u to player %d",
@@ -1677,7 +1840,7 @@ bool Game::HandleBuiltinVRPoseRelayCommand(
         return false;
 
     int playerIndex = -1;
-    std::int16_t edictSerial = 0;
+    unsigned edictSerial = 0u;
     if (!VRPoseRelayReadEdictIdentity(
             entity,
             playerIndex,
@@ -1789,7 +1952,7 @@ bool Game::HandleBuiltinVRPoseRelayCommand(
             continue;
 
         int currentIndex = -1;
-        std::int16_t currentSerial = 0;
+        unsigned currentSerial = 0u;
         if (!VRPoseRelayReadEdictIdentity(
                 recipient.entity,
                 currentIndex,
@@ -2080,6 +2243,20 @@ bool Game::ReceiveVRPosePayload(
         return false;
     }
 
+    // Invalid wire components have no usable sample history, even if their
+    // packed bytes happen to contain finite positions.
+    if ((frame.validMask & l4d2vr_pose::kValidHmd) == 0u)
+        frame.hmd = VRTrackedPoseLocal{};
+    if ((frame.validMask & l4d2vr_pose::kValidLeftHand) == 0u)
+        frame.leftHand = VRTrackedPoseLocal{};
+    if ((frame.validMask & l4d2vr_pose::kValidRightHand) == 0u)
+        frame.rightHand = VRTrackedPoseLocal{};
+
+    std::uint64_t observedRevision = 0u;
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        observedRevision = m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)].worldPoseRevision;
+    }
     C_BasePlayer* observedPlayer = nullptr;
     int observedUserID = -1;
     VRPoseReadPlayerIdentity(
@@ -2087,6 +2264,9 @@ bool Game::ReceiveVRPosePayload(
         playerIndex,
         observedPlayer,
         observedUserID);
+    // Do not bind a pre-entity packet to a later occupant of the same slot.
+    if (!observedPlayer || observedUserID < 0)
+        return false;
     if ((frame.featureMask & l4d2vr_pose::kFeatureBodyYaw) != 0u)
     {
         frame.bodyYaw = VRPoseUnpackAngle(wire.bodyYaw);
@@ -2116,13 +2296,11 @@ bool Game::ReceiveVRPosePayload(
     {
         std::lock_guard<std::mutex> lock(m_VRPoseMutex);
         Player& player = m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)];
+        if (player.worldPoseRevision != observedRevision)
+            return false;
         const bool playerIdentityChanged =
-            (observedPlayer &&
-             player.pPlayer &&
-             observedPlayer != player.pPlayer) ||
-            (observedUserID >= 0 &&
-             player.worldPoseUserID >= 0 &&
-             observedUserID != player.worldPoseUserID);
+            observedPlayer != player.worldPoseEntity ||
+            observedUserID != player.worldPoseUserID;
         if (playerIdentityChanged)
         {
             player.previousWorldPose = VRPoseFrame{};
@@ -2130,10 +2308,8 @@ bool Game::ReceiveVRPosePayload(
             player.worldPoseBlendWeight = 0.0f;
             player.worldPoseBlendTickMs = 0u;
         }
-        if (observedPlayer)
-            player.pPlayer = observedPlayer;
-        if (observedUserID >= 0)
-            player.worldPoseUserID = observedUserID;
+        player.worldPoseEntity = observedPlayer;
+        player.worldPoseUserID = observedUserID;
 
         if (player.latestWorldPose.valid &&
             !l4d2vr_pose::IsSequenceNewer(
@@ -2162,6 +2338,7 @@ bool Game::ReceiveVRPosePayload(
             ? player.latestWorldPose
             : frame;
         player.latestWorldPose = frame;
+        ++player.worldPoseRevision;
     }
 
     if (fromServer)
@@ -2200,6 +2377,53 @@ bool Game::ReceiveVRPosePayload(
     return true;
 }
 
+void Game::RefreshVRPosePlayerIdentitiesMainThread()
+{
+    struct PoseOwner
+    {
+        C_BasePlayer* entity = nullptr;
+        int userID = -1;
+        std::uint64_t revision = 0u;
+    };
+    std::array<PoseOwner, kMaxPlayers> owners{};
+    {
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        for (std::size_t index = 1u; index < owners.size(); ++index)
+        {
+            const Player& player = m_PlayersVRInfo[index];
+            if (player.latestWorldPose.valid)
+                owners[index] = {player.worldPoseEntity, player.worldPoseUserID, player.worldPoseRevision};
+        }
+    }
+    for (std::size_t index = 1u; index < owners.size(); ++index)
+    {
+        const PoseOwner& owner = owners[index];
+        if (!owner.entity)
+            continue;
+        C_BasePlayer* currentEntity = nullptr;
+        int currentUserID = -1;
+        // Native engine/entity APIs run only in this client callback, outside
+        // the pose mutex. Queued draws consume the resulting history snapshot.
+        VRPoseReadPlayerIdentity(this, static_cast<int>(index), currentEntity, currentUserID);
+        if (currentEntity == owner.entity && currentUserID == owner.userID)
+            continue;
+        std::lock_guard<std::mutex> lock(m_VRPoseMutex);
+        Player& player = m_PlayersVRInfo[index];
+        if (player.worldPoseRevision != owner.revision || player.worldPoseEntity != owner.entity ||
+            player.worldPoseUserID != owner.userID)
+        {
+            continue;
+        }
+        player.previousWorldPose = VRPoseFrame{};
+        player.latestWorldPose = VRPoseFrame{};
+        player.worldPoseBlendWeight = 0.0f;
+        player.worldPoseBlendTickMs = 0u;
+        player.worldPoseEntity = nullptr;
+        player.worldPoseUserID = -1;
+        ++player.worldPoseRevision;
+    }
+}
+
 bool Game::GetInterpolatedVRPose(
     int playerIndex,
     float interpolationDelayMs,
@@ -2218,6 +2442,8 @@ bool Game::GetInterpolatedVRPose(
         std::lock_guard<std::mutex> lock(m_VRPoseMutex);
         const Player& player =
             m_PlayersVRInfo[static_cast<std::size_t>(playerIndex)];
+        if (!player.worldPoseEntity || player.worldPoseUserID < 0)
+            return false;
         previous = player.previousWorldPose;
         latest = player.latestWorldPose;
     }
@@ -2256,47 +2482,21 @@ bool Game::GetInterpolatedVRPose(
         fraction = std::clamp(numerator / denominator, 0.0f, 1.0f);
     }
 
-    VRTrackedPoseLocal previousHmd =
-        previous.valid ? previous.hmd : latest.hmd;
-    VRTrackedPoseLocal previousLeftHand =
-        previous.valid ? previous.leftHand : latest.leftHand;
-    VRTrackedPoseLocal previousRightHand =
-        previous.valid ? previous.rightHand : latest.rightHand;
-    if (previous.valid &&
-        previous.bodyYawValid &&
-        latest.bodyYawValid)
+    auto interpolateTracker = [&](std::uint8_t bit, const VRTrackedPoseLocal& oldPoint,
+        const VRTrackedPoseLocal& newPoint)
     {
-        // Body-local packet coordinates are meaningful only in the yaw frame
-        // in which they were sampled. Rebase the older sample into the latest
-        // yaw frame before interpolation, otherwise a turn makes stationary
-        // controllers orbit the player origin and visibly breaks arm IK.
-        previousHmd = VRPoseRebaseTrackedPointYaw(
-            previous.hmd,
-            previous.bodyYaw,
-            latest.bodyYaw);
-        previousLeftHand = VRPoseRebaseTrackedPointYaw(
-            previous.leftHand,
-            previous.bodyYaw,
-            latest.bodyYaw);
-        previousRightHand = VRPoseRebaseTrackedPointYaw(
-            previous.rightHand,
-            previous.bodyYaw,
-            latest.bodyYaw);
-    }
-
+        if (!previous.valid || (previous.validMask & latest.validMask & bit) == 0u)
+            return newPoint;
+        // Rebase only an actual older sample of this tracker. A newly recovered
+        // tracker already belongs to the latest yaw frame.
+        const VRTrackedPoseLocal rebased = previous.bodyYawValid && latest.bodyYawValid
+            ? VRPoseRebaseTrackedPointYaw(oldPoint, previous.bodyYaw, latest.bodyYaw) : oldPoint;
+        return VRPoseInterpolateTrackedPoint(rebased, newPoint, fraction);
+    };
     outPose = latest;
-    outPose.hmd = VRPoseInterpolateTrackedPoint(
-        previousHmd,
-        latest.hmd,
-        fraction);
-    outPose.leftHand = VRPoseInterpolateTrackedPoint(
-        previousLeftHand,
-        latest.leftHand,
-        fraction);
-    outPose.rightHand = VRPoseInterpolateTrackedPoint(
-        previousRightHand,
-        latest.rightHand,
-        fraction);
+    outPose.hmd = interpolateTracker(l4d2vr_pose::kValidHmd, previous.hmd, latest.hmd);
+    outPose.leftHand = interpolateTracker(l4d2vr_pose::kValidLeftHand, previous.leftHand, latest.leftHand);
+    outPose.rightHand = interpolateTracker(l4d2vr_pose::kValidRightHand, previous.rightHand, latest.rightHand);
 
     const bool leftFingerModeStable =
         previous.valid &&
@@ -2307,6 +2507,7 @@ bool Game::GetInterpolatedVRPose(
     {
         const bool canInterpolate =
             leftFingerModeStable &&
+            (previous.validMask & latest.validMask & l4d2vr_pose::kValidLeftHand) != 0u &&
             (previous.featureMask &
              l4d2vr_pose::kFeatureLeftFingerCurls) != 0u;
         outPose.leftFingerCurls = canInterpolate
@@ -2326,6 +2527,7 @@ bool Game::GetInterpolatedVRPose(
     {
         const bool canInterpolate =
             rightFingerModeStable &&
+            (previous.validMask & latest.validMask & l4d2vr_pose::kValidRightHand) != 0u &&
             (previous.featureMask &
              l4d2vr_pose::kFeatureRightFingerCurls) != 0u;
         outPose.rightFingerCurls = canInterpolate
@@ -2446,11 +2648,33 @@ const char* Game::GetNetworkClassName(uintptr_t* entity) const
     }
 }
 
+bool Game::ReadServerEdictIdentity(const edict_t* entity, int& index, unsigned& serial,
+    const void* expectedEntity) const
+{
+    index = -1; serial = 0u;
+    if (!entity || !m_Offsets || !m_Offsets->CBaseEntity_entindex.valid) return false;
+    __try
+    {
+        if ((entity->m_fStateFlags & 2u) != 0u || (entity->m_fStateFlags & 4u) == 0u || !entity->m_pUnk)
+            return false;
+        const void* object = entity->m_pUnk->GetBaseEntity();
+        if (!object || (expectedEntity && expectedEntity != object) ||
+            *reinterpret_cast<edict_t* const*>(static_cast<const unsigned char*>(object) + 0x28) != entity)
+            return false;
+        using NativeIndex = int (__thiscall*)(const void*);
+        return l4d2vr_edict::Identity(reinterpret_cast<NativeIndex>(m_Offsets->CBaseEntity_entindex.address)(object),
+            entity->m_NetworkSerialNumber, static_cast<unsigned>(entity->m_fStateFlags), index, serial);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { index = -1; serial = 0u; return false; }
+}
+
 int Game::FindRecvPropOffset(const char* networkName, const char* propName) const
 {
     if (!m_BaseClientDll || !networkName || !*networkName || !propName || !*propName)
         return -1;
 
+    static std::mutex cacheMutex;
+    std::lock_guard<std::mutex> cacheLock(cacheMutex);
     static std::unordered_map<std::string, int> cache;
     const std::string key = std::string(networkName) + "::" + propName;
     auto cached = cache.find(key);
@@ -2462,6 +2686,36 @@ int Game::FindRecvPropOffset(const char* networkName, const char* propName) cons
         cache[key] = offset;
 
     return offset;
+}
+
+bool Game::IsDualPistolWeapon(C_WeaponCSBase* weapon, int* clip) const
+{
+    if (!weapon) return false;
+    // Resolve from the installed game's receive table, not a guessed offset.
+    // Current clients publish m_hasDualWeapons. m_isDualWielding is also
+    // present as animation/datamap metadata, but need not be in the receive table.
+    int offset = FindRecvPropOffset("DT_Pistol", "m_hasDualWeapons");
+    if (offset <= 0)
+        offset = FindRecvPropOffset("DT_Pistol", "m_isDualWielding");
+    if (offset <= 0 || offset > 0x10000) return false;
+#ifdef _MSC_VER
+    __try
+#endif
+    {
+        if (weapon->GetWeaponID() != C_WeaponCSBase::WeaponID::PISTOL) return false;
+        const unsigned char flag = *reinterpret_cast<const unsigned char*>(reinterpret_cast<uintptr_t>(weapon) + offset);
+        if (flag != 1u) return false;
+        if (clip)
+        {
+            const int rounds = *reinterpret_cast<const int*>(reinterpret_cast<uintptr_t>(weapon) + VR::kClip1Offset);
+            if (rounds < 0 || rounds > 512) return false;
+            *clip = rounds;
+        }
+        return true;
+    }
+#ifdef _MSC_VER
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+#endif
 }
 
 // === Commands ===
@@ -2639,12 +2893,26 @@ static int FindRecvPropOffsetSafe(void* baseClientDll, const char* networkName, 
 {
     __try
     {
-        auto* clientDll = reinterpret_cast<SourceBaseClientDLL*>(baseClientDll);
-        if (!clientDll || !networkName || !*networkName || !propName || !*propName)
+        if (!baseClientDll || !networkName || !*networkName || !propName || !*propName)
             return -1;
 
-        auto* clientClass = reinterpret_cast<SourceClientClass*>(clientDll->GetAllClasses());
-        while (clientClass)
+        const auto module = reinterpret_cast<std::uintptr_t>(GetModuleHandleA("client.dll"));
+        if (!module) return -1;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000)
+            return -1;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(module + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+            return -1;
+        const std::size_t moduleSize = nt->OptionalHeader.SizeOfImage;
+        const auto* vtable = *reinterpret_cast<const std::uintptr_t* const*>(baseClientDll);
+        const auto getter = vtable[l4d2vr_recv::ClassListSlot];
+        if (!l4d2vr_recv::Contains(module, moduleSize, getter, 6u)) return -1;
+        std::uintptr_t classListAddress = 0u;
+        if (!l4d2vr_recv::DecodeClassListAddress(reinterpret_cast<const unsigned char*>(getter),
+                6u, module, moduleSize, classListAddress)) return -1;
+        auto* clientClass = *reinterpret_cast<SourceClientClass* const*>(classListAddress);
+        for (unsigned classes = 0u; clientClass && classes < 4096u; ++classes)
         {
             const bool networkNameMatches =
                 clientClass->m_pNetworkName &&

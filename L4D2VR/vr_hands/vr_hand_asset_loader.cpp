@@ -17,6 +17,54 @@
 
 namespace
 {
+    cgltf_result ReadUtf8CgltfFile(const cgltf_memory_options* memory,
+        const cgltf_file_options*, const char* path, cgltf_size* size, void** data)
+    {
+        if (!path || !data)
+            return cgltf_result_invalid_options;
+        *data = nullptr;
+        try
+        {
+            std::ifstream stream(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
+            if (!stream.is_open())
+                return cgltf_result_file_not_found;
+            const std::streamoff available = stream.tellg();
+            if (available < 0)
+                return cgltf_result_io_error;
+            const auto requested = size && *size ? static_cast<unsigned long long>(*size) :
+                static_cast<unsigned long long>(available);
+            if (requested > static_cast<unsigned long long>(available) ||
+                requested > static_cast<unsigned long long>((std::numeric_limits<cgltf_size>::max)()) ||
+                requested > static_cast<unsigned long long>((std::numeric_limits<std::streamsize>::max)()))
+                return cgltf_result_io_error;
+            const cgltf_size length = static_cast<cgltf_size>(requested);
+            const auto allocate = memory->alloc_func ? memory->alloc_func : cgltf_default_alloc;
+            const auto release = memory->free_func ? memory->free_func : cgltf_default_free;
+            void* bytes = allocate(memory->user_data, length);
+            if (!bytes)
+                return cgltf_result_out_of_memory;
+            stream.seekg(0, std::ios::beg);
+            stream.read(static_cast<char*>(bytes), static_cast<std::streamsize>(length));
+            if (!stream.good())
+            {
+                release(memory->user_data, bytes);
+                return cgltf_result_io_error;
+            }
+            if (size)
+                *size = length;
+            *data = bytes;
+            return cgltf_result_success;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return cgltf_result_out_of_memory;
+        }
+        catch (const std::filesystem::filesystem_error&)
+        {
+            return cgltf_result_io_error;
+        }
+    }
+
     const cgltf_accessor* FindAttribute(const cgltf_primitive& primitive, cgltf_attribute_type type, int index = 0)
     {
         for (cgltf_size i = 0; i < primitive.attributes_count; ++i)
@@ -70,7 +118,7 @@ namespace
         }
 
         if (image->uri && *image->uri && std::strncmp(image->uri, "data:", 5) != 0)
-            ReadBinaryFile(glbPath.parent_path() / image->uri, out);
+            ReadBinaryFile(glbPath.parent_path() / std::filesystem::u8path(image->uri), out);
     }
 
     void CopyMaterialTexture(const cgltf_material* material, const std::filesystem::path& glbPath, std::vector<std::uint8_t>& out)
@@ -393,6 +441,8 @@ bool VrHandAssetLoader::LoadGlb(const std::string& path, VrHandMeshAsset& outAss
     outError.clear();
 
     cgltf_options options{};
+    options.file.read = ReadUtf8CgltfFile;
+    options.file.release = cgltf_default_file_release;
     cgltf_data* data = nullptr;
     const cgltf_result parseResult = cgltf_parse_file(&options, path.c_str(), &data);
     if (parseResult != cgltf_result_success || !data)
@@ -430,7 +480,7 @@ bool VrHandAssetLoader::LoadGlb(const std::string& path, VrHandMeshAsset& outAss
             const cgltf_primitive& primitive = mesh.primitives[primitiveIndex];
             if (primitive.type != cgltf_primitive_type_triangles)
                 continue;
-            loaded = LoadPrimitive(std::filesystem::path(path), primitive, *skin, outAsset, outError);
+            loaded = LoadPrimitive(std::filesystem::u8path(path), primitive, *skin, outAsset, outError);
         }
     }
 
@@ -454,6 +504,8 @@ bool VrHandAssetLoader::LoadStaticGlb(const std::string& path, VrHandMeshAsset& 
     outError.clear();
 
     cgltf_options options{};
+    options.file.read = ReadUtf8CgltfFile;
+    options.file.release = cgltf_default_file_release;
     cgltf_data* data = nullptr;
     const cgltf_result parseResult = cgltf_parse_file(&options, path.c_str(), &data);
     if (parseResult != cgltf_result_success || !data)
@@ -495,7 +547,7 @@ bool VrHandAssetLoader::LoadStaticGlb(const std::string& path, VrHandMeshAsset& 
             if (primitive.type != cgltf_primitive_type_triangles)
                 continue;
             loaded = LoadStaticPrimitive(
-                std::filesystem::path(path),
+                std::filesystem::u8path(path),
                 primitive,
                 nodeWorldTransform,
                 outAsset,

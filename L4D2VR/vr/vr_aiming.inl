@@ -1324,6 +1324,14 @@ void VR::UpdateNonVRAimSolution(C_BasePlayer* localPlayer, bool forceFresh, bool
     if (!useAutoGripAimPose && m_IsThirdPersonCamera && camDelta.LengthSqr() > (5.0f * 5.0f))
         originBase += camDelta;
 
+    Vector controllerUp{};
+    QAngle::AngleVectors(GetRightControllerAbsAngle(), nullptr, nullptr, &controllerUp);
+    if (!ApplyBulletAimOffset(originBase, direction, controllerUp))
+    {
+        m_HasNonVRAimSolution = false;
+        return;
+    }
+
     // The cached pose is already the controller start (including its historical
     // two-unit offset) transformed by AutoGrip's exact draw delta.
     Vector origin = useAutoGripAimPose ? originBase : originBase + direction * 2.0f;
@@ -1480,6 +1488,14 @@ bool VR::UpdateFriendlyFireAimHit(C_BasePlayer* localPlayer)
     Vector camDelta = GetAimRenderCameraDelta();
     if (!frontViewEyeAim && !frontViewControllerEyeOrigin && m_IsThirdPersonCamera && camDelta.LengthSqr() > (5.0f * 5.0f))
         gunOriginBase += camDelta;
+
+    if (!useMouse && !frontViewEyeAim && !frontViewControllerEyeOrigin)
+    {
+        Vector controllerUp{};
+        QAngle::AngleVectors(GetRightControllerAbsAngle(), nullptr, nullptr, &controllerUp);
+        if (!ApplyBulletAimOffset(gunOriginBase, gunDir, controllerUp))
+            return false;
+    }
 
     Vector gunStart = gunOriginBase + gunDir * 2.0f;
     Vector gunEnd = gunStart + gunDir * 8192.0f;
@@ -1786,6 +1802,79 @@ bool VR::ShouldSuppressPrimaryFire(const CUserCmd* cmd, C_BasePlayer* localPlaye
     return false;
 }
 
+bool VR::HasBulletAimCalibration() const
+{
+    return l4d2vr_calibration::HasOffset(m_BulletAimPosOffset,
+        Vector(m_BulletAimRotationOffsetDeg.x, m_BulletAimRotationOffsetDeg.y,
+            m_BulletAimRotationOffsetDeg.z));
+}
+
+bool VR::CanCalibrateBulletAim() const
+{
+    return HasBulletAimCalibration() && l4d2vr_calibration::ShouldCalibrateRay(
+        m_BulletAimWeaponEligible.load(std::memory_order_acquire),
+        m_MouseModeEnabled, ScopeChangesAim());
+}
+
+QAngle VR::GetBulletAimAbsAngle()
+{
+    QAngle angles = GetRightControllerAbsAngle();
+    // Keep the original roll and angle representation with zero calibration.
+    if (!CanCalibrateBulletAim())
+        return angles;
+    Vector origin{};
+    Vector direction{};
+    if (GetBulletAimRay(origin, direction))
+    {
+        QAngle::VectorAngles(direction, angles);
+        NormalizeAndClampViewAngles(angles);
+    }
+    return angles;
+}
+
+bool VR::GetBulletAimRay(Vector& origin, Vector& direction)
+{
+    origin = GetRightControllerViewmodelAbsPos();
+    Vector up{};
+    QAngle::AngleVectors(GetRightControllerAbsAngle(), &direction, nullptr, &up);
+    if (!l4d2vr_calibration::Finite(origin) || !l4d2vr_calibration::Finite(direction) || direction.IsZero())
+        return false;
+    if (!CanCalibrateBulletAim())
+        return true;
+
+    // AutoGrip already includes the legacy two-unit ray clearance. Reuse its
+    // corrected basis so hidden aim lines and visible aim lines agree.
+    Vector gripOrigin{}, gripDirection{};
+    const bool useAutoGrip = VR_TryGetAutoGripAimLinePose(this, gripOrigin, gripDirection);
+    if (useAutoGrip)
+    {
+        origin = gripOrigin;
+        direction = gripDirection;
+    }
+    else if (m_IsThirdPersonCamera)
+    {
+        const Vector delta = GetAimRenderCameraDelta();
+        if (delta.LengthSqr() > 25.0f)
+            origin += delta;
+        if (!m_RightControllerForwardUnforced.IsZero())
+            direction = m_RightControllerForwardUnforced;
+    }
+    if (!ApplyBulletAimOffset(origin, direction, up))
+        return false;
+    if (!useAutoGrip)
+        origin += direction * 2.0f;
+    return l4d2vr_calibration::Finite(origin);
+}
+
+bool VR::ApplyBulletAimOffset(Vector& origin, Vector& direction, const Vector& referenceUp) const
+{
+    if (!CanCalibrateBulletAim())
+        return true;
+    return l4d2vr_calibration::ApplyRayOffset(origin, direction, referenceUp,
+        m_BulletAimPosOffset, Vector(m_BulletAimRotationOffsetDeg.x,
+            m_BulletAimRotationOffsetDeg.y, m_BulletAimRotationOffsetDeg.z));
+}
+
 void VR::UpdateAimingLaser(C_BasePlayer* localPlayer)
 {
     UpdateSpecialInfectedWarningState();
@@ -1824,7 +1913,7 @@ void VR::UpdateAimingLaser(C_BasePlayer* localPlayer)
     const bool deferDebugAimOverlayForCleanMirror =
         !queued && m_DesktopMirrorHidePluginOverlays && m_DesktopMirrorEnabled && !m_ScopeRenderingPass;
     const bool d3dAimLineNeedsVisibleSegment =
-        m_D3DAimLineOverlayEnabled;
+        m_D3DAimLineOverlayEnabled || m_AdjustingViewmodel;
 
 
     C_WeaponCSBase* activeWeapon = nullptr;
@@ -1986,6 +2075,12 @@ void VR::UpdateAimingLaser(C_BasePlayer* localPlayer)
     if (!useAutoGripAimPose && !frontViewEyeAim && !frontViewControllerEyeOrigin &&
         m_IsThirdPersonCamera && camDelta.LengthSqr() > (5.0f * 5.0f))
         originBase += camDelta;
+
+    if (!isThrowable && !useMouse && !frontViewEyeAim && !frontViewControllerEyeOrigin &&
+        !ApplyBulletAimOffset(originBase, direction, controllerUp))
+    {
+        return;
+    }
 
     Vector origin = useAutoGripAimPose ? originBase : originBase + direction * 2.0f;
 
@@ -2462,7 +2557,7 @@ bool VR::ApplyVrHandsRealBulletSpreadAimLine(C_WeaponCSBase* weapon, const Vecto
         return false;
     }
 
-    if (m_MouseModeEnabled || IsScopeActive())
+    if (m_MouseModeEnabled || ScopeChangesAim())
     {
         ClearVrHandsRealBulletSpreadAimLine();
         return false;
@@ -2559,7 +2654,7 @@ bool VR::NotifyVrHandsRealBulletSpreadClientShot(
     (void)origin;
 
     if (!m_IsVREnabled || !m_VrHandsRealBulletSpreadEnabled || !localPlayer ||
-        !IsVrHandsRealBulletSpreadWeapon(weapon) || m_MouseModeEnabled || IsScopeActive() ||
+        !IsVrHandsRealBulletSpreadWeapon(weapon) || m_MouseModeEnabled || ScopeChangesAim() ||
         (!m_VrHandsEnabled && !m_NativeViewmodelHandsOnly))
     {
         ClearVrHandsRealBulletSpreadAimLine();
@@ -3293,6 +3388,8 @@ void VR::UpdateAimLineEffectiveAttackRange(C_BasePlayer* localPlayer, C_WeaponCS
 
 bool VR::ShouldDrawAimLine(C_WeaponCSBase* weapon) const
 {
+    if (m_AdjustingViewmodel && weapon && l4d2vr_calibration::IsFirearm(static_cast<int>(weapon->GetWeaponID())))
+        return true;
     if (!m_AimLineOnlyWhenLaserSight)
         return true;
 
@@ -3340,6 +3437,10 @@ bool VR::ShouldShowAimLine(C_WeaponCSBase* weapon) const
 
     if (!weapon)
         return false;
+
+    // Manual throwing uses release velocity instead of a controller-forward ray,
+    if (m_AdjustingViewmodel && l4d2vr_calibration::IsFirearm(static_cast<int>(weapon->GetWeaponID())))
+        return true;
 
     // Manual throwing uses release velocity instead of a controller-forward ray,
     // so its trajectory cannot use the stock pitch-based preview. ObjectPull can
@@ -3649,6 +3750,14 @@ bool VR::BuildRenderAimLineSegment(C_BasePlayer* localPlayer, Vector& start, Vec
 
     VectorNormalize(dir);
 
+    if (!frontViewEyeAim && !frontViewControllerEyeOrigin)
+    {
+        Vector controllerUp{};
+        QAngle::AngleVectors(GetRightControllerAbsAngle(), nullptr, nullptr, &controllerUp);
+        if (!ApplyBulletAimOffset(originBase, dir, controllerUp))
+            return false;
+    }
+
     start = useAutoGripAimPose ? originBase : originBase + dir * 2.0f;
 
     const float maxDistance = 8192.0f;
@@ -3781,7 +3890,8 @@ void VR::UpdateD3DAimLineOverlayForView(C_BasePlayer* localPlayer, const CViewSe
     const int queueMode = (m_Game != nullptr) ? m_Game->GetMatQueueMode() : 0;
     const bool queued = (queueMode != 0);
 
-    if (!m_D3DAimLineOverlayEnabled || !m_IsVREnabled || (!queued && !localPlayer))
+    const bool calibrationGuide = m_RenderWeaponCalibrationActive.load(std::memory_order_relaxed);
+    if ((!m_D3DAimLineOverlayEnabled && !calibrationGuide) || !m_IsVREnabled || (!queued && !localPlayer))
     {
         clearEye();
         return;
@@ -3818,7 +3928,7 @@ void VR::UpdateD3DAimLineOverlayForView(C_BasePlayer* localPlayer, const CViewSe
         && m_ThirdPersonFrontViewEnabled
         && m_IsThirdPersonCamera
         && m_ScopeWeaponIsFirearm;
-    if (scopeOnlyAimLine && !m_ScopeRenderingPass)
+    if (scopeOnlyAimLine && !m_ScopeRenderingPass && !calibrationGuide)
     {
         clearEye();
         return;
@@ -4116,11 +4226,8 @@ bool VR::IsGameplayHandLeftPhysical(bool leftHand) const
 
 vr::TrackedDeviceIndex_t VR::GetPhysicalControllerIndexForHand(bool leftHand) const
 {
-    if (!m_System)
-        return vr::k_unTrackedDeviceIndexInvalid;
-
-    return m_System->GetTrackedDeviceIndexForControllerRole(
-        leftHand ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+    return l4d2vr_controller_identity::CachedIndex(m_System,
+        m_PhysicalControllerIndexPair.load(std::memory_order_acquire), leftHand);
 }
 
 void VR::TriggerLegacyHapticPulse(vr::TrackedDeviceIndex_t deviceIndex, float durationSeconds, float amplitude) const

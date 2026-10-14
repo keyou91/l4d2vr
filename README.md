@@ -101,6 +101,13 @@ If you want to return to normal game mode with no VR, there are two methods:
 - Method 2: Find `d3d9.dll` in the game root directory and rename it or move it somewhere else. After launching the game, open the console and enter `crosshair 1` to enable the crosshair again, since L4D2VR disables it. <br>I still recommend keeping d3d9.dll, because it can also be used as DXVK for non-VR mode.
 
 ## Build instructions
+For this interaction contribution, [build a review candidate](docs/playtest-candidate.md)
+with `python -B -X utf8 tools/build_candidate.py`. It uses Visual Studio 2022,
+prepares the pinned dependencies and runs the Release/Debug checks in TEMP.
+It prints the candidate directory without modifying a game installation.
+
+The original Visual Studio 2019 build route remains available:
+
 1. `git clone --recurse-submodules https://github.com/keyou91/l4d2vr.git`
 2. Initialize submodules:
    ```powershell

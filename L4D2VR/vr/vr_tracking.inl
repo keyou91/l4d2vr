@@ -273,7 +273,8 @@ bool VR::ResolvePavlovTwoHandedAimBasis(
     Vector& outRight,
     Vector& outUp) const
 {
-    if (!IsVrHandsTwoHandedGripPoseActive() || m_MouseModeEnabled)
+    if (!IsVrHandsTwoHandedGripPoseActive() || m_MouseModeEnabled ||
+        (m_ManualPumpEnabled && m_ManualPumpBlockingFire.load(std::memory_order_acquire)))
         return false;
 
     if (!VrHandsAimIsFinite(leftControllerPosAbs) ||
@@ -487,7 +488,7 @@ bool VR::ReadWorldPoseTrackingSnapshot(VRWorldPoseTrackingSnapshot& outSnapshot)
         m_MagazineInteractionLeftHandPoseActive.load(
             std::memory_order_relaxed) != 0;
     const bool magazinePoseUsesPhysicalLeft =
-        IsGameplayHandLeftPhysical(true);
+        IsGameplayHandLeftPhysical(MagazineReloadSupportIsLeft());
 
     auto finalizeAnatomicalCurls = [&](
         std::array<float, 5>& curls,
@@ -748,6 +749,7 @@ void VR::UpdateTracking()
         ? (C_BasePlayer*)m_Game->GetClientEntity(playerIndex)
         : nullptr;
     if (!localPlayer) {
+        m_BulletAimWeaponEligible.store(false, std::memory_order_release);
         m_FirstPersonControlReady.store(false, std::memory_order_release);
         ClearPlayerModelMaterialsSnapshot();
         // Never let a reconnect/map transition publish tracking coordinates
@@ -755,8 +757,10 @@ void VR::UpdateTracking()
         {
             std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
             m_WorldPoseTrackingSnapshot = {};
+            m_MeleeTrackingSnapshot = {};
         }
         m_ScopeWeaponIsFirearm = false;
+        UpdatePhysicalScopeWeapon(nullptr, nullptr);
         // If we temporarily lose the local player (connect/disconnect/map change),
         // clear mounted-gun edge tracking so we don't trigger a bogus reset later.
         m_UsingMountedGunPrev = false;
@@ -807,6 +811,7 @@ void VR::UpdateTracking()
 
     m_RenderAimLineAllowed.store(0, std::memory_order_relaxed);
     m_RenderAimLineShow.store(0, std::memory_order_relaxed);
+    m_RenderWeaponCalibrationActive.store(false, std::memory_order_relaxed);
     m_RenderWeaponLaserSightActive.store(0, std::memory_order_relaxed);
 
             m_RenderViewParamsSeq.store(seq + 2, std::memory_order_release);
@@ -992,11 +997,18 @@ void VR::UpdateTracking()
 
     // Scope weapon classification (non-firearm can still use scope when front-view 3P forces it).
     m_ScopeWeaponIsFirearm = false;
+    C_WeaponCSBase* scopeWeapon = nullptr;
     if (C_BaseCombatWeapon* active = viewPlayer->GetActiveWeapon())
     {
         if (C_WeaponCSBase* weapon = (C_WeaponCSBase*)active)
+        {
             m_ScopeWeaponIsFirearm = IsFirearmWeaponId(weapon->GetWeaponID());
+            scopeWeapon = weapon;
+        }
     }
+    UpdatePhysicalScopeWeapon(viewPlayer, scopeWeapon);
+    m_BulletAimWeaponEligible.store(m_ScopeWeaponIsFirearm &&
+        !IsUsingMountedGun(viewPlayer), std::memory_order_release);
     RefreshActiveViewmodelAdjustment(viewPlayer);
     RefreshActiveScopeAdjustment(viewPlayer);
 
@@ -1724,8 +1736,9 @@ void VR::UpdateTracking()
     {
         VRWorldPoseTrackingSnapshot snapshot{};
         snapshot.initialized = true;
+        snapshot.capturedAtMs = GetTickCount64();
         snapshot.hmdValid =
-            m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid;
+            l4d2vr_controller_identity::UsablePose(m_Poses[vr::k_unTrackedDeviceIndex_Hmd]);
 
         const vr::TrackedDeviceIndex_t physicalLeftIndex =
             GetPhysicalControllerIndexForHand(true);
@@ -1733,10 +1746,10 @@ void VR::UpdateTracking()
             GetPhysicalControllerIndexForHand(false);
         snapshot.leftHandValid =
             physicalLeftIndex < vr::k_unMaxTrackedDeviceCount &&
-            m_Poses[physicalLeftIndex].bPoseIsValid;
+            m_Poses[physicalLeftIndex].bPoseIsValid && m_Poses[physicalLeftIndex].bDeviceIsConnected;
         snapshot.rightHandValid =
             physicalRightIndex < vr::k_unMaxTrackedDeviceCount &&
-            m_Poses[physicalRightIndex].bPoseIsValid;
+            m_Poses[physicalRightIndex].bPoseIsValid && m_Poses[physicalRightIndex].bDeviceIsConnected;
 
 		// World-model poses are player-relative, not camera-anchor-relative. The
 		// camera anchor contains both roomscale recentering and HeightOffset; using
@@ -1775,16 +1788,32 @@ void VR::UpdateTracking()
     m_LeftControllerForward = VectorRotate(m_LeftControllerForward, m_LeftControllerRight, -45.0);
     m_LeftControllerUp = VectorRotate(m_LeftControllerUp, m_LeftControllerRight, -45.0);
 
-    // Calibrate the logical weapon hand's grip pose. This stays in the shared
-    // aim basis so the gun model, aim line, scope, and bullets remain aligned.
-    m_RightControllerForward = VectorRotate(
-        m_RightControllerForward,
-        m_RightControllerRight,
-        m_WeaponAimPitchOffsetDeg);
-    m_RightControllerUp = VectorRotate(
-        m_RightControllerUp,
-        m_RightControllerRight,
-        m_WeaponAimPitchOffsetDeg);
+	// Calibrate the logical weapon hand's grip pose. This stays in the shared
+	// aim basis so the gun model, aim line, scope, and bullets remain aligned.
+	m_RightControllerForward = VectorRotate(
+		m_RightControllerForward,
+		m_RightControllerUp,
+		m_WeaponAimYawOffsetDeg);
+	m_RightControllerRight = VectorRotate(
+		m_RightControllerRight,
+		m_RightControllerUp,
+		m_WeaponAimYawOffsetDeg);
+	m_RightControllerForward = VectorRotate(
+		m_RightControllerForward,
+		m_RightControllerRight,
+		m_WeaponAimPitchOffsetDeg);
+	m_RightControllerUp = VectorRotate(
+		m_RightControllerUp,
+		m_RightControllerRight,
+		m_WeaponAimPitchOffsetDeg);
+	m_RightControllerRight = VectorRotate(
+		m_RightControllerRight,
+		m_RightControllerForward,
+		m_WeaponAimRollOffsetDeg);
+	m_RightControllerUp = VectorRotate(
+		m_RightControllerUp,
+		m_RightControllerForward,
+		m_WeaponAimRollOffsetDeg);
 
     m_RightControllerForwardUnforced = m_RightControllerForward;
     if (!m_RightControllerForwardUnforced.IsZero())
@@ -1865,7 +1894,14 @@ void VR::UpdateTracking()
         && m_ThirdPersonFrontScopeFromEye
         && (localPlayer != nullptr);
     const bool steamVRScopeToggleActive = m_ScopeWeaponIsFirearm && m_ScopeToggleActive;
-    if (m_MouseModeEnabled && m_ScopeEnabled)
+    if (IsPhysicalScopeMode())
+    {
+        UpdatePhysicalScope();
+        m_ScopeAimSensitivityInit = false;
+        m_ScopeStabilizationInit = false;
+        m_ScopeStabilizationLastTime = {};
+    }
+    else if (m_MouseModeEnabled && m_ScopeEnabled)
     {
         // Mouse mode: scope activation is driven by a toggle (not look-through).
         m_ScopeActive = (m_ScopeWeaponIsFirearm && (m_MouseModeScopeToggleActive || m_ScopeToggleActive)) || forceScopeForThirdPersonFrontView;
@@ -2361,8 +2397,8 @@ void VR::UpdateTracking()
 
     PositionAngle viewmodelOffset = localPlayer->GetViewmodelOffset();
 
-    m_ViewmodelPosOffset = viewmodelOffset.position + m_ViewmodelPosAdjust;
-    m_ViewmodelAngOffset = viewmodelOffset.angle + m_ViewmodelAngAdjust;
+	m_ViewmodelPosOffset = viewmodelOffset.position + m_ViewmodelPosAdjust + m_ViewmodelPosePosOffset;
+	m_ViewmodelAngOffset = viewmodelOffset.angle + m_ViewmodelAngAdjust + m_ViewmodelPoseAngOffset;
 
     if (m_MouseModeEnabled)
     {
@@ -2539,6 +2575,8 @@ void VR::UpdateTracking()
         m_RenderViewmodelAngOffsetY.store(m_ViewmodelAngOffset.y, std::memory_order_relaxed);
         m_RenderViewmodelAngOffsetZ.store(m_ViewmodelAngOffset.z, std::memory_order_relaxed);
         m_RenderWeaponAimPitchOffsetDeg.store(m_WeaponAimPitchOffsetDeg, std::memory_order_relaxed);
+        m_RenderWeaponAimYawOffsetDeg.store(m_WeaponAimYawOffsetDeg, std::memory_order_relaxed);
+        m_RenderWeaponAimRollOffsetDeg.store(m_WeaponAimRollOffsetDeg, std::memory_order_relaxed);
 
         // Local player / third-person / aim line state for the render thread.
         m_RenderHasLocalPlayer.store(1, std::memory_order_relaxed);
@@ -2568,12 +2606,30 @@ void VR::UpdateTracking()
 
         m_RenderAimLineAllowed.store(__aimAllowed ? 1u : 0u, std::memory_order_relaxed);
         m_RenderAimLineShow.store(__aimShow ? 1u : 0u, std::memory_order_relaxed);
+        m_RenderWeaponCalibrationActive.store(m_AdjustingViewmodel && __activeWeapon &&
+            l4d2vr_calibration::IsFirearm(static_cast<int>(__activeWeapon->GetWeaponID())), std::memory_order_relaxed);
         m_RenderWeaponLaserSightActive.store(__weaponLaserSightActive ? 1u : 0u, std::memory_order_relaxed);
 
         // Mark write complete (even).
         m_RenderViewParamsSeq.store(seq + 2, std::memory_order_release);
     }
 
+    // Publish one coherent gameplay-hand sample. CreateMove and network writes
+    // must not combine a new velocity with an older hand pose.
+    {
+        VRMeleeTrackingSnapshot sample{};
+        const auto handIndex = GetPhysicalControllerIndexForHand(m_LeftHanded);
+        sample.valid = handIndex < vr::k_unMaxTrackedDeviceCount &&
+            m_Poses[handIndex].bPoseIsValid &&
+            m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid;
+        sample.sampledAtMs = static_cast<uint32_t>(GetTickCount64());
+        sample.position = m_RightControllerPosAbs;
+        sample.angles = GetRightControllerAbsAngle();
+        sample.relativeVelocity = m_RightControllerPose.TrackedDeviceVel - m_HmdPose.TrackedDeviceVel;
+        sample.angularVelocity = m_RightControllerPose.TrackedDeviceAngVel;
+        std::lock_guard<std::mutex> lock(m_WorldPoseTrackingSnapshotMutex);
+        m_MeleeTrackingSnapshot = sample;
+    }
     UpdateMotionGestures(localPlayer);
 }
 

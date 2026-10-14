@@ -1,6 +1,8 @@
 #include "vr_hand_skeleton_runtime.h"
 
 #include "vr_hand_math.h"
+#include "../vr_skeletal_data.h"
+#include "../vr_hand_input_validation.h"
 
 #include "ozz/animation/offline/raw_skeleton.h"
 #include "ozz/animation/offline/skeleton_builder.h"
@@ -33,7 +35,11 @@ namespace
 
         ozz::math::Transform out = ozz::math::Transform::identity();
         out.translation = { transform.position.v[0], transform.position.v[1], transform.position.v[2] };
-        out.rotation = { transform.orientation.x, transform.orientation.y, transform.orientation.z, transform.orientation.w };
+        const auto& q = transform.orientation;
+        const double norm = static_cast<double>(q.x) * q.x + static_cast<double>(q.y) * q.y +
+            static_cast<double>(q.z) * q.z + static_cast<double>(q.w) * q.w;
+        const float inverseNorm = static_cast<float>(1.0 / std::sqrt(norm));
+        out.rotation = { q.x * inverseNorm, q.y * inverseNorm, q.z * inverseNorm, q.w * inverseNorm };
         return out;
     }
 
@@ -65,7 +71,8 @@ namespace
             faulted = true;
         }
 
-        return !faulted && result == vr::VRInputError_None;
+        return !faulted && result == vr::VRInputError_None &&
+            l4d2vr_skeletal::ValidSummaryCurls(outSummary);
     }
 
     VrHandMatrix4 ToVrHandMatrix(const ozz::math::Float4x4& matrix)
@@ -82,10 +89,11 @@ namespace
         float y = transform.orientation.y;
         float z = transform.orientation.z;
         float w = transform.orientation.w;
-        const float lengthSq = x * x + y * y + z * z + w * w;
+        const double lengthSq = static_cast<double>(x) * x + static_cast<double>(y) * y +
+            static_cast<double>(z) * z + static_cast<double>(w) * w;
         if (lengthSq > 0.000001f)
         {
-            const float invLength = 1.0f / std::sqrt(lengthSq);
+            const float invLength = static_cast<float>(1.0 / std::sqrt(lengthSq));
             x *= invLength;
             y *= invLength;
             z *= invLength;
@@ -279,6 +287,9 @@ struct VrHandSkeletonRuntime::Impl
     std::vector<int> ozzJointToOpenVrBone;
     bool hasPose = false;
     bool hasSummary = false;
+    bool hasBoneData = false;
+    const l4d2vr_input::ActionFrame* actionFrame = nullptr;
+    std::uint64_t poseFrameToken = 0u;
 };
 
 VrHandSkeletonRuntime::VrHandSkeletonRuntime()
@@ -291,6 +302,10 @@ VrHandSkeletonRuntime::~VrHandSkeletonRuntime() = default;
 bool VrHandSkeletonRuntime::Initialize(vr::IVRInput* input, vr::VRActionHandle_t action, std::string& outError)
 {
     outError.clear();
+    m_Impl->hasPose = false;
+    m_Impl->hasSummary = false;
+    m_Impl->hasBoneData = false;
+    m_Impl->poseFrameToken = 0u;
     if (!input || action == vr::k_ulInvalidActionHandle)
     {
         outError = "invalid OpenVR skeletal action handle";
@@ -334,6 +349,11 @@ bool VrHandSkeletonRuntime::Initialize(vr::IVRInput* input, vr::VRActionHandle_t
         boneCount) != vr::VRInputError_None)
     {
         outError = "OpenVR GetSkeletalReferenceTransforms failed";
+        return false;
+    }
+    if (!std::all_of(m_Impl->transforms.begin(), m_Impl->transforms.end(), l4d2vr_skeletal::ValidBone))
+    {
+        outError = "OpenVR hand reference transforms are invalid";
         return false;
     }
 
@@ -416,38 +436,58 @@ bool VrHandSkeletonRuntime::Initialize(vr::IVRInput* input, vr::VRActionHandle_t
     return true;
 }
 
-bool VrHandSkeletonRuntime::Update(vr::IVRInput* input, vr::EVRSkeletalMotionRange motionRange, std::string& outError)
+bool VrHandSkeletonRuntime::Update(vr::IVRInput* input, const l4d2vr_input::ActionFrame& actionFrame,
+    vr::IVRSystem* system, vr::VRInputValueHandle_t expectedSource,
+    vr::TrackedDeviceIndex_t expectedDevice,
+    vr::EVRSkeletalMotionRange motionRange, std::string& outError)
 {
     outError.clear();
-    if (!input || !m_Impl->skeleton || m_Impl->action == vr::k_ulInvalidActionHandle)
+    m_Impl->hasPose = false;
+    m_Impl->hasSummary = false;
+    m_Impl->hasBoneData = false;
+    m_Impl->poseFrameToken = 0u;
+    m_Impl->actionFrame = &actionFrame;
+    const auto frameToken = actionFrame.Read();
+    if (!input || !m_Impl->skeleton || m_Impl->action == vr::k_ulInvalidActionHandle ||
+        !l4d2vr_input::ActionFrame::Ready(frameToken))
     {
         outError = "hand skeleton runtime is not initialized";
         return false;
     }
 
     vr::InputSkeletalActionData_t actionData{};
-    if (input->GetSkeletalActionData(m_Impl->action, &actionData, sizeof(actionData)) != vr::VRInputError_None || !actionData.bActive)
+    if (input->GetSkeletalActionData(m_Impl->action, &actionData, sizeof(actionData)) != vr::VRInputError_None ||
+        !actionData.bActive || !l4d2vr_hand_input::ValidateOrigin(input, system, actionData.activeOrigin,
+            expectedSource, expectedDevice))
     {
         m_Impl->hasPose = false;
         m_Impl->hasSummary = false;
         return false;
     }
 
-    m_Impl->hasSummary = TryReadOpenVRSkeletalSummary(
+    vr::VRSkeletalSummaryData_t summary{};
+    const bool hasSummary = TryReadOpenVRSkeletalSummary(
         input,
         m_Impl->action,
         vr::VRSummaryType_FromAnimation,
-        m_Impl->summary);
+        summary);
 
+    std::vector<vr::VRBoneTransform_t> transforms(m_Impl->transforms.size());
     const bool hasBoneData = input->GetSkeletalBoneData(
         m_Impl->action,
         vr::VRSkeletalTransformSpace_Model,
         motionRange,
-        m_Impl->transforms.data(),
-        static_cast<uint32_t>(m_Impl->transforms.size())) == vr::VRInputError_None;
-    if (!m_Impl->hasSummary && !hasBoneData)
+        transforms.data(),
+        static_cast<uint32_t>(transforms.size())) == vr::VRInputError_None &&
+        std::all_of(transforms.begin(), transforms.end(), l4d2vr_skeletal::ValidBone);
+    if (!actionFrame.Matches(frameToken))
     {
-        outError = "OpenVR GetSkeletalSummaryData and GetSkeletalBoneData failed";
+        outError = "SteamVR action frame changed during hand skeleton read";
+        return false;
+    }
+    if (!hasSummary && !hasBoneData)
+    {
+        outError = "OpenVR hand summary and bone data are unavailable or invalid";
         m_Impl->hasPose = false;
         return false;
     }
@@ -457,6 +497,12 @@ bool VrHandSkeletonRuntime::Update(vr::IVRInput* input, vr::EVRSkeletalMotionRan
     // a second animation runtime; the SteamVR glove GLB inverse-bind matrices are
     // authored for this model-space skeleton.
 
+    m_Impl->summary = hasSummary ? summary : vr::VRSkeletalSummaryData_t{};
+    if (hasBoneData)
+        m_Impl->transforms = std::move(transforms);
+    m_Impl->hasSummary = hasSummary;
+    m_Impl->hasBoneData = hasBoneData;
+    m_Impl->poseFrameToken = frameToken;
     m_Impl->hasPose = true;
     return true;
 }
@@ -470,7 +516,7 @@ bool VrHandSkeletonRuntime::BuildSkinningPalette(
 {
     outError.clear();
     outPalette.clear();
-    if (!m_Impl->skeleton || !m_Impl->hasPose)
+    if (!m_Impl->skeleton || !HasPose())
         return false;
     if (!asset.IsValid())
     {
@@ -482,9 +528,34 @@ bool VrHandSkeletonRuntime::BuildSkinningPalette(
         outError = "hand mesh uses more than 64 joints";
         return false;
     }
+    for (size_t joint = 0u; joint < asset.jointNames.size(); ++joint)
+    {
+        if (!l4d2vr_skeletal::ValidMatrix(asset.bindMatrices[joint]) ||
+            !l4d2vr_skeletal::ValidMatrix(asset.inverseBindMatrices[joint]))
+        {
+            outError = "hand mesh bind matrices are invalid";
+            return false;
+        }
+    }
+    auto finishPalette = [&]() -> bool
+        {
+            if (!l4d2vr_skeletal::ValidPalette(outPalette) || !HasPose())
+            {
+                outError = "hand skinning palette or action frame is invalid";
+                outPalette.clear();
+                return false;
+            }
+            return true;
+        };
 
     if (m_Impl->hasSummary && BuildSummaryCurlPalette(asset, m_Impl->summary, outPalette, fingerCurlOverride, fingerMaxCurl))
-        return true;
+        return finishPalette();
+    if (!m_Impl->hasBoneData)
+    {
+        outError = "hand skinning palette requires current valid bone data";
+        outPalette.clear();
+        return false;
+    }
 
     outPalette.resize(asset.jointNames.size());
     for (size_t meshJoint = 0; meshJoint < asset.jointNames.size(); ++meshJoint)
@@ -520,7 +591,7 @@ bool VrHandSkeletonRuntime::BuildSkinningPalette(
         const VrHandMatrix4 model = ToVrHandMatrix(m_Impl->transforms[static_cast<size_t>(openVrBone)]);
         outPalette[meshJoint] = VrHandMath::ToRows3x4(VrHandMath::Multiply(model, asset.inverseBindMatrices[meshJoint]));
     }
-    return true;
+    return finishPalette();
 }
 
 bool VrHandSkeletonRuntime::IsInitialized() const
@@ -530,7 +601,13 @@ bool VrHandSkeletonRuntime::IsInitialized() const
 
 bool VrHandSkeletonRuntime::HasPose() const
 {
-    return m_Impl && m_Impl->hasPose;
+    return m_Impl && m_Impl->hasPose && m_Impl->actionFrame &&
+        m_Impl->actionFrame->Matches(m_Impl->poseFrameToken);
+}
+
+std::uint64_t VrHandSkeletonRuntime::PoseFrameToken() const
+{
+    return m_Impl ? m_Impl->poseFrameToken : 0u;
 }
 
 int VrHandSkeletonRuntime::JointCount() const

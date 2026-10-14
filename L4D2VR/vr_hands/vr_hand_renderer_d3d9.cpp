@@ -1,6 +1,9 @@
 #include "vr_hand_renderer_d3d9.h"
 
 #include "vr_hand_math.h"
+#include "../vr_skeletal_data.h"
+#include "../vr_input_recovery.h"
+#include "../vr_hand_pose_cache.h"
 
 #include <Windows.h>
 #include <d3d9.h>
@@ -212,14 +215,15 @@ bool VrHandRendererD3D9::EnsureSharedResources(IDirect3DDevice9* device, std::st
         D3DDECL_END()
     };
 
-    if (FAILED(device->CreateVertexDeclaration(elements, &m_VertexDeclaration)) || !m_VertexDeclaration)
+    if (!m_VertexDeclaration &&
+        (FAILED(device->CreateVertexDeclaration(elements, &m_VertexDeclaration)) || !m_VertexDeclaration))
     {
         outError = "CreateVertexDeclaration failed for VR hands";
         return false;
     }
-    if (!CompileVertexShader(device, &m_VertexShader, outError))
+    if (!m_VertexShader && !CompileVertexShader(device, &m_VertexShader, outError))
         return false;
-    if (!CompilePixelShader(device, &m_PixelShader, outError))
+    if (!m_PixelShader && !CompilePixelShader(device, &m_PixelShader, outError))
         return false;
     return true;
 }
@@ -421,7 +425,10 @@ bool VrHandRendererD3D9::Draw(
     const VrHandMatrix4& worldViewProjection,
     VrHandDrawPass drawPass,
     float sceneLightScale,
-    std::string& outError)
+    std::string& outError,
+    const l4d2vr_input::ActionFrame* actionFrame,
+    std::uint64_t paletteFrameToken,
+    std::uint32_t paletteUpdatedAt)
 {
     outError.clear();
     static_assert(sizeof(VrHandMatrixRows3x4) == sizeof(float) * 12u, "VR hand palette rows must be tightly packed");
@@ -430,8 +437,21 @@ bool VrHandRendererD3D9::Draw(
         outError = "VR hand skinning palette count is invalid";
         return false;
     }
+    if (!l4d2vr_skeletal::ValidPalette(palette) ||
+        !l4d2vr_skeletal::ValidMatrix(world) || !l4d2vr_skeletal::ValidMatrix(worldViewProjection) ||
+        !std::isfinite(sceneLightScale))
+    {
+        outError = "VR hand draw data contains nonfinite values";
+        return false;
+    }
     if (!EnsureSharedResources(device, outError) || !EnsureMeshResources(device, handIndex, asset, outError))
         return false;
+    if (actionFrame && !l4d2vr_hand_pose::Available(actionFrame->Read(), paletteFrameToken,
+            paletteUpdatedAt, GetTickCount()))
+    {
+        outError = "SteamVR action frame changed before hand draw";
+        return false;
+    }
 
     IDirect3DStateBlock9* stateBlock = nullptr;
     if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &stateBlock)) || !stateBlock)
@@ -524,13 +544,20 @@ bool VrHandRendererD3D9::Draw(
         device->SetViewport(&handViewport);
     }
 
-    HRESULT drawResult = device->DrawIndexedPrimitive(
-        D3DPT_TRIANGLELIST,
-        0,
-        0,
-        mesh.vertexCount,
-        0,
-        mesh.indexCount / 3u);
+    HRESULT drawResult = E_FAIL;
+    if (!actionFrame || l4d2vr_hand_pose::Available(actionFrame->Read(), paletteFrameToken,
+            paletteUpdatedAt, GetTickCount()))
+    {
+        drawResult = device->DrawIndexedPrimitive(
+            D3DPT_TRIANGLELIST,
+            0,
+            0,
+            mesh.vertexCount,
+            0,
+            mesh.indexCount / 3u);
+    }
+    else
+        outError = "SteamVR action frame changed before hand submission";
 
     if (SUCCEEDED(drawResult) && standaloneGeneratedBox && !asset.vertices.empty())
     {
@@ -606,7 +633,8 @@ bool VrHandRendererD3D9::Draw(
     SafeRelease(stateBlock);
     if (FAILED(drawResult))
     {
-        outError = "DrawIndexedPrimitive failed for VR hands";
+        if (outError.empty())
+            outError = "DrawIndexedPrimitive failed for VR hands";
         return false;
     }
     return true;

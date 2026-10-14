@@ -11,6 +11,8 @@
 #include "trace.h"
 #include "vr_hands/vr_hand_manifest.h"
 #include "vr_hands/vr_hand_system.h"
+#include "vr_hands/vr_hand_math.h"
+#include "vr_controller_tip.h"
 #include "sdk/ivdebugoverlay.h"
 #include <iostream>
 #include <fstream>
@@ -10206,6 +10208,7 @@ bool VR::ApplyScopeLensPostProcess()
 
     scopeSurface = m_D9ScopeSurface;
     scopeSurface->AddRef();
+    const auto physicalScopeSource = ReadPhysicalScopeImage();
 
     auto releaseRefs = [&]()
         {
@@ -10450,6 +10453,7 @@ bool VR::ApplyScopeLensPostProcess()
     }
 
     m_ScopeLensOverlayReady.store(ok ? 1u : 0u, std::memory_order_release);
+    if (ok) PublishPhysicalScopeProcessedImage(physicalScopeSource);
 
     unlockDevice();
     releaseRefs();
@@ -11390,4 +11394,6 @@ void VR::ScanItemModelLabelEntitiesFromClientList()
     if (callback)
         callback(this);
 }
+
+#include "vr/vr_physical_scope.inl"
 

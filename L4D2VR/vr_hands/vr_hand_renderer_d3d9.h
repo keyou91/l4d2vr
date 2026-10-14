@@ -13,6 +13,7 @@ struct IDirect3DPixelShader9;
 struct IDirect3DVertexBuffer9;
 struct IDirect3DIndexBuffer9;
 struct IDirect3DTexture9;
+namespace l4d2vr_input { class ActionFrame; }
 
 enum class VrHandDrawPass
 {
@@ -42,7 +43,10 @@ public:
         const VrHandMatrix4& worldViewProjection,
         VrHandDrawPass drawPass,
         float sceneLightScale,
-        std::string& outError);
+        std::string& outError,
+        const l4d2vr_input::ActionFrame* actionFrame = nullptr,
+        std::uint64_t paletteFrameToken = 0u,
+        std::uint32_t paletteUpdatedAt = 0u);
 
     bool ClearViewmodelOcclusionStencil(IDirect3DDevice9* device, std::string& outError);
     void OnDeviceLost();

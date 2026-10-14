@@ -1,70 +1,62 @@
-name: Build d3d9.dll
+name: Native VR candidate
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "L4D2VR/**"
+      - "dxvk_new/**"
+      - "thirdparty/**"
+      - "l4d2vr.sln"
+      - "tools/build_candidate.py"
+      - "docs/playtest-candidate.md"
+      - ".github/workflows/build-d3d9.yml"
   push:
     paths:
+      - "L4D2VR/**"
+      - "dxvk_new/**"
+      - "thirdparty/**"
+      - "l4d2vr.sln"
+      - "tools/build_candidate.py"
+      - "docs/playtest-candidate.md"
       - ".github/workflows/build-d3d9.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: native-vr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Windows x86 native candidate
     runs-on: windows-2022
-
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Locate Visual Studio
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build from a temporary source snapshot
+        id: candidate
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
-          "VS_INSTALL=$vs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build local d3dx9 proxy library
-        shell: cmd
-        run: |
-          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.29
-          if errorlevel 1 exit /b %errorlevel%
-          if not exist "thirdparty\directx\d3dx9\lib\x86" mkdir "thirdparty\directx\d3dx9\lib\x86"
-          cl /nologo /c /EHsc /std:c++17 /I"thirdparty\directx\d3dx9\include" "thirdparty\directx\d3dx9\src\d3dx9_proxy.cpp" /Fo"thirdparty\directx\d3dx9\lib\x86\d3dx9_proxy.obj"
-          if errorlevel 1 exit /b %errorlevel%
-          lib /nologo /OUT:"thirdparty\directx\d3dx9\lib\x86\d3dx9.lib" "thirdparty\directx\d3dx9\lib\x86\d3dx9_proxy.obj"
-          if errorlevel 1 exit /b %errorlevel%
-
-      - name: Build d3d9.dll
-        shell: cmd
-        run: |
-          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.29
-          if errorlevel 1 exit /b %errorlevel%
-          msbuild "l4d2vr.sln" /m /t:L4D2VR:Rebuild /p:Configuration=Release /p:Platform=x86 /p:PlatformToolset=v142 /p:PostBuildEventUseInBuild=false /fl /flp:"logfile=build.log;verbosity=normal"
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
+          python -B -X utf8 tools/build_candidate.py --skip-tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native candidate build failed' }
+      - name: Upload native candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: build-log
-          path: build.log
-          if-no-files-found: warn
-          retention-days: 1
-
-      - name: Collect d3d9.dll
-        shell: pwsh
-        run: |
-          $dll = Get-ChildItem -Path . -Recurse -File -Filter d3d9.dll | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $dll) { throw "d3d9.dll was not produced" }
-          New-Item -ItemType Directory -Path artifact -Force | Out-Null
-          Copy-Item -LiteralPath $dll.FullName -Destination "artifact\d3d9.dll" -Force
-          Get-FileHash "artifact\d3d9.dll" -Algorithm SHA256
-
-      - name: Upload d3d9.dll
-        uses: actions/upload-artifact@v4
-        with:
-          name: d3d9
-          path: artifact/d3d9.dll
+          name: l4d2vr-candidate-x86
+          path: ${{ steps.candidate.outputs.candidate }}
           if-no-files-found: error
           compression-level: 0
+          retention-days: 7
+      - name: Upload native build logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-build-logs
+          path: ${{ runner.temp }}/l4d2vr-candidate-*/logs/*.log
+          if-no-files-found: warn
+          retention-days: 7

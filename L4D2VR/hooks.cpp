@@ -6,6 +6,11 @@
 #include "sdk_server.h"
 #include "vr.h"
 #include "vr_pose_protocol.h"
+#include "vr_grip_release.h"
+#include "vr_pistol_detachment.h"
+#include "vr_interaction_geometry.h"
+#include "vr_interaction_protocol.h"
+#include "vr_ladder_input.h"
 #include "trace.h"
 #include "offsets.h"
 #include "vr_hands/vr_hand_math.h"
@@ -118,6 +123,7 @@ namespace
 
     void HooksFirstPersonBodyClearLocalRenderable()
     {
+        if (Hooks::m_VR) Hooks::m_VR->ClearBodyInventoryModelPose();
         g_FirstPersonBodyPlayerReady.store(false, std::memory_order_release);
         g_FirstPersonBodyActiveWeaponRenderable.store(nullptr, std::memory_order_release);
         g_FirstPersonBodyLocalPlayerIndex.store(-1, std::memory_order_release);
@@ -907,9 +913,16 @@ static bool ManualCarryThrowWeaponIdUsesSpawnedPhysicsProp(int weaponId)
 		weaponId == static_cast<int>(C_WeaponCSBase::WeaponID::FIREWORKS_BOX);
 }
 
+static bool ManualThrowIdentityBindingsReady()
+{
+    const auto* offsets = Hooks::m_Game ? Hooks::m_Game->m_Offsets : nullptr;
+    return offsets && offsets->PhysicalGunOwner.valid && offsets->PhysicalGunOwner.address != 0u &&
+        offsets->CBaseEntity_entindex.valid && offsets->CBaseEntity_entindex.address != 0u;
+}
+
 static bool ManualCarryThrowBackendIsReady(int weaponId)
 {
-	return Hooks::s_ManualCarryThrowHookReady &&
+	return Hooks::s_ManualCarryThrowHookReady && ManualThrowIdentityBindingsReady() &&
 		(!ManualCarryThrowWeaponIdUsesSpawnedPhysicsProp(weaponId) ||
 			Hooks::s_ManualCarryThrowPropSpawnHookReady);
 }
@@ -920,7 +933,7 @@ static bool ManualInventoryThrowBackendIsReady(int weaponId)
 		return false;
 	if (ManualCarryThrowWeaponIdIsSupported(static_cast<C_WeaponCSBase::WeaponID>(weaponId)))
 		return ManualCarryThrowBackendIsReady(weaponId);
-	return Hooks::s_ManualCarryThrowHookReady &&
+	return Hooks::s_ManualCarryThrowHookReady && ManualThrowIdentityBindingsReady() &&
 		Hooks::m_Game && Hooks::m_Game->m_Offsets &&
 		Hooks::m_Game->m_Offsets->ManualInventoryWeaponDrop.valid;
 }
@@ -1070,6 +1083,53 @@ static bool IsLocalClientUsingMountedWeapon()
 #else
 	const auto* base = reinterpret_cast<const uint8_t*>(localPlayer);
 	return base[VR::kUsingMountedGunOffset] != 0 || base[VR::kUsingMountedWeaponOffset] != 0;
+#endif
+}
+
+struct GripGameplaySession
+{
+    uintptr_t owner = 0u;
+    uintptr_t weapon = 0u;
+    bool liveInventory = false;
+    bool gameplay = false;
+    unsigned blocked = 0u;
+};
+
+static GripGameplaySession ReadGripGameplaySession(VR* vr, Game* game)
+{
+    GripGameplaySession state{};
+#ifdef _MSC_VER
+    __try
+#endif
+    {
+        if (!vr || !vr->m_IsVREnabled) { state.blocked = 1u; return state; }
+        if (!game || !game->m_EngineClient || !game->m_EngineClient->IsInGame())
+        { state.blocked = 2u; return state; }
+        const int index = game->m_EngineClient->GetLocalPlayer();
+        C_BasePlayer* player = index > 0 ? reinterpret_cast<C_BasePlayer*>(game->GetClientEntity(index)) : nullptr;
+        HooksFirstPersonBodyLocalState local{};
+        if (!player || !HooksFirstPersonBodyReadLocalStateSafe(player, &local))
+        { state.blocked = 4u; return state; }
+        state.owner = reinterpret_cast<uintptr_t>(player);
+        if (local.team != 2 || local.lifeState != 0 || local.observerMode != 0) state.blocked |= 8u;
+        if (local.incapacitated) state.blocked |= 16u;
+        state.weapon = reinterpret_cast<uintptr_t>(player->GetActiveWeapon());
+        state.liveInventory = state.blocked == 0u && state.weapon != 0u;
+        if (!state.weapon) state.blocked |= 0x8000u;
+        if ((local.flags & (1 << 5)) != 0) state.blocked |= 32u;
+        if (game->m_EngineClient->IsPaused()) state.blocked |= 64u;
+        if (game->m_VguiSurface && game->m_VguiSurface->IsCursorVisible()) state.blocked |= 128u;
+        if (vr->m_MouseModeEnabled) state.blocked |= 256u;
+        if (vr->m_TeleportVisualScoutActive) state.blocked |= 512u;
+        if (vr->m_SuppressPlayerInput) state.blocked |= 1024u;
+        if (!vr->m_FirstPersonControlReady.load(std::memory_order_acquire)) state.blocked |= 2048u;
+        if (vr->m_RenderPlayerControlledBySI.load(std::memory_order_acquire)) state.blocked |= 4096u;
+        if (IsLocalClientUsingMountedWeapon()) state.blocked |= 8192u;
+        state.gameplay = state.blocked == 0u;
+        return state;
+    }
+#ifdef _MSC_VER
+    __except (EXCEPTION_EXECUTE_HANDLER) { state = {}; state.blocked = 0x10000u; return state; }
 #endif
 }
 
@@ -2573,6 +2633,13 @@ static inline bool ShouldForceThirdPersonByState(const C_BasePlayer* player,
 	// NOTE: do NOT force 3P for generic useAction; it includes teammate revive/assistance/interaction and can latch 3P.
 	return dbg.dead || observer || dbg.ledge || dbg.tongue || dbg.pinned || dbg.selfMedkit;
 }
+
+static bool TryGetExecutingReloadGate(void* owner, void* weapon, bool& blocked);
+static bool TryGetExecutingPistolNativeReload(void* owner, int index,
+    const l4d2vr_pistol::AmmoSnapshot& snapshot, int& command);
+#include "vr_native_scope.h"
+static bool TryGetExecutingPistolPickup(void* owner, int& index, l4d2vr_pistol::Hand& hand);
+static void RefreshGripPickupContact(VR* vr, Game* game, C_BasePlayer* player, bool left);
 
 #include "hooks/hooks_init.inl"
 #include "hooks/hooks_render.inl"

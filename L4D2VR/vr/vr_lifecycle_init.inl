@@ -1290,74 +1290,138 @@ void VR::ConfigureExplicitTiming()
 
 int VR::SetActionManifest(const char* fileName)
 {
-    char currentDir[MAX_STR_LEN];
-    GetCurrentDirectory(MAX_STR_LEN, currentDir);
-    char path[MAX_STR_LEN];
-    sprintf_s(path, MAX_STR_LEN, "%s\\VR\\SteamVRActionManifest\\%s", currentDir, fileName);
-
-    const std::string vrHandsManifestPath = BuildVrHandsActionManifestPath(path);
-    const char* effectiveManifestPath = vrHandsManifestPath.empty() ? path : vrHandsManifestPath.c_str();
-    const vr::EVRInputError manifestResult = m_Input->SetActionManifestPath(effectiveManifestPath);
-    if (manifestResult != vr::VRInputError_None)
+    // Shared handles are immutable after the first usable action frame. Retry
+    // only startup acquisition, while all action consumers remain unavailable.
+    if (m_InputActionHandlesReady)
+        return 0;
+    m_InputAcquisitionNextRetry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    auto fail = [&](const char* stage, vr::EVRInputError error)
     {
-        Game::errorMsg("SetActionManifestPath failed");
+        const std::string reason = std::string(stage) + ":" + std::to_string(static_cast<int>(error));
+        if (reason != m_InputAcquisitionFailure)
+        {
+            Game::logMsg("[VR][Input] acquisition unavailable stage=%s error=%d manifest=%s retry=1s",
+                stage, static_cast<int>(error), m_InputActionManifestPath.c_str());
+            m_InputAcquisitionFailure = reason;
+        }
+        return static_cast<int>(error);
+    };
+    if (fileName && m_InputActionManifestPath.empty())
+    {
+        std::error_code directoryError;
+        const auto currentDir = std::filesystem::current_path(directoryError);
+        if (directoryError)
+            return fail("manifest-directory", vr::VRInputError_InvalidParam);
+        const std::string originalPath = (currentDir / L"VR" / L"SteamVRActionManifest" /
+            std::filesystem::u8path(fileName)).u8string();
+        const std::string handsPath = BuildVrHandsActionManifestPath(originalPath.c_str());
+        m_InputActionManifestPath = handsPath.empty() ? originalPath : handsPath;
     }
-
-    m_Input->GetActionHandle("/actions/main/in/ActivateVR", &m_ActionActivateVR);
-    m_Input->GetActionHandle("/actions/main/in/Jump", &m_ActionJump);
-    m_Input->GetActionHandle("/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack);
-    m_Input->GetActionHandle("/actions/main/in/Reload", &m_ActionReload);
-    m_Input->GetActionHandle("/actions/main/in/Use", &m_ActionUse);
-    m_Input->GetActionHandle("/actions/main/in/Teleport", &m_ActionTeleport);
-    m_Input->GetActionHandle("/actions/main/in/Walk", &m_ActionWalk);
-    m_Input->GetActionHandle("/actions/main/in/Turn", &m_ActionTurn);
-    m_Input->GetActionHandle("/actions/main/in/boolean_turnleft", &m_ActionBooleanTurnLeft);
-    m_Input->GetActionHandle("/actions/main/in/boolean_turnright", &m_ActionBooleanTurnRight);
-    m_Input->GetActionHandle("/actions/main/in/SecondaryAttack", &m_ActionSecondaryAttack);
-    m_Input->GetActionHandle("/actions/main/in/NextItem", &m_ActionNextItem);
-    m_Input->GetActionHandle("/actions/main/in/PrevItem", &m_ActionPrevItem);
-    m_Input->GetActionHandle("/actions/main/in/ResetPosition", &m_ActionResetPosition);
-    m_Input->GetActionHandle("/actions/main/in/Crouch", &m_ActionCrouch);
-    m_Input->GetActionHandle("/actions/main/in/Flashlight", &m_ActionFlashlight);
-    m_Input->GetActionHandle("/actions/main/in/InventoryGripLeft", &m_ActionInventoryGripLeft);
-    m_Input->GetActionHandle("/actions/main/in/InventoryGripRight", &m_ActionInventoryGripRight);
-    m_Input->GetActionHandle("/actions/main/in/InventoryQuickSwitch", &m_ActionInventoryQuickSwitch);
-    m_Input->GetActionHandle("/actions/main/in/SpecialInfectedAutoAimToggle", &m_ActionSpecialInfectedAutoAimToggle);
-    m_Input->GetActionHandle("/actions/main/in/SpecialInfectedDodgeToggle", &m_ActionSpecialInfectedDodgeToggle);
-    m_Input->GetActionHandle("/actions/main/in/LedgeGuardToggle", &m_ActionLedgeGuardToggle);
-    m_Input->GetActionHandle("/actions/main/in/EffectiveAttackRangeAutoFireToggle", &m_ActionEffectiveAttackRangeAutoFireToggle);
-    m_Input->GetActionHandle("/actions/main/in/SpeechToText", &m_ActionSpeechToText);
-    m_Input->GetActionHandle("/actions/main/in/MenuSelect", &m_MenuSelect);
-    m_Input->GetActionHandle("/actions/main/in/MenuBack", &m_MenuBack);
-    m_Input->GetActionHandle("/actions/main/in/MenuUp", &m_MenuUp);
-    m_Input->GetActionHandle("/actions/main/in/MenuDown", &m_MenuDown);
-    m_Input->GetActionHandle("/actions/main/in/MenuLeft", &m_MenuLeft);
-    m_Input->GetActionHandle("/actions/main/in/MenuRight", &m_MenuRight);
-    m_Input->GetActionHandle("/actions/main/in/Spray", &m_Spray);
-    m_Input->GetActionHandle("/actions/main/in/Scoreboard", &m_Scoreboard);
-    m_Input->GetActionHandle("/actions/main/in/ShowHUD", &m_ToggleHUD);
-    m_Input->GetActionHandle("/actions/main/in/Pause", &m_Pause);
-    m_Input->GetActionHandle("/actions/main/in/NonVRServerMovementAngleToggle", &m_NonVRServerMovementAngleToggle);
-    m_Input->GetActionHandle("/actions/main/in/ScopeToggle", &m_ActionScopeToggle);
-    // Aim-line friendly-fire guard toggle (bindable in SteamVR)
-    m_Input->GetActionHandle("/actions/main/in/FriendlyFireBlockToggle", &m_ActionFriendlyFireBlockToggle);
-    m_Input->GetActionHandle("/actions/main/in/CustomAction1", &m_CustomAction1);
-    m_Input->GetActionHandle("/actions/main/in/CustomAction2", &m_CustomAction2);
-    m_Input->GetActionHandle("/actions/main/in/CustomAction3", &m_CustomAction3);
-    m_Input->GetActionHandle("/actions/main/in/CustomAction4", &m_CustomAction4);
-    m_Input->GetActionHandle("/actions/main/in/CustomAction5", &m_CustomAction5);
-    m_Input->GetActionHandle("/actions/base/in/skeleton_lefthand", &m_NativeViewmodelLeftHandOpenVRAction);
-    m_Input->GetActionHandle("/actions/base/in/skeleton_righthand", &m_NativeViewmodelRightHandOpenVRAction);
-
-    m_Input->GetActionSetHandle("/actions/main", &m_ActionSet);
-    m_Input->GetActionSetHandle("/actions/base", &m_BaseActionSet);
+    if (!m_Input || m_InputActionManifestPath.empty())
+        return fail("manifest-input", vr::VRInputError_NoSteam);
+    if (!m_InputManifestRegistered)
+    {
+        const auto result = m_Input->SetActionManifestPath(m_InputActionManifestPath.c_str());
+        if (result != vr::VRInputError_None)
+            return fail("manifest", result);
+        m_InputManifestRegistered = true;
+    }
+    struct ActionLookup { const char* path; vr::VRActionHandle_t* handle; bool required; };
+    const ActionLookup actions[] = {
+        { "/actions/main/in/ActivateVR", &m_ActionActivateVR, false },
+        { "/actions/main/in/Jump", &m_ActionJump, true },
+        { "/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack, true },
+        { "/actions/main/in/Reload", &m_ActionReload, true },
+        { "/actions/main/in/Use", &m_ActionUse, true },
+        { "/actions/main/in/Teleport", &m_ActionTeleport, false },
+        { "/actions/main/in/Walk", &m_ActionWalk, true },
+        { "/actions/main/in/Turn", &m_ActionTurn, true },
+        { "/actions/main/in/boolean_turnleft", &m_ActionBooleanTurnLeft, false },
+        { "/actions/main/in/boolean_turnright", &m_ActionBooleanTurnRight, false },
+        { "/actions/main/in/SecondaryAttack", &m_ActionSecondaryAttack, true },
+        { "/actions/main/in/NextItem", &m_ActionNextItem, false },
+        { "/actions/main/in/PrevItem", &m_ActionPrevItem, false },
+        { "/actions/main/in/ResetPosition", &m_ActionResetPosition, true },
+        { "/actions/main/in/Crouch", &m_ActionCrouch, true },
+        { "/actions/main/in/WeaponGrip", &m_ActionWeaponGrip, false },
+        { "/actions/main/in/OffHandGrip", &m_ActionOffHandGrip, false },
+        { "/actions/main/in/MagazineRelease", &m_ActionMagazineRelease, false },
+        { "/actions/main/in/Flashlight", &m_ActionFlashlight, false },
+        { "/actions/main/in/InventoryGripLeft", &m_ActionInventoryGripLeft, false },
+        { "/actions/main/in/InventoryGripRight", &m_ActionInventoryGripRight, false },
+        { "/actions/main/in/InventoryQuickSwitch", &m_ActionInventoryQuickSwitch, false },
+        { "/actions/main/in/SpecialInfectedAutoAimToggle", &m_ActionSpecialInfectedAutoAimToggle, false },
+        { "/actions/main/in/SpecialInfectedDodgeToggle", &m_ActionSpecialInfectedDodgeToggle, false },
+        { "/actions/main/in/LedgeGuardToggle", &m_ActionLedgeGuardToggle, false },
+        { "/actions/main/in/EffectiveAttackRangeAutoFireToggle", &m_ActionEffectiveAttackRangeAutoFireToggle, false },
+        { "/actions/main/in/SpeechToText", &m_ActionSpeechToText, false },
+        { "/actions/main/in/MenuSelect", &m_MenuSelect, true },
+        { "/actions/main/in/MenuBack", &m_MenuBack, true },
+        { "/actions/main/in/MenuUp", &m_MenuUp, true },
+        { "/actions/main/in/MenuDown", &m_MenuDown, true },
+        { "/actions/main/in/MenuLeft", &m_MenuLeft, true },
+        { "/actions/main/in/MenuRight", &m_MenuRight, true },
+        { "/actions/main/in/Spray", &m_Spray, false },
+        { "/actions/main/in/Scoreboard", &m_Scoreboard, false },
+        { "/actions/main/in/ShowHUD", &m_ToggleHUD, false },
+        { "/actions/main/in/Pause", &m_Pause, true },
+        { "/actions/main/in/NonVRServerMovementAngleToggle", &m_NonVRServerMovementAngleToggle, false },
+        { "/actions/main/in/ScopeToggle", &m_ActionScopeToggle, false },
+        { "/actions/main/in/FriendlyFireBlockToggle", &m_ActionFriendlyFireBlockToggle, false },
+        { "/actions/main/in/CustomAction1", &m_CustomAction1, false },
+        { "/actions/main/in/CustomAction2", &m_CustomAction2, false },
+        { "/actions/main/in/CustomAction3", &m_CustomAction3, false },
+        { "/actions/main/in/CustomAction4", &m_CustomAction4, false },
+        { "/actions/main/in/CustomAction5", &m_CustomAction5, false },
+        { "/actions/base/in/skeleton_lefthand", &m_NativeViewmodelLeftHandOpenVRAction, false },
+        { "/actions/base/in/skeleton_righthand", &m_NativeViewmodelRightHandOpenVRAction, false },
+    };
+    const char* firstFailure = nullptr;
+    vr::EVRInputError firstError = vr::VRInputError_None;
+    unsigned optionalMissing = 0u;
+    for (const auto& action : actions)
+    {
+        if (*action.handle != vr::k_ulInvalidActionHandle)
+            continue;
+        vr::VRActionHandle_t handle = vr::k_ulInvalidActionHandle;
+        auto error = m_Input->GetActionHandle(action.path, &handle);
+        if (error == vr::VRInputError_None && handle == vr::k_ulInvalidActionHandle)
+            error = vr::VRInputError_InvalidHandle;
+        if (error == vr::VRInputError_None)
+            *action.handle = handle;
+        else if (action.required && !firstFailure)
+        { firstFailure = action.path; firstError = error; }
+        else if (!action.required)
+            ++optionalMissing;
+    }
+    struct SetLookup { const char* path; vr::VRActionSetHandle_t* handle; };
+    const SetLookup sets[] = {{ "/actions/main", &m_ActionSet }, { "/actions/base", &m_BaseActionSet }};
+    for (const auto& set : sets)
+    {
+        if (*set.handle != vr::k_ulInvalidActionSetHandle)
+            continue;
+        vr::VRActionSetHandle_t handle = vr::k_ulInvalidActionSetHandle;
+        auto error = m_Input->GetActionSetHandle(set.path, &handle);
+        if (error == vr::VRInputError_None && handle == vr::k_ulInvalidActionSetHandle)
+            error = vr::VRInputError_InvalidHandle;
+        if (error == vr::VRInputError_None)
+            *set.handle = handle;
+        else if (!firstFailure)
+        { firstFailure = set.path; firstError = error; }
+    }
+    if (firstFailure)
+        return fail(firstFailure, firstError);
     m_ActiveActionSets = {};
     m_ActiveActionSets[0].ulActionSet = m_ActionSet;
     m_ActiveActionSets[1].ulActionSet = m_BaseActionSet;
-
+    m_InputActionHandlesReady = true;
+    m_InputAcquisitionFailure.clear();
+    Game::logMsg("[VR][Input] acquisition ready manifest=%s main=%llu base=%llu walk=%llu turn=%llu optionalMissing=%u",
+        m_InputActionManifestPath.c_str(), static_cast<unsigned long long>(m_ActionSet),
+        static_cast<unsigned long long>(m_BaseActionSet), static_cast<unsigned long long>(m_ActionWalk),
+        static_cast<unsigned long long>(m_ActionTurn), optionalMissing);
     return 0;
 }
-
 void VR::InstallApplicationManifest(const char* fileName)
 {
     char currentDir[MAX_STR_LEN];

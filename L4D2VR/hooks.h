@@ -26,9 +26,9 @@ class Server_BaseEntity;
 template <typename T>
 struct Hook
 {
-	T fOriginal;
-	LPVOID pTarget;
-	bool isEnabled;
+	T fOriginal{};
+	LPVOID pTarget = nullptr;
+	bool isEnabled = false;
 
 	int createHook(LPVOID targetFunc, LPVOID detourFunc)
 	{
@@ -51,6 +51,12 @@ struct Hook
 
 	int enableHook()
 	{
+		if (!pTarget)
+		{
+			isEnabled = false;
+			Game::logMsg("[VR][Hook] enable skipped: missing target type=%s", typeid(T).name());
+			return 1;
+		}
 		if (MH_EnableHook(pTarget) != MH_OK)
 		{
 			Game::errorMsg("Failed to enable hook");
@@ -62,6 +68,11 @@ struct Hook
 
 	int disableHook()
 	{
+		if (!pTarget)
+		{
+			isEnabled = false;
+			return 1;
+		}
 		if (MH_DisableHook(pTarget) != MH_OK)
 		{
 			Game::errorMsg("Failed to disable hook");
@@ -80,6 +91,7 @@ typedef bool(__thiscall* tCreateMove)(void* thisptr, float flInputSampleTime, CU
 typedef void(__thiscall* tEndFrame)(PVOID);
 typedef void(__thiscall* tCalcViewModelView)(void* thisptr, void* owner, const Vector& eyePosition, const QAngle& eyeAngles);
 typedef int(__cdecl* tFireTerrorBullets)(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
+typedef void(__cdecl* tClientFxTracer)(const Vector&, const Vector&, int, int, float, bool, const char*, int);
 typedef float(__thiscall* tProcessUsercmds)(void* thisptr, edict_t* player, void* buf, int numcmds, int totalcmds, int dropped_packets, bool ignore, bool paused);
 typedef void(__thiscall* tServerGameClientsClientCommand)(
 	void* thisptr,
@@ -97,11 +109,19 @@ typedef void(__thiscall* tDrawScreenSpaceRectangle)(
 	float srcX0, float srcY0, float srcX1, float srcY1,
 	int srcWidth, int srcHeight,
 	void* clientRenderable, int xDice, int yDice);
-typedef int(__thiscall* tTestMeleeSwingCollision)(void* thisptr, Vector const& vec);
+typedef bool(__thiscall* tTestMeleeSwingCollision)(void* thisptr, Vector const& vec);
 typedef void(__thiscall* tDoMeleeSwing)(void* thisptr);
 typedef void(__thiscall* tStartMeleeSwing)(void* thisptr, void* player, bool a3);
 typedef int(__thiscall* tPrimaryAttack)(void* thisptr);
 typedef void(__thiscall* tItemPostFrame)(void* thisptr);
+typedef bool(__thiscall* tPhysicalReload)(void* thisptr);
+typedef void(__thiscall* tPistolPlayerRunCommand)(void*, CUserCmd*, void*);
+typedef void(__thiscall* tPistolGunFire)(void*);
+typedef void(__thiscall* tClientPistolRunCommand)(void*, void*, CUserCmd*, void*);
+typedef void(__thiscall* tClientPistolGunFire)(void*);
+typedef int(__thiscall* tClientPistolFireActivity)(void*);
+typedef bool(__thiscall* tClientPistolReload)(void*);
+typedef void(__thiscall* tClientPistolFinishReload)(void*);
 typedef void* (__cdecl* tThrowableProjectileCreate)(const Vector& position, const QAngle& angles, const Vector& velocity, const Vector& angularVelocity, void* owner);
 typedef void* (__cdecl* tManualCarryCreateEntityByName)(const char* className, int forcedEdictIndex, bool runScriptHook);
 typedef void* (__thiscall* tManualCarryCreatePhysicsProp)(void* thisptr);
@@ -156,6 +176,7 @@ public:
 	static inline Hook<tCalcViewModelView> hkCalcViewModelView;
 	static inline Hook<tFireTerrorBullets> hkServerFireTerrorBullets;
 	static inline Hook<tFireTerrorBullets> hkClientFireTerrorBullets;
+    static inline Hook<tClientFxTracer> hkClientFxTracer;
 	static inline Hook<tProcessUsercmds> hkProcessUsercmds;
 	static inline Hook<tServerGameClientsClientCommand>
 		hkServerGameClientsClientCommand;
@@ -176,11 +197,21 @@ public:
 	static inline Hook<tThrowableProjectileCreate> hkPipeBombProjectileCreate;
 	static inline Hook<tThrowableProjectileCreate> hkVomitJarProjectileCreate;
 	static inline Hook<tManualCarryCreateEntityByName> hkManualCarryCreateEntityByName;
+    static inline Hook<tPhysicalReload> hkPhysicalGunReload;
+    static inline Hook<tPistolPlayerRunCommand> hkPistolPlayerRunCommand;
+    static inline Hook<tPistolGunFire> hkPistolGunFire;
+    static inline Hook<tClientPistolRunCommand> hkClientPistolRunCommand;
+    static inline Hook<tClientPistolGunFire> hkClientPistolGunFire;
+    static inline Hook<tClientPistolFireActivity> hkClientPistolFireActivity;
+    static inline Hook<tClientPistolReload> hkClientPistolReload;
+    static inline Hook<tClientPistolFinishReload> hkClientPistolFinishReload;
+    static inline Hook<tPhysicalReload> hkPhysicalShotgunReload;
 	static inline Hook<tManualCarryCreatePhysicsProp> hkManualCarryCreatePhysicsProp;
 	static inline Hook<tCBaseEntityVPhysicsCollision> hkCBaseEntityVPhysicsCollision;
 	static inline Hook<tGetPrimaryAttackActivity> hkGetPrimaryAttackActivity;
 	static inline Hook<tEyePosition> hkEyePosition;
 	static inline Hook<tEyePosition> hkServerPlayerEyePosition;
+    static inline Hook<tEyePosition> hkPhysicalMeleeShootPosition;
 	static inline Hook<tEyePosition> hkClientPlayerEyePosition;
 	static inline Hook<tEyeVectors> hkClientPlayerEyeVectors;
 	static inline Hook<tEyeAngles> hkServerPlayerEyeAngles;
@@ -231,6 +262,7 @@ public:
 	static bool InitializeNoHmdNekoPostProbe();
 
 	int initSourceHooks();
+	static void RetryCreateMoveHook();
 
 	// Detour functions
 	static ITexture* __fastcall dGetRenderTarget(void* ecx, void* edx);
@@ -240,6 +272,8 @@ public:
 	static void __fastcall dCalcViewModelView(void* ecx, void* edx, void* owner, const Vector& eyePosition, const QAngle& eyeAngles);
 	static int dServerFireTerrorBullets(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
 	static int dClientFireTerrorBullets(int playerId, const Vector& vecOrigin, const QAngle& vecAngles, int a4, int a5, int a6, float a7);
+    static void __cdecl dClientFxTracer(const Vector& start, const Vector& end, int entityIndex,
+        int attachment, float velocity, bool whiz, const char* material, int particleIndex);
 	static float __fastcall dProcessUsercmds(void* ecx, void* edx, edict_t* player, void* buf, int numcmds, int totalcmds, int dropped_packets, bool ignore, bool paused);
 	static void __fastcall dServerGameClientsClientCommand(
 		void* ecx,
@@ -258,16 +292,26 @@ public:
 		float srcX0, float srcY0, float srcX1, float srcY1,
 		int srcWidth, int srcHeight,
 		void* clientRenderable, int xDice, int yDice);
-	static int __fastcall dTestMeleeSwingCollisionClient(void* ecx, void* edx, Vector const& vec);
-	static int __fastcall dTestMeleeSwingCollisionServer(void* ecx, void* edx, Vector const& vec);
+	static bool __fastcall dTestMeleeSwingCollisionClient(void* ecx, void* edx, Vector const& vec);
+	static bool __fastcall dTestMeleeSwingCollisionServer(void* ecx, void* edx, Vector const& vec);
+    static Vector* __fastcall dPhysicalMeleeShootPosition(void* player, void*, Vector* position);
 	static void __fastcall dDoMeleeSwingServer(void* ecx, void* edx);
 	static void __fastcall dStartMeleeSwingServer(void* ecx, void* edx, void* player, bool a3);
 	static int __fastcall dPrimaryAttackServer(void* ecx, void* edx);
 	static void __fastcall dItemPostFrameServer(void* ecx, void* edx);
+    static void __fastcall dPistolPlayerRunCommand(void* ecx, void* edx, CUserCmd* command, void* moveHelper);
+    static void __fastcall dPistolGunFire(void* weapon, void* edx);
+    static void __fastcall dClientPistolRunCommand(void* prediction, void* edx, void* player, CUserCmd* command, void* moveHelper);
+    static void __fastcall dClientPistolGunFire(void* weapon, void* edx);
+    static int __fastcall dClientPistolFireActivity(void* weapon, void* edx);
+    static bool __fastcall dClientPistolReload(void* weapon, void* edx);
+    static void __fastcall dClientPistolFinishReload(void* weapon, void* edx);
 	static void* __cdecl dMolotovProjectileCreate(const Vector& position, const QAngle& angles, const Vector& velocity, const Vector& angularVelocity, void* owner);
 	static void* __cdecl dPipeBombProjectileCreate(const Vector& position, const QAngle& angles, const Vector& velocity, const Vector& angularVelocity, void* owner);
 	static void* __cdecl dVomitJarProjectileCreate(const Vector& position, const QAngle& angles, const Vector& velocity, const Vector& angularVelocity, void* owner);
 	static void* __cdecl dManualCarryCreateEntityByName(const char* className, int forcedEdictIndex, bool runScriptHook);
+    static bool __fastcall dPhysicalGunReload(void* ecx, void* edx);
+    static bool __fastcall dPhysicalShotgunReload(void* ecx, void* edx);
 	static void* __fastcall dManualCarryCreatePhysicsProp(void* ecx, void* edx);
 	static void __fastcall dCBaseEntityVPhysicsCollision(void* ecx, void* edx, int index, void* collisionEvent);
 	static int __fastcall dGetPrimaryAttackActivity(void* ecx, void* edx, void* meleeInfo);

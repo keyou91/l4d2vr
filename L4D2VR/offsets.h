@@ -58,6 +58,10 @@ public:
     Offset g_pClientMode =               { "client.dll", 0x228351, "89 04 B5 ? ? ? ? E8", 3 };
     Offset CalcViewModelView =           { "client.dll", 0x287270, "55 8B EC 83 EC 48 A1 ? ? ? ? 33 C5 89 45 FC 8B 45 10 8B 10" };
     Offset ClientFireTerrorBullets =     { "client.dll", 0x2F4350, "55 8B EC 81 EC ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 8B 45 08 8B 4D 10"};
+    // FX_Tracer: cdecl, eight 4-byte stack arguments; attachment -1 emits
+    // from its explicit start instead of rebinding to a native viewmodel.
+    Offset ClientFxTracer = { "client.dll", 0x001ACAC0,
+        "55 8B EC 83 EC 60 53 0F 57 C0 F3 0F 10 0D ? ? ? ? 33 C0 F3 0F 11 45 B8", 0, true };
     Offset WriteUsercmdDeltaToBuffer =   { "client.dll", 0x134790, "55 8B EC 83 EC 60 0F 57 C0 8B 55 0C" };
     Offset WriteUsercmd =                { "client.dll", 0x1AAD50, "55 8B EC A1 ? ? ? ? 83 78 30 00 53 8B 5D 10 56 57" };
     Offset g_pppInput =                  { "client.dll", 0xA8A22, "8B 0D ? ? ? ? 8B 01 8B 50 58 FF E2", 2 };
@@ -100,7 +104,11 @@ public:
     Offset ReadUserCmd =                 { "server.dll", 0x205100, "55 8B EC 53 8B 5D 10 56 57 8B 7D 0C 53" };
     Offset ProcessUsercmds =             { "server.dll", 0xEF710, "55 8B EC B8 ? ? ? ? E8 ? ? ? ? A1 ? ? ? ? 33 C5 89 45 FC 8B 45 0C 8B 55 08" };
     Offset CBaseEntity_entindex =        { "server.dll", 0x25390, "8B 41 28 85 C0 75 01 C3 8B 0D ? ? ? ? 2B 41 58 C1 F8 04 C3 CC CC CC CC CC CC CC CC CC CC CC 55"};
-    Offset TestMeleeSwingServer =        { "server.dll", 0x3E79E0, "24 FF D2 5B 5F 5E C3", 20};
+    Offset TestMeleeSwingServer = { "server.dll", 0x003EB2E0,
+        "53 8B DC 83 EC 08 83 E4 F0 83 C4 04 55 8B 6B 04 89 6C 24 04 8B EC 81 EC 48 02 00 00 A1 ? ? ? ? 33 C5 89 45 FC 56 8B 73 08 57 89 4D 98 E8 ? ? ? ? 8B F8", 0 };
+    // CTerrorPlayer::WeaponShootPosition: thiscall output Vector*, ret4.
+    Offset PhysicalMeleeShootPosition = { "server.dll", 0x002FC430,
+        "55 8B EC 56 8B F1 E8 ? ? ? ? 8B CE 85 C0 74 1C E8 ? ? ? ? 8B 10 8B 75 08 8B C8 8B 82 70 04 00 00 56 FF D0", 0, true };
     Offset DoMeleeSwingServer =          { "server.dll", 0x3E84C0, "55 8B EC 83 EC 3C 53 56 8B F1 E8 ? ? ? ? 8B D8 85" };
     Offset StartMeleeSwingServer =       { "server.dll", 0x3E8780, "55 8B EC 53 56 8B F1 8B 86 ? ? ? ? 50 B9 ? ? ? ? E8 ? ? ? ? 8B" };
     Offset PrimaryAttackServer =         { "server.dll", 0x3E8AB0, "56 57 8B F1 E8 ? ? ? ? 8B F8 85 FF 0F 84 ? ? ? ? 8B 87 ? ? ? ? 83 F8 FF" };
@@ -146,6 +154,61 @@ public:
         0,
         true
     };
+    // CPistol::RemoveDualWeapons(bool force). The signature also verifies the
+    // two pistol flag offsets used by the split transaction. Skip on mismatch.
+    Offset PistolRemoveDualWeapons = { "server.dll", 0x003E85C0,
+        "55 8B EC 56 8B F1 80 BE DD 17 00 00 00 75 07 32 C0 5E 5D C2 04 00 80 7D 08 00 75 1C 80 BE 4D 14 00 00 00",
+        0, true
+    };
+    // Reload is virtual slot 281 on the supported L4D2 server ABI. Verified
+    // against the installed gun/shotgun vtables; skip when signatures differ.
+    Offset PhysicalGunReload = { "server.dll", 0x003E8860,
+        "55 8B EC 83 EC 08 53 56 8B F1 E8 ? ? ? ? 8B D8 85 DB 0F 84 ? ? ? ? 8B 83 3C 2E 00 00", 0, true };
+    Offset PhysicalShotgunReload = { "server.dll", 0x003C2F80,
+        "55 8B EC 83 EC 08 56 57 8B F1 E8 ? ? ? ? 8B F8 85 FF 0F 84 ? ? ? ? 8B 87 B4 1C 00 00", 0, true };
+    Offset PhysicalGunOwner = { "server.dll", 0x003EC5D0,
+        "56 E8 ? ? ? ? 8B F0 85 F6 74 14 8B 06 8B 90 68 01 00 00 8B CE FF D2 84 C0 74 04 8B C6 5E C3", 0, true };
+    // Native shell transaction proofs. Literal displacements validate the
+    // server ammo array (0x1874), weapon script handle and clip-capacity field.
+    Offset PhysicalShellAmmoCount = { "server.dll", 0x00046DF0,
+        "55 8B EC 56 8B 75 08 57 8B F9 83 FE FF 75 08 5F 33 C0 5E 5D C2 04 00 56 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 84 C0 B8 E7 03 00 00 75 07 8B 84 B7 74 18 00 00 5F 5E 5D C2 04 00", 0, true };
+    Offset PhysicalShellMaxClip = { "server.dll", 0x0004A810,
+          "0F B7 81 68 14 00 00 50 E8 ? ? ? ? 8B 80 60 01 00 00 83 C4 04 C3", 0, true };
+    // CAmmoDef::IsInfiniteAmmo, also called by native GetAmmoCount. Keep the
+    // ammo-definition result authoritative rather than assuming pistols are infinite.
+    Offset PhysicalAmmoInfinite = { "server.dll", 0x0002D2C0,
+        "55 8B EC 8B 45 08 83 F8 01 7C 29 3B 41 04 7D 24 6B C0 34 03 C8 8B 41 2C 83 F8 FF 75 0D 8B 49 38 85 C9 74 06 8B 41 1C 8B 40 30 83 F8 FE 0F 94 C0 5D C2 04 00", 0, true };
+    // CTerrorPlayer::PlayerRunCommand(CUserCmd*, IMoveHelper*), thiscall, ret 8.
+    // Native command execution is distinct from packet deserialization.
+    Offset PistolPlayerRunCommand = { "server.dll", 0x00319F50,
+        "55 8B EC 83 EC 18 A1 ? ? ? ? 53 33 DB 89 5D F8 89 5D FC 57 8B F9 39 58 08", 0, true };
+    // Native gun firing boundary: thiscall, no stack arguments, void return.
+    // Pistol ownership/layout checks restrict accounting to supported CPistol.
+    Offset PistolGunFire = { "server.dll", 0x003E9370,
+        "55 8B EC 83 EC 34 53 56 8B F1 E8 ? ? ? ? 8B D8 85 DB 0F 84 ? ? ? ? 80 BE 2A 15 00 00 00", 0, true };
+    // CPrediction::RunCommand: thiscall (player, command, move helper), ret 12.
+    // Capture the command being simulated instead of the latest CreateMove pose.
+    Offset ClientPistolRunCommand = { "client.dll", 0x0017B460,
+        "55 8B EC 83 EC 18 53 56 8B 75 08 57 8B 7D 0C 57 8B D9 89 BE 28 14 00 00 E8 ? ? ? ?", 0, true };
+    // Client gun firing boundary: thiscall, no stack arguments, void return.
+    Offset ClientPistolGunFire = { "client.dll", 0x0030C4C0,
+        "55 8B EC 83 EC 2C 56 57 8B F1 E8 ? ? ? ? 8B F8 85 FF 0F 84 ? ? ? ? 80 BE 5A 0A 00 00 00", 0, true };
+    // C_Pistol::GetPrimaryAttackActivity: thiscall, no stack arguments, int return.
+    Offset ClientPistolFireActivity = { "client.dll", 0x00305A10,
+        "56 8B F1 8B 06 8B 90 58 06 00 00 FF D2 84 C0 8B 86 84 09 00 00 74 15", 0, true };
+    // C_Pistol reload entries: thiscall, no stack arguments, bool/void returns.
+    Offset ClientPistolReload = { "client.dll", 0x0030C150,
+        "56 57 8B F1 E8 ? ? ? ? 8B F8 85 FF 0F 84 ? ? ? ? 8B 87 8C 1F 00 00 83 F8 FF", 0, true };
+    Offset ClientPistolFinishReload = { "client.dll", 0x0030C2E0,
+        "56 8B F1 E8 ? ? ? ? 33 C0 39 86 E8 0C 00 00 74 06 89 86 E8 0C 00 00 38 86 EE 0C 00 00", 0, true };
+    Offset PhysicalShellEdictAccessor = { "server.dll", 0x000ED4B0,
+        "51 8B 0D ? ? ? ? 8B 11 8B 82 84 01 00 00 FF D0 C3", 0, true };
+    Offset PhysicalShellReloadLayout = { "server.dll", 0x003C30C4,
+        "8B 86 0C 14 00 00 50 8B CF E8 ? ? ? ? 8B 16 8B 9E 14 14 00 00 89 45 F8 8B 82 0C 05 00 00 8B CE FF D0 2B C3", 0, true };
+    Offset PhysicalShellReloadState = { "server.dll", 0x003C2FF6,
+        "83 BE F0 17 00 00 00 53 0F 85 ? ? ? ?", 0, true };
+    Offset PhysicalShellActiveHandle = { "server.dll", 0x000464F0,
+        "8B 81 D4 19 00 00 83 F8 FF 74 23 8B 15 ? ? ? ? 8B C8 81 E1 FF 0F 00 00", 0, true };
     // CBaseCombatCharacter::RemovePlayerItem and UTIL_Remove. Empty-hand mode
     // uses them to destroy only the hidden placeholder pistol before a pickup.
     Offset ManualEmptyHandsRemovePlayerItem = { "server.dll", 0x00045200,

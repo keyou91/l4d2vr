@@ -25,6 +25,7 @@
 #include "game.h"
 #include "hooks.h"
 #include "sdk.h"
+#include "vr_weapon_calibration.h"
 
 extern "C" void __cdecl L4D2VR_ShutdownSystemMouseInputSuppression();
 extern "C" void __cdecl L4D2VR_ShutdownReShadeVRBridge();
@@ -2782,6 +2783,14 @@ namespace
             return false;
 
         const std::filesystem::path updateDir = gameRootPath / L"VR" / L"update";
+        std::error_code updatePolicyError;
+        const bool localBuildPinned = std::filesystem::exists(
+            gameRootPath / L"VR" / L"disable_workshop_updates.txt", updatePolicyError);
+        if (localBuildPinned || updatePolicyError)
+        {
+            AppendUpdateLog(updateDir, "workshop update checks disabled by local-build pin or unreadable update policy");
+            return false;
+        }
         const std::filesystem::path vpkPath = FindWorkshopUpdateVpk(gameRootPath);
         if (vpkPath.empty())
         {
@@ -3041,7 +3050,21 @@ namespace
             return;
 
         bool configChanged = false;
-        const std::unordered_set<std::string> sampleKeys = ExtractConfigParameterKeys(sampleText, true);
+        std::unordered_set<std::string> sampleKeys = ExtractConfigParameterKeys(sampleText, true);
+        // An older workshop sample must not remove supported interaction
+        // settings added by this DLL when the game starts.
+        sampleKeys.insert("GripReleaseDropEnabled");
+        sampleKeys.insert("VrHandsRightFreePoseOffsetMeters");
+        sampleKeys.insert("VrHandsRightFreePoseRotationOffsetDeg");
+        sampleKeys.insert("MagazineReleaseButtonRequired");
+        sampleKeys.insert("BodyGripInventoryEnabled");
+        sampleKeys.insert("ManualPumpEnabled");
+        sampleKeys.insert("DualPistolsIndependentHandsEnabled");
+        sampleKeys.insert("DualPistolsNativeReloadFallbackEnabled");
+        sampleKeys.insert("ScopePhysicalLensEnabled");
+        sampleKeys.insert("ScopeBaseMagnification");
+        for (const auto key : l4d2vr_calibration::kConfigKeys)
+            sampleKeys.insert(std::string(key));
         configChanged |= RemoveConfigParametersNotInSample(configText, sampleKeys);
 
         std::istringstream sampleStream(sampleText);
@@ -3052,6 +3075,8 @@ namespace
             std::string value;
             if (TryExtractConfigParameterAssignment(line, key, value, false))
             {
+                if (!l4d2vr_calibration::ShouldApplySampleValue(key, ConfigParameterKeyExists(configText, key)))
+                    continue;
                 if (SetConfigParameterValue(configText, key, value))
                     configChanged = true;
                 continue;

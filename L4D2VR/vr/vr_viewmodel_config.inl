@@ -1252,6 +1252,9 @@ void VR::ParseConfigFile()
         m_VrHandsLeftPoseRotationOffsetDeg = clampVector(getVector3("VrHandsLeftPoseRotationOffsetDeg", m_VrHandsLeftPoseRotationOffsetDeg), -180.0f, 180.0f);
         m_VrHandsRightPoseOffsetMeters = clampVector(getVector3("VrHandsRightPoseOffsetMeters", m_VrHandsRightPoseOffsetMeters), -1.0f, 1.0f);
         m_VrHandsRightPoseRotationOffsetDeg = clampVector(getVector3("VrHandsRightPoseRotationOffsetDeg", m_VrHandsRightPoseRotationOffsetDeg), -180.0f, 180.0f);
+        const Vector mirroredFreeOffset(-m_VrHandsLeftPoseOffsetMeters.x, m_VrHandsLeftPoseOffsetMeters.y, m_VrHandsLeftPoseOffsetMeters.z);
+        m_VrHandsRightFreePoseOffsetMeters = clampVector(getVector3("VrHandsRightFreePoseOffsetMeters", mirroredFreeOffset), -1.0f, 1.0f);
+        m_VrHandsRightFreePoseRotationOffsetDeg = clampVector(getVector3("VrHandsRightFreePoseRotationOffsetDeg", m_VrHandsLeftPoseRotationOffsetDeg), -180.0f, 180.0f);
         m_VrHandsLeftHandedLeftPoseOffsetMeters = clampVector(
             getVector3("VrHandsLeftHandedLeftPoseOffsetMeters", m_VrHandsLeftHandedLeftPoseOffsetMeters),
             -1.0f,
@@ -2964,6 +2967,43 @@ void VR::ParseConfigFile()
         getFloat("WeaponAimPitchOffsetDeg", m_WeaponAimPitchOffsetDeg),
         -90.0f,
         90.0f);
+    m_WeaponAimYawOffsetDeg = l4d2vr_calibration::ClampFinite(
+        getFloat("WeaponAimYawOffsetDeg", m_WeaponAimYawOffsetDeg),
+        -180.0f,
+        180.0f);
+    m_WeaponAimRollOffsetDeg = l4d2vr_calibration::ClampFinite(
+        getFloat("WeaponAimRollOffsetDeg", m_WeaponAimRollOffsetDeg),
+        -180.0f,
+        180.0f);
+    m_BulletAimPosOffset = getVector3("BulletAimOffset", m_BulletAimPosOffset);
+    m_BulletAimPosOffset.x = l4d2vr_calibration::ClampFinite(m_BulletAimPosOffset.x, -10.0f, 10.0f);
+    m_BulletAimPosOffset.y = l4d2vr_calibration::ClampFinite(m_BulletAimPosOffset.y, -10.0f, 10.0f);
+    m_BulletAimPosOffset.z = l4d2vr_calibration::ClampFinite(m_BulletAimPosOffset.z, -10.0f, 10.0f);
+    m_BulletAimRotationOffsetDeg = QAngle(
+        l4d2vr_calibration::ClampFinite(
+            getFloat("BulletAimRotationPitchDeg", m_BulletAimRotationOffsetDeg.x),
+            -180.0f,
+            180.0f),
+        l4d2vr_calibration::ClampFinite(
+            getFloat("BulletAimRotationYawDeg", m_BulletAimRotationOffsetDeg.y),
+            -180.0f,
+            180.0f),
+        l4d2vr_calibration::ClampFinite(
+            getFloat("BulletAimRotationRollDeg", m_BulletAimRotationOffsetDeg.z),
+            -180.0f,
+            180.0f));
+    m_ViewmodelPosePosOffset = getVector3("ViewmodelPoseOffset", m_ViewmodelPosePosOffset);
+    m_ViewmodelPosePosOffset.x = l4d2vr_calibration::ClampFinite(m_ViewmodelPosePosOffset.x, -10.0f, 10.0f);
+    m_ViewmodelPosePosOffset.y = l4d2vr_calibration::ClampFinite(m_ViewmodelPosePosOffset.y, -10.0f, 10.0f);
+    m_ViewmodelPosePosOffset.z = l4d2vr_calibration::ClampFinite(m_ViewmodelPosePosOffset.z, -10.0f, 10.0f);
+    const Vector viewmodelPoseAngOffset = getVector3("ViewmodelPoseRotationOffsetDeg", Vector(
+        m_ViewmodelPoseAngOffset.x,
+        m_ViewmodelPoseAngOffset.y,
+        m_ViewmodelPoseAngOffset.z));
+    m_ViewmodelPoseAngOffset = QAngle(
+        l4d2vr_calibration::ClampFinite(viewmodelPoseAngOffset.x, -180.0f, 180.0f),
+        l4d2vr_calibration::ClampFinite(viewmodelPoseAngOffset.y, -180.0f, 180.0f),
+        l4d2vr_calibration::ClampFinite(viewmodelPoseAngOffset.z, -180.0f, 180.0f));
 
     float headSmoothingValue = m_HeadSmoothing;
     if (hasHeadSmoothing)
@@ -3161,6 +3201,13 @@ void VR::ParseConfigFile()
     m_GameLaserSightEndOffset.y = std::clamp(m_GameLaserSightEndOffset.y, -256.0f, 256.0f);
     m_GameLaserSightEndOffset.z = std::clamp(m_GameLaserSightEndOffset.z, -256.0f, 256.0f);
     m_ManualThrowEnabled = getBool("ManualThrowEnabled", m_ManualThrowEnabled);
+    m_GripReleaseDropEnabled = getBool("GripReleaseDropEnabled", false);
+    m_BodyGripInventoryEnabled = getBool("BodyGripInventoryEnabled", false);
+    m_BodyGripInventoryUseModelPelvis = getBool("BodyGripInventoryUseModelPelvis", true);
+    m_ManualPumpEnabled = getBool("ManualPumpEnabled", false);
+    m_DualPistolsIndependentHandsEnabled = getBool("DualPistolsIndependentHandsEnabled", false);
+    m_DualPistolsNativeReloadFallbackEnabled = getBool("DualPistolsNativeReloadFallbackEnabled", true);
+    m_MagazineReleaseButtonRequired = getBool("MagazineReleaseButtonRequired", false);
     m_ManualThrowVelocityScale = std::clamp(getFloat("ManualThrowVelocityScale", m_ManualThrowVelocityScale), 0.0f, 20.0f);
     m_ManualThrowHorizontalVelocityScale = std::clamp(getFloat("ManualThrowHorizontalVelocityScale", m_ManualThrowHorizontalVelocityScale), 0.0f, 10.0f);
     m_ManualThrowVerticalVelocityScale = std::clamp(getFloat("ManualThrowVerticalVelocityScale", m_ManualThrowVerticalVelocityScale), 0.0f, 10.0f);
@@ -3362,6 +3409,8 @@ void VR::ParseConfigFile()
 
     // Gun-mounted scope
     m_ScopeEnabled = getBool("ScopeEnabled", m_ScopeEnabled);
+    m_ScopePhysicalLensEnabled = getBool("ScopePhysicalLensEnabled", m_ScopePhysicalLensEnabled);
+    m_ScopeBaseMagnification = std::clamp(getFloat("ScopeBaseMagnification", m_ScopeBaseMagnification), 1.0f, 16.0f);
     m_ScopeRTTSize = std::clamp(getInt("ScopeRTTSize", m_ScopeRTTSize), 128, 4096);
     m_DefaultScopeAdjust.fov = std::clamp(getFloat("ScopeDefaultFov", m_DefaultScopeAdjust.fov), 1.0f, 179.0f);
     {
@@ -3387,7 +3436,7 @@ void VR::ParseConfigFile()
     m_ScopeSizeAdjustSpeed = std::clamp(getFloat("ScopeSizeAdjustSpeed", m_ScopeSizeAdjustSpeed), 0.0f, 5.0f);
     m_ScopeOffsetAdjustMoveSpeed = std::clamp(getFloat("ScopeOffsetAdjustMoveSpeed", m_ScopeOffsetAdjustMoveSpeed), 0.1f, 5.0f);
     m_ScopeAimSensitivityFovReductionRate = std::clamp(getFloat("ScopeAimSensitivityFovReductionRate", m_ScopeAimSensitivityFovReductionRate), 0.0f, 4.0f);
-    m_ScopeZNear = std::clamp(getFloat("ScopeZNear", m_ScopeZNear), 0.1f, 64.0f);
+    m_ScopeZNear = l4d2vr_optics::ResolveNearPlane(getFloat("ScopeZNear", m_ScopeZNear), m_ScopeZNear);
 
     m_ScopeCameraOffset = getVector3("ScopeCameraOffset", m_ScopeCameraOffset);
     { Vector tmp = getVector3("ScopeCameraAngleOffset", Vector{ m_ScopeCameraAngleOffset.x, m_ScopeCameraAngleOffset.y, m_ScopeCameraAngleOffset.z }); m_ScopeCameraAngleOffset = QAngle{ tmp.x, tmp.y, tmp.z }; }
@@ -3767,6 +3816,8 @@ void VR::ParseConfigFile()
         getBool("FlashlightEnhancementEnabled", m_FlashlightEnhancementEnabled);
     m_FlashlightFollowHmd = getBool("FlashlightFollowHmd", m_FlashlightFollowHmd);
     m_FlashlightFollowHmdForFirearms = getBool("FlashlightFollowHmdForFirearms", m_FlashlightFollowHmdForFirearms);
+    m_FlashlightHmdForwardOffsetMeters = l4d2vr_flashlight::OffsetMeters(
+        getFloat("FlashlightHmdForwardOffsetMeters", m_FlashlightHmdForwardOffsetMeters));
     m_FlashlightEnhancementSettingsDirty.store(true, std::memory_order_release);
     m_LocalVScriptConvarsEnabled =
         getBool("LocalVScriptConvarsEnabled", m_LocalVScriptConvarsEnabled);

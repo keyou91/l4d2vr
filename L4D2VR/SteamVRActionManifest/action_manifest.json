@@ -65,6 +65,21 @@
          "type": "boolean"
       },
       {
+         "name": "/actions/main/in/WeaponGrip",
+         "type": "boolean",
+         "requirement": "optional"
+      },
+      {
+         "name": "/actions/main/in/OffHandGrip",
+         "type": "boolean",
+         "requirement": "optional"
+      },
+      {
+         "name": "/actions/main/in/MagazineRelease",
+         "type": "boolean",
+         "requirement": "optional"
+      },
+      {
          "name": "/actions/main/in/Use",
          "type": "boolean"
       },
@@ -220,6 +235,9 @@
          "/actions/main/in/Walk": "Walk",
          "/actions/main/in/Turn": "Turn",
          "/actions/main/in/Reload": "Reload",
+         "/actions/main/in/WeaponGrip": "Weapon Grip (release to drop)",
+         "/actions/main/in/OffHandGrip": "Off-hand Grip",
+         "/actions/main/in/MagazineRelease": "Magazine Release",
          "/actions/main/in/Use": "Use",
          "/actions/main/in/Teleport": "Teleport",
          "/actions/main/in/NextItem": "Next Item",

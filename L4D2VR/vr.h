@@ -11,6 +11,24 @@
 #undef max
 #endif
 #include "openvr.h"
+#include "vr_controller_identity.h"
+#include "vr_weapon_calibration.h"
+#include "vr_scope_optics.h"
+#include "vr_weapon_models.h"
+#include "vr_magazine_policy.h"
+#include "vr_remote_shells.h"
+#include "vr_pistol_effects.h"
+#include "vr_flashlight_pose.h"
+#include "vr_remote_magazines.h"
+#include "vr_pistol_ammo_sync.h"
+#include "vr_pistol_prediction.h"
+#include "vr_pistol_reload.h"
+#include "vr_physical_controls.h"
+#include "vr_input_recovery.h"
+#include "vr_hand_input_validation.h"
+#include "vr_interaction_geometry.h"
+#include "vr_body_inventory.h"
+#include "vr_dual_pistols.h"
 #include "vector.h"
 #include "vr_hands/vr_hand_types.h"
 #include <cstdint>
@@ -68,14 +86,43 @@ struct ScopeAdjustment
 	Vector overlayOffset = { 0.02f, 0.04f, -0.06f };
 };
 
+struct PhysicalScopeLensSnapshot
+{
+    Vector center{}, forward{}, right{}, up{}, sceneCenter{}, sceneForward{}, sceneUp{};
+    float radius = 0.0f, sceneRadius = 0.0f, magnification = 1.0f;
+    int weaponId = 0;
+    l4d2vr_optics::WeaponIdentity weapon{};
+    uint64_t publishedAt = 0u;
+    l4d2vr_optics::Pose trackingPose{};
+};
+
+struct PhysicalScopeRenderSnapshot
+{
+    l4d2vr_optics::WeaponIdentity weapon{};
+    Vector origin{};
+    QAngle angles{};
+    float fov = 0.0f, magnification = 1.0f;
+    uint64_t publishedAt = 0u;
+};
+
 
 struct TrackedDevicePoseData
 {
 	std::string TrackedDeviceName;
-	Vector TrackedDevicePos;
-	Vector TrackedDeviceVel;
-	QAngle TrackedDeviceAng;
-	QAngle TrackedDeviceAngVel;
+	Vector TrackedDevicePos{ 0.0f, 0.0f, 0.0f };
+	Vector TrackedDeviceVel{ 0.0f, 0.0f, 0.0f };
+	QAngle TrackedDeviceAng{ 0.0f, 0.0f, 0.0f };
+	QAngle TrackedDeviceAngVel{ 0.0f, 0.0f, 0.0f };
+};
+
+struct VRMeleeTrackingSnapshot
+{
+    bool valid = false;
+    uint32_t sampledAtMs = 0;
+    Vector position{0.0f, 0.0f, 0.0f};
+    QAngle angles{0.0f, 0.0f, 0.0f};
+    Vector relativeVelocity{0.0f, 0.0f, 0.0f};
+    QAngle angularVelocity{0.0f, 0.0f, 0.0f};
 };
 
 // Coherent, anatomical (physical left/right) world-space tracking sample used
@@ -86,6 +133,7 @@ struct TrackedDevicePoseData
 struct VRWorldPoseTrackingSnapshot
 {
 	bool initialized = false;
+    uint64_t capturedAtMs = 0u;
 	bool hmdValid = false;
 	bool leftHandValid = false;
 	bool rightHandValid = false;
@@ -101,13 +149,13 @@ struct VRWorldPoseTrackingSnapshot
 	// tracked points below. Reading it later in the pose publisher can observe a
 	// different locomotion tick and leak that phase error into all three local
 	// positions.
-	Vector referenceOrigin{};
-	Vector hmdPosition{};
-	QAngle hmdAngles{};
-	Vector leftHandPosition{};
-	QAngle leftHandAngles{};
-	Vector rightHandPosition{};
-	QAngle rightHandAngles{};
+	Vector referenceOrigin{0.0f, 0.0f, 0.0f};
+	Vector hmdPosition{0.0f, 0.0f, 0.0f};
+	QAngle hmdAngles{0.0f, 0.0f, 0.0f};
+	Vector leftHandPosition{0.0f, 0.0f, 0.0f};
+	QAngle leftHandAngles{0.0f, 0.0f, 0.0f};
+	Vector rightHandPosition{0.0f, 0.0f, 0.0f};
+	QAngle rightHandAngles{0.0f, 0.0f, 0.0f};
 	std::array<float, 5> leftFingerCurls{};
 	std::array<float, 5> rightFingerCurls{};
 };
@@ -191,6 +239,7 @@ struct LeftHandedDigitalActionFrameCache
 {
 	uint64_t frameSerial = 0;
 	bool dataValid = false;
+	bool querySucceeded = false;
 	bool previousStateValid = false;
 	bool previousState = false;
 	vr::InputDigitalActionData_t data{};
@@ -200,6 +249,7 @@ struct LeftHandedAnalogActionFrameCache
 {
 	uint64_t frameSerial = 0;
 	bool dataValid = false;
+	bool querySucceeded = false;
 	vr::InputAnalogActionData_t data{};
 };
 
@@ -230,7 +280,10 @@ enum class MagazineInteractionManualState
 	WaitingForBackendReload,
 	WaitingForBoltGrab,
 	HoldingBolt,
-	AutoBolting
+	AutoBolting,
+    WaitingForServerShell,
+    WaitingForServerMagazine,
+    WaitingForServerPistolCycle
 };
 
 struct MagazineInteractionBoxSnapshot
@@ -256,6 +309,7 @@ struct MagazineInteractionBoxSnapshot
 	int boneIndex = -1;
 	bool modelBasisValid = false;
 	bool viewmodelAnchorBasisValid = false;
+    l4d2vr_dual::Hand anchorHand = l4d2vr_dual::Hand::Right;
 	std::string modelName;
 	std::chrono::steady_clock::time_point publishedAt{};
 };
@@ -394,10 +448,21 @@ public:
 	// Rotates the logical weapon hand's OpenVR grip pose around its local right
 	// axis before the pose is used by the viewmodel, aim line, and gameplay aim.
 	float m_WeaponAimPitchOffsetDeg = -45.0f;
+	// Additional aim-basis offsets layered on top of the default pitch tweak.
+	float m_WeaponAimYawOffsetDeg = 0.0f;
+	float m_WeaponAimRollOffsetDeg = 0.0f;
+	// Separate bullet-aim tuning so the gun pose can stay fixed while the shot
+	// ray and hit marker are nudged independently.
+	std::atomic<bool> m_BulletAimWeaponEligible{ false };
+	Vector m_BulletAimPosOffset = { 0,0,0 };
+	QAngle m_BulletAimRotationOffsetDeg = { 0,0,0 };
 
 	Vector m_ViewmodelForward;
 	Vector m_ViewmodelRight;
 	Vector m_ViewmodelUp;
+	// Global weapon-pose offsets layered under the per-weapon manual tuning.
+	Vector m_ViewmodelPosePosOffset = { 0,0,0 };
+	QAngle m_ViewmodelPoseAngOffset = { 0,0,0 };
 
 	Vector m_HmdPosAbs = { 0,0,0 };
 	Vector m_HmdPosAbsPrev = { 0,0,0 };
@@ -545,6 +610,8 @@ public:
 	std::atomic<float> m_RenderViewmodelAngOffsetY{ 0.0f };
 	std::atomic<float> m_RenderViewmodelAngOffsetZ{ 0.0f };
 	std::atomic<float> m_RenderWeaponAimPitchOffsetDeg{ -45.0f };
+	std::atomic<float> m_RenderWeaponAimYawOffsetDeg{ 0.0f };
+	std::atomic<float> m_RenderWeaponAimRollOffsetDeg{ 0.0f };
 
 	// Local-player & camera state snapshot for the render thread (mat_queue_mode!=0).
 	// NOTE: These are written under the same seqlock as m_RenderViewParamsSeq.
@@ -577,6 +644,7 @@ public:
 	// Aim-line gating computed on the update thread; render thread only consumes.
 	std::atomic<uint32_t> m_RenderAimLineAllowed{ 0 };
 	std::atomic<uint32_t> m_RenderAimLineShow{ 0 };
+    std::atomic<bool> m_RenderWeaponCalibrationActive{false};
 	std::atomic<uint32_t> m_RenderWeaponLaserSightActive{ 0 };
 
 
@@ -639,6 +707,7 @@ public:
 
 	// True on the render thread while inside dRenderView when mat_queue_mode!=0.
 	static inline thread_local bool t_UseRenderFrameSnapshot = false;
+    static inline thread_local l4d2vr_dual::Hand t_MagazineContactHand = l4d2vr_dual::Hand::Right;
 
 	// --- Pose waiter (mat_queue_mode!=0) ---
 	// WaitGetPoses() is a hard pacing barrier. If we call it on the queued render thread, we can
@@ -779,7 +848,7 @@ public:
 	bool m_QueuedRenderHmdYawUsesTurnPath = false;
 
 	// Queued (mat_queue_mode!=0) viewmodel stabilization: prevents first-person viewmodel ghosting
-	// when engine viewmodel bob/lag runs on a decoupled thread. 
+	// when engine viewmodel bob/lag runs on a decoupled thread.
 	bool m_QueuedViewmodelStabilize = true;
 	// Global viewmodel stabilization: hard-lock first-person viewmodel pose after engine calc
 	// in all queue modes (mat_queue_mode 0/1/2), useful to disable movement bob/sway.
@@ -1164,6 +1233,79 @@ public:
 	std::chrono::steady_clock::time_point m_ObjectPullCancelRepeatUntil{};
 
 	bool m_ManualThrowEnabled = false;
+	bool m_GripReleaseDropEnabled = false;
+    std::atomic<unsigned> m_ServerPhysicalInteractionVersion{ 0u };
+	bool m_MagazineReleaseButtonRequired = false;
+	bool m_MagazineReleaseJustPressed = false;
+	std::atomic<uint32_t> m_WeaponGripInputState{ 0 };
+    std::atomic<uint32_t> m_GripPickupOfferTimeMs{ 0 };
+    std::atomic<uint32_t> m_LeftPistolPickupOfferTimeMs{ 0 };
+    std::atomic<uint32_t> m_BodyGripSelectionSerial{ 0 };
+    bool m_BodyGripInventoryEnabled = false;
+    bool m_ManualPumpEnabled = false;
+    std::atomic<bool> m_ManualPumpBlockingFire{ false };
+    std::atomic<bool> m_BodyAmmoAvailable{ false };
+    bool m_DualPistolsIndependentHandsEnabled = false;
+    bool m_DualPistolsNativeReloadFallbackEnabled = true;
+    std::atomic<uint32_t> m_DualPistolNativeReloadState{ 0u };
+    l4d2vr_dual::ReloadPulse m_DualPistolNativeReloadPulse;
+    std::atomic<bool> m_DualPistolsActive{ false };
+    std::atomic<uint32_t> m_DualPistolTriggerState{ 0u };
+    std::atomic<uint32_t> m_PistolOwnershipMask{ 0u }; // Right=1, left=2.
+    std::atomic<uint32_t> m_PistolOffhandGripState{ 0u }; // Active=1, down=2.
+    std::atomic<uint32_t> m_MagazineGripInputState{ 0u }; // Ready/down plus discontinuity generation.
+    l4d2vr_input::GripContributors m_MagazineButtonGripSources;
+    bool IsMagazineGripInputAvailable() const { return (m_MagazineGripInputState.load(std::memory_order_acquire) & 1u) != 0u; }
+    std::atomic<bool> m_PistolUseLeft{ false };
+    std::atomic<bool> m_LeftHandPistolActive{ false };
+    mutable std::mutex m_DualPistolShotMutex;
+    l4d2vr_dual::CommandShots m_DualPistolCommandShots;
+    l4d2vr_dual::Shot m_LatestDualPistolShot{};
+    mutable std::mutex m_PistolMuzzleMutex;
+    l4d2vr_pistol_fx::Muzzles m_PistolMuzzles;
+    l4d2vr_pistol_fx::Key ReadPistolMuzzleKey() const;
+    void PublishPistolMuzzle(const l4d2vr_pistol_fx::Key& key, l4d2vr_dual::Hand hand,
+        const l4d2vr_dual::Matrix3x4& controller, const l4d2vr_dual::Matrix3x4& muzzle);
+    bool GetExecutingPistolMuzzle(int command, uintptr_t owner, uintptr_t weapon, Vector& origin) const;
+    void RecordDualPistolCommand(int command, l4d2vr_dual::Hand hand, bool firing, uintptr_t owner, uintptr_t weapon);
+    bool GetDualPistolCommandPose(int command, Vector& position, QAngle& angles, l4d2vr_dual::Hand& hand) const;
+    bool GetExecutingDualPistolShotPose(int command, uintptr_t owner, uintptr_t weapon,
+        Vector& position, QAngle& angles, l4d2vr_dual::Hand& hand) const;
+    bool GetLatestDualPistolShotPose(uintptr_t owner, uintptr_t weapon, Vector& position,
+        QAngle& angles, l4d2vr_dual::Hand& hand) const;
+    mutable std::mutex m_MeleeCommandMutex;
+    l4d2vr_physical::MeleeCommands m_MeleeCommands;
+    l4d2vr_physical::MeleeMotion m_MeleeMotion;
+    int m_LastMeleeRecordedCommand = 0;
+    VRMeleeTrackingSnapshot m_MeleeTrackingSnapshot{};
+    void RecordMeleeCommand(int command, bool eligible, uintptr_t owner, uintptr_t weapon);
+    bool GetMeleeCommand(int command, l4d2vr_physical::MeleeCommand& sample) const;
+    void CancelMeleeMotion();
+    l4d2vr_physical::PumpCycles m_ManualPumpCycles;
+    std::mutex m_ManualPumpMutex;
+    MagazineInteractionBoxSnapshot m_ManualPumpClosedBoltBox{};
+    uintptr_t m_ManualPumpClosedBoltWeapon = 0;
+    bool m_ManualPumpClosedBoltValid = false;
+    void RecordManualPumpShot();
+    void UpdateBodyInventoryPose();
+    void PublishBodyInventoryModelPose(uintptr_t owner, uintptr_t model, uint64_t generation,
+        const Vector& referenceHead, const Vector& pelvis, float bodyYaw);
+    void ClearBodyInventoryModelPose();
+    bool ResolveBodyInventoryModelPose(const Vector& head, Vector& origin, Vector& forward, Vector& right) const;
+    bool m_BodyGripInventoryUseModelPelvis = true;
+    mutable std::mutex m_BodyInventoryModelMutex;
+    l4d2vr_body_inventory::ModelPose m_BodyInventoryModelPose;
+    std::atomic<uintptr_t> m_BodyInventoryOwnerTag{0u};
+    bool GetBodyInventoryPose(Vector& origin, Vector& forward, Vector& right) const;
+    bool GetBodyAmmoPreviewWorld(const MagazineInteractionBoxSnapshot& box, VrHandMatrix4& outWorld) const;
+    mutable std::mutex m_BodyInventoryPoseMutex;
+    bool m_BodyInventoryPoseValid = false;
+    float m_BodyInventoryYaw = 0.0f;
+    float m_BodyInventoryRotationOffset = 0.0f;
+    Vector m_BodyInventoryOrigin{0.0f, 0.0f, 0.0f};
+    Vector m_BodyInventoryHeadPosAbs{0.0f, 0.0f, 0.0f};
+    Vector m_BodyInventoryForward{0.0f, 0.0f, 0.0f};
+    Vector m_BodyInventoryRight{0.0f, 0.0f, 0.0f};
 	struct ManualThrowUsercmdPoseSnapshot
 	{
 		bool valid = false;
@@ -1533,6 +1675,11 @@ public:
 	vr::VRActionSetHandle_t m_ActionSet = vr::k_ulInvalidActionSetHandle;
 	vr::VRActionSetHandle_t m_BaseActionSet = vr::k_ulInvalidActionSetHandle;
 	std::array<vr::VRActiveActionSet_t, 2> m_ActiveActionSets{};
+	bool m_InputManifestRegistered = false;
+	bool m_InputActionHandlesReady = false;
+	std::string m_InputActionManifestPath;
+	std::string m_InputAcquisitionFailure;
+	std::chrono::steady_clock::time_point m_InputAcquisitionNextRetry{};
 
 	// actions
 	vr::VRActionHandle_t m_ActionJump = vr::k_ulInvalidActionHandle;
@@ -1549,6 +1696,9 @@ public:
 	vr::VRActionHandle_t m_ActionPrevItem = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionResetPosition = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionCrouch = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionWeaponGrip = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionOffHandGrip = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionMagazineRelease = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionFlashlight = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionInventoryGripLeft = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionInventoryGripRight = vr::k_ulInvalidActionHandle;
@@ -1585,6 +1735,8 @@ public:
 	std::chrono::steady_clock::time_point m_LeftHandedInputSwapNextRefresh{};
 	uint64_t m_LeftHandedInputBindingHash = 0;
 	uint64_t m_InputActionStateFrameSerial = 0;
+	l4d2vr_input::ActionFrame m_InputActionFrame;
+	vr::EVRInputError m_LastInputActionStateError = vr::VRInputError_None;
 	bool m_LeftHandedInputSwapRuntimeEnabled = false;
 	bool m_WeaponHapticsEnabled = true;
 	std::unordered_map<std::string, WeaponHapticsProfile> m_WeaponHapticsOverrides;
@@ -1598,6 +1750,7 @@ public:
 	TrackedDevicePoseData m_HmdPose;
 	TrackedDevicePoseData m_LeftControllerPose;
 	TrackedDevicePoseData m_RightControllerPose;
+	std::atomic<uint64_t> m_PhysicalControllerIndexPair{ ~uint64_t{ 0 } };
 	mutable std::mutex m_WorldPoseTrackingSnapshotMutex;
 	VRWorldPoseTrackingSnapshot m_WorldPoseTrackingSnapshot{};
 
@@ -1697,6 +1850,10 @@ public:
 	Vector m_VrHandsLeftPoseRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
 	Vector m_VrHandsRightPoseOffsetMeters = { 0.0f, 0.0f, 0.0f };
 	Vector m_VrHandsRightPoseRotationOffsetDeg = { 0.0f, 0.0f, 0.0f };
+    Vector m_VrHandsRightFreePoseOffsetMeters{0.0f, 0.0f, 0.0f};
+    Vector m_VrHandsRightFreePoseRotationOffsetDeg{0.0f, 0.0f, 0.0f};
+    l4d2vr_magazine::ChamberHistory m_PhysicalReloadChambers;
+    bool m_PhysicalReloadObservedEmpty = false;
 	// Left-handed mode uses gameplay-right for the physical left/gun hand and gameplay-left
 	// for the physical right/off hand. These offsets are named by physical hand.
 	Vector m_VrHandsLeftHandedLeftPoseOffsetMeters = { 0.0f, 0.0f, 0.0f };
@@ -1729,8 +1886,8 @@ public:
 		m_WorldModelVRPoseLocalThirdPersonWarmupUntilTickMs{ 0u };
 	// Final palm-only local rotation offsets. These are deliberately applied
 	// after the positional two-bone solve so wrist tuning cannot move an elbow.
-	Vector m_WorldModelVRPoseLeftHandRotationOffsetDeg{};
-	Vector m_WorldModelVRPoseRightHandRotationOffsetDeg{};
+	Vector m_WorldModelVRPoseLeftHandRotationOffsetDeg{0.0f, 0.0f, 0.0f};
+	Vector m_WorldModelVRPoseRightHandRotationOffsetDeg{0.0f, 0.0f, 0.0f};
 	float m_WorldModelVRPoseSendHz = 25.0f;
 	float m_WorldModelVRPoseInterpolationMs = 50.0f;
 	float m_WorldModelVRPoseStaleAfterMs = 250.0f;
@@ -1855,6 +2012,7 @@ public:
 	std::array<float, 5> m_VrHandsGloveFingerMaxCurl = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 	bool m_VrHandsGlovesRuntimeFallback = false;
 	bool m_VrHandsGlovesFallbackLogged = false;
+	bool m_VrHandsGlovesHideArmsBeforeFallback = false;
 	bool m_VrHandsMotionRangeWithoutController = false;
 	bool m_VrHandsRightUseViewmodelPose = false;
 	float m_VrHandsTwoHandedGripTargetBoxScale = 1.0f;
@@ -1875,6 +2033,7 @@ public:
 	Vector m_VrHandsTwoHandedAimUpSmoothed = { 0.0f, 0.0f, 1.0f };
 	bool m_VrHandsTwoHandedGripActive = false;
 	int m_VrHandsTwoHandedGripWeaponId = 0;
+	uintptr_t m_VrHandsTwoHandedGripWeaponTag = 0;
 	std::chrono::steady_clock::time_point m_VrHandsTwoHandedMountFriendlyGripEnteredAt{};
 	bool m_VrHandsTwoHandedMountFriendlyGripContact = false;
 	bool IsVrHandsTwoHandedGripPoseActive() const
@@ -2012,39 +2171,78 @@ public:
 	std::chrono::steady_clock::time_point m_MagazineInteractionReloadCommandHoldUntil{};
 	bool m_MagazineInteractionSuppressLeftInputUntilRelease = false;
 	bool m_MagazineInteractionOldMagazinePulled = false;
+    bool m_MagazineInteractionRetainedMagazineHeld = false;
+    l4d2vr_magazine::RetainedInsertGate m_RetainedMagazineInsertGate;
+    Vector m_RetainedMagazineCatchHandLocal{0.0f, 0.0f, 0.0f};
 	bool m_MagazineInteractionChamberEmpty = false;
 	bool m_MagazineInteractionOneInChamber = false;
 	bool m_MagazineInteractionOldMagazineContactActive = false;
 	bool m_MagazineInteractionFreshMagazineContactActive = false;
 	bool m_MagazineInteractionBoltContactActive = false;
 	bool m_MagazineInteractionShotgunShellMode = false;
-	bool m_MagazineInteractionServerClipSettlementActive = false;
-	bool m_MagazineInteractionShotgunServerReloadAbortPending = false;
-	bool m_MagazineInteractionShotgunDirectShellCommitPending = false;
-	bool m_MagazineInteractionShotgunDirectShellServerClipCommitted = false;
-	bool m_MagazineInteractionShotgunDirectShellServerReserveCommitted = false;
-	bool m_MagazineInteractionServerClipCommitPending = false;
-	bool m_MagazineInteractionServerClipCommitted = false;
-	bool m_MagazineInteractionServerReserveCommitted = false;
-	bool m_MagazineInteractionServerClipReserveHoldActive = false;
+    mutable std::mutex m_RemoteShellMutex;
+    mutable std::mutex m_RemoteMagazineMutex;
+    mutable std::mutex m_PistolAmmoClientMutex;
+    l4d2vr_pistol_sync::Receiver m_PistolAmmoClient;
+    l4d2vr_pistol_prediction::Journal m_PistolAmmoPrediction;
+    l4d2vr_pistol_reload::Client m_PistolMagazineRequest;
+    l4d2vr_pistol_reload::Reply m_PistolMagazineReply{};
+    bool m_PistolMagazineReplyReady = false;
+    bool m_PistolMagazineCycleSuppressInput = false;
+    uint32_t m_MagazineInteractionPistolHandle = 0u;
+    // Both hand counts come from one accepted snapshot. All-ones means unknown.
+    std::atomic<uint64_t> m_PistolAmmoCounts{0xffffffffffffffffull};
+    void OfferPistolAmmoProtocol(unsigned version, uint32_t token);
+    void ReceivePistolAmmoState(const l4d2vr_pistol_sync::State& state);
+    void DisconnectPistolAmmoProtocol();
+    void UpdatePistolAmmoSnapshot(C_BasePlayer* player, C_WeaponCSBase* weapon);
+    bool PreparePistolPredictionFire(C_BasePlayer* player, C_WeaponCSBase* weapon, int command,
+        unsigned ordinal, l4d2vr_dual::Hand hand, l4d2vr_pistol_prediction::Fire& fire, bool& blocked);
+    void RecordPistolPredictionFire(const l4d2vr_pistol_prediction::Fire& fire, unsigned bullets);
+    void CancelPistolPredictionFire(const l4d2vr_pistol_prediction::Fire& fire);
+    bool BeginPistolMagazineRequest(int command, l4d2vr_pistol::Hand hand, l4d2vr_pistol::MagazineAction action);
+    bool ReadPistolMagazineState(C_BasePlayer* player, C_WeaponCSBase* weapon, l4d2vr_pistol_sync::State& state);
+    bool PistolMagazineProtocolSupported() const;
+    bool PistolMagazineRequestPending() const;
+    void ReceivePistolMagazineReply(const l4d2vr_pistol_reload::Reply& reply);
+    bool ConsumePistolMagazineReply(l4d2vr_pistol_reload::Reply& reply);
+    bool BlockPistolNativeReload(C_WeaponCSBase* weapon);
+    l4d2vr_remote_mag::ClientRequest m_RemoteMagazineRequest;
+    std::atomic<bool> m_NativeAmmoReloadFallbackActive{false};
+    std::atomic<bool> m_PhysicalReloadOwnsStockInput{false};
+    bool UpdateNativeAmmoReloadButtonContext(C_BasePlayer* localPlayer);
+    l4d2vr_magazine::SessionTracker m_NativeAmmoReloadButtonSession;
+    void SendRemoteMagazineRequest(const l4d2vr_remote_mag::Request& request, bool retry);
+    l4d2vr_magazine::NativeFallbackPulse m_NativeAmmoReloadFallbackPulse;
+    void OfferRemoteMagazineProtocol(unsigned version, uint32_t token);
+    void ReceiveRemoteMagazineReply(const l4d2vr_remote_mag::Reply& reply);
+    void DisconnectRemoteMagazineProtocol();
+    void CancelRemoteMagazineRequest();
+    bool RemoteMagazineProtocolSupported() const;
+    bool RemoteMagazineRequestPending() const;
+    bool BeginRemoteMagazineRequest(uint32_t handle, int weaponId, int clip, int reserve,
+        l4d2vr_remote_mag::Action action, uintptr_t owner, uint32_t generation);
+    l4d2vr_remote_mag::ClientRequest::Poll PollRemoteMagazineReply(uint32_t handle, int weaponId,
+        uintptr_t owner, uint32_t generation, int clip, int reserve, l4d2vr_remote_mag::Reply& reply);
+    l4d2vr_shell::ClientRequest m_RemoteShellRequest;
+    l4d2vr_shell::RetryContact m_ShellRetryContact;
+    void SendRemoteShellRequest(const l4d2vr_shell::Request& request, bool retry);
+    void OfferRemoteShellProtocol(unsigned version, uint32_t token);
+    void ReceiveRemoteShellReply(const l4d2vr_shell::Reply& reply);
+    void DisconnectRemoteShellProtocol();
+    void CancelRemoteShellRequest();
+	bool HasFreshMagazineInteractionTracking() const;
+    bool RemoteShellProtocolSupported() const;
+    bool RemoteShellRequestPending() const;
+    bool BeginRemoteShellRequest(uint32_t handle, int weaponId, int clip, int reserve,
+        uintptr_t owner, uint32_t generation);
+    l4d2vr_shell::ClientRequest::Poll PollRemoteShellReply(uint32_t handle, int weaponId,
+        uintptr_t owner, uint32_t generation, int replicatedClip, int replicatedReserve, l4d2vr_shell::Reply& reply);
 	int m_MagazineInteractionShotgunShellsLoadedThisSession = 0;
 	int m_MagazineInteractionShotgunLastInterruptedClip = -1;
-	int m_MagazineInteractionShotgunDirectShellTargetClip = -1;
-	int m_MagazineInteractionShotgunDirectShellAmmoType = -1;
-	int m_MagazineInteractionShotgunDirectShellTargetReserve = -1;
-	int m_MagazineInteractionShotgunDirectShellExpectedPriorReserve = -1;
-	int m_MagazineInteractionShotgunDirectShellWeaponId = 0;
-	int m_MagazineInteractionServerClipTarget = -1;
-	int m_MagazineInteractionServerClipAmmoType = -1;
-	int m_MagazineInteractionServerClipTargetReserve = -1;
-	int m_MagazineInteractionServerClipWeaponId = 0;
-	int m_MagazineInteractionServerClipExpectedPrior = -1;
-	int m_MagazineInteractionServerClipOffset = 0;
-	int m_MagazineInteractionServerReserveExpectedPrior = -1;
-	int m_MagazineInteractionServerReserveOffset = 0;
-	int m_MagazineInteractionServerClipReserveHoldAmmoType = -1;
-	int m_MagazineInteractionServerClipReserveHoldReserve = -1;
-	int m_MagazineInteractionServerClipReserveHoldOffset = -1;
+	l4d2vr_magazine::SessionTracker m_MagazineInteractionSession;
+	std::atomic<uint32_t> m_MagazineInteractionSessionGeneration{ 0 };
+	std::mutex m_MagazineInteractionCommitMutex;
 	MagazineInteractionManualState m_MagazineInteractionState = MagazineInteractionManualState::Idle;
 	C_WeaponCSBase* m_MagazineInteractionWeapon = nullptr;
 	int m_MagazineInteractionWeaponId = 0;
@@ -2073,15 +2271,15 @@ public:
 	VrHandMatrix4 m_MagazineInteractionControllerToMagazine{};
 	VrHandMatrix4 m_MagazineInteractionDetachedMagazineWorld{};
 	bool m_MagazineInteractionFreshPickupBasisValid = false;
-	Vector m_MagazineInteractionFreshPickupForward{};
-	Vector m_MagazineInteractionFreshPickupRight{};
+	Vector m_MagazineInteractionFreshPickupForward{0.0f, 0.0f, 0.0f};
+	Vector m_MagazineInteractionFreshPickupRight{0.0f, 0.0f, 0.0f};
 	float m_MagazineInteractionFreshPickupHmdYawOffsetDeg = 0.0f;
 	float m_MagazineInteractionFreshPickupRotationOffset = 0.0f;
-	Vector m_MagazineInteractionBoltPullAxisWorld{};
-	Vector m_MagazineInteractionBoltInputAxisWorld{};
-	Vector m_MagazineInteractionGrabStartLeftControllerPosAbs{};
-	Vector m_MagazineInteractionHeldMagazineCenterOffsetLocal{};
-	Vector m_MagazineInteractionBoltGrabStartLeftControllerPosAbs{};
+	Vector m_MagazineInteractionBoltPullAxisWorld{0.0f, 0.0f, 0.0f};
+	Vector m_MagazineInteractionBoltInputAxisWorld{0.0f, 0.0f, 0.0f};
+	Vector m_MagazineInteractionGrabStartLeftControllerPosAbs{0.0f, 0.0f, 0.0f};
+	Vector m_MagazineInteractionHeldMagazineCenterOffsetLocal{0.0f, 0.0f, 0.0f};
+	Vector m_MagazineInteractionBoltGrabStartLeftControllerPosAbs{0.0f, 0.0f, 0.0f};
 	float m_MagazineInteractionBoltGrabStartPullDistance = 0.0f;
 	float m_MagazineInteractionBoltPullDistance = 0.0f;
 	float m_MagazineInteractionBoltMaxPullDistance = 0.0f;
@@ -2091,6 +2289,7 @@ public:
 	bool m_MagazineInteractionBoltStageBeforeBackendReloadComplete = false;
 	bool m_MagazineInteractionBoltCompletedBeforeBackendReload = false;
 	bool m_MagazineInteractionThumbIndexCurlDownPrev = false;
+    bool m_MagazineInteractionTransactionGripHeld = false;
 	bool m_MagazineInteractionThreeFingerCurlDownPrev = false;
 	bool m_MagazineInteractionShotgunStableCaptureValid = false;
 	std::chrono::steady_clock::time_point m_MagazineInteractionStarted{};
@@ -2098,9 +2297,6 @@ public:
 	std::chrono::steady_clock::time_point m_MagazineInteractionPostInsertStarted{};
 	std::chrono::steady_clock::time_point m_MagazineInteractionBoltStageStarted{};
 	std::chrono::steady_clock::time_point m_MagazineInteractionBoltGrabbedAt{};
-	std::chrono::steady_clock::time_point m_MagazineInteractionShotgunServerReloadAbortUntil{};
-	std::chrono::steady_clock::time_point m_MagazineInteractionShotgunDirectShellCommitUntil{};
-	std::chrono::steady_clock::time_point m_MagazineInteractionServerClipCommitUntil{};
 	std::chrono::steady_clock::time_point m_MagazineInteractionNativeReloadSuppressUntil{};
 	std::chrono::steady_clock::time_point m_MagazineInteractionViewmodelFreezeDeferredUntil{};
 	int m_MagazineInteractionNativeReloadSuppressWeaponId = 0;
@@ -2389,6 +2585,7 @@ public:
 	CustomActionBinding m_CustomAction3Binding{};
 	CustomActionBinding m_CustomAction4Binding{};
 	CustomActionBinding m_CustomAction5Binding{};
+	l4d2vr_input::HeldCustomActions m_CustomActionInputs;
 
 	bool m_MotionGesturesEnabled = true;
 	bool m_MotionGestureSwingEnabled = true;
@@ -2561,6 +2758,11 @@ public:
 	bool m_FlashlightEnhancementEnabled = false;
 	bool m_FlashlightFollowHmd = true;
 	bool m_FlashlightFollowHmdForFirearms = false;
+    float m_FlashlightHmdForwardOffsetMeters = 0.18f;
+    mutable std::mutex m_HmdFlashlightMutex;
+    l4d2vr_flashlight::Pose m_HmdFlashlightPose{};
+    void UpdateHmdFlashlightPose(C_BasePlayer* player);
+    bool ReadHmdFlashlightPose(uintptr_t owner, l4d2vr_flashlight::Pose& pose) const;
 	bool m_FlashlightEnhancementApplied = false;
 	bool m_FlashlightEnhancementOriginalsCaptured = false;
 	float m_FlashlightEnhancement3rdPersonRange = 300.0f;
@@ -3547,7 +3749,18 @@ public:
 	// ----------------------------
 	// Gun-mounted scope (RTT overlay)
 	// ----------------------------
-	bool  m_ScopeEnabled = false;
+	bool  m_ScopeEnabled = true;
+	bool  m_ScopePhysicalLensEnabled = true;
+	float m_ScopeBaseMagnification = 2.0f;
+	float m_PhysicalScopeRenderFov = 10.0f;
+	std::atomic<int> m_PhysicalScopeWeaponId{ 0 };
+	std::atomic<float> m_PhysicalScopeMagnification{ 2.0f };
+	std::mutex m_PhysicalScopeLensMutex;
+	l4d2vr_optics::WeaponTracker m_PhysicalScopeWeapons;
+	l4d2vr_optics::ImageStamp m_PhysicalScopeImage{};
+	l4d2vr_optics::ImageStamp m_PhysicalScopeProcessedImage{};
+	PhysicalScopeRenderSnapshot m_PhysicalScopeRender{};
+	PhysicalScopeLensSnapshot m_PhysicalScopeLenses[2]{};
 	int   m_ScopeRTTSize = 512;               // square RTT size in pixels
 	std::chrono::steady_clock::time_point m_LastScopeRTTRenderTime{};
 	float m_ScopeFov = 20.0f;                  // active per-weapon FOV; smaller = more zoom
@@ -3615,12 +3828,27 @@ public:
 	std::chrono::steady_clock::time_point m_ScopeStabilizationLastTime{};
 
 	Vector GetScopeCameraAbsPos() const { return m_ScopeCameraPosAbs; }
+	bool IsPhysicalScopeMode() const { return m_ScopePhysicalLensEnabled && !m_MouseModeEnabled && !m_IsThirdPersonCamera; }
+	bool ScopeWeaponEligible() const { return IsPhysicalScopeMode() ? l4d2vr_optics::HasOptic(m_PhysicalScopeWeaponId.load(std::memory_order_acquire)) : m_ScopeWeaponIsFirearm; }
+	bool ScopeChangesAim() const { return !IsPhysicalScopeMode() && IsScopeActive(); }
+	float GetScopeRenderFov() const { return IsPhysicalScopeMode() ? m_PhysicalScopeRenderFov : m_ScopeFov; }
+	void PublishPhysicalScopeLens(const PhysicalScopeLensSnapshot& lens);
+	bool ReadPhysicalScopeLens(int eye, PhysicalScopeLensSnapshot& lens);
+	void UpdatePhysicalScope();
+	void UpdatePhysicalScopeWeapon(C_BasePlayer* owner, C_WeaponCSBase* weapon);
+	bool HasFreshPhysicalScopeTracking() const;
+	bool ReadPhysicalScopeRender(PhysicalScopeRenderSnapshot& snapshot);
+	void PublishPhysicalScopeImage(const PhysicalScopeRenderSnapshot& snapshot, uint32_t renderEpoch);
+	bool QueuePhysicalScopeImage(IMatRenderContext* context, const PhysicalScopeRenderSnapshot& snapshot, uint32_t renderEpoch);
+	l4d2vr_optics::ImageStamp ReadPhysicalScopeImage(bool processed = false);
+	void PublishPhysicalScopeProcessedImage(const l4d2vr_optics::ImageStamp& source);
+	bool DrawPhysicalScopeLensForEye(const CViewSetup& view, int eyeIndex, const PhysicalScopeLensSnapshot& lens);
 	QAngle GetScopeCameraAbsAngle() const { return m_ScopeCameraAngAbs; }
 	bool   IsMouseModeScopeActive() const { return m_MouseModeEnabled && m_ScopeEnabled && m_ScopeWeaponIsFirearm && m_MouseModeScopeToggleActive; }
-	bool   IsSteamVRScopeToggleActive() const { return m_ScopeEnabled && m_ScopeWeaponIsFirearm && m_ScopeToggleActive; }
+	bool   IsSteamVRScopeToggleActive() const { return !IsPhysicalScopeMode() && m_ScopeEnabled && m_ScopeWeaponIsFirearm && m_ScopeToggleActive; }
 	float  GetScopeAimSensitivityScale() const
 	{
-		if (!IsScopeActive())
+		if (IsPhysicalScopeMode() || !IsScopeActive())
 			return 1.0f;
 
 		const float maxFov = std::max(m_ScopeFovMin, m_ScopeFovMax);
@@ -3634,9 +3862,10 @@ public:
 	{
 		return IsMouseModeScopeActive() ? GetScopeAimSensitivityScale() : 1.0f;
 	}
-	bool   IsScopeActive() const { return m_ScopeEnabled && (m_ScopeActive || IsMouseModeScopeActive() || IsSteamVRScopeToggleActive()); }
+	bool   IsScopeActive() const { return m_ScopeEnabled && ScopeWeaponEligible() && (m_ScopeActive || IsMouseModeScopeActive() || IsSteamVRScopeToggleActive()); }
 	bool   ShouldRenderScope() const
 	{
+		if (IsPhysicalScopeMode()) return m_ScopeEnabled && ScopeWeaponEligible() && m_ScopeActive;
 		const bool forceScopeForThirdPersonFrontView = m_ThirdPersonFrontViewEnabled && m_IsThirdPersonCamera;
 		return m_ScopeEnabled
 			&& (m_ScopeWeaponIsFirearm || forceScopeForThirdPersonFrontView)
@@ -3823,6 +4052,7 @@ public:
 	bool IsMagazineInteractionReloadCommandActive() const;
 	bool ShouldSuppressMagazineInteractionEmptyClipAutoReload(C_BasePlayer* localPlayer) const;
 	bool IsMagazineInteractionLeftHandActive() const;
+    bool MagazineInteractionOwnsGrip(bool gameplayLeft) const;
 	bool IsMagazineInteractionManualActive() const;
 	bool IsMagazineInteractionNativeReloadSuppressActive() const;
 	bool IsMagazineInteractionViewmodelOverrideActive() const;
@@ -3830,31 +4060,9 @@ public:
 	void MarkMagazineInteractionServerHookSeen(int serverWeaponId);
 	bool IsMagazineInteractionAnyServerHookActive() const;
 	bool IsMagazineInteractionServerHookActive(int weaponId) const;
+    bool IsMagazineInteractionDetachableBackendActive(int weaponId) const;
 	void MarkMagazineInteractionShotgunServerHookSeen(int serverWeaponId);
 	bool IsMagazineInteractionShotgunServerHookActive(int weaponId) const;
-	void QueueMagazineInteractionServerClipCommit(
-		int targetClip,
-		int ammoType,
-		int targetReserve,
-		int expectedPriorClip,
-		int expectedPriorReserve,
-		const char* reason,
-		float holdSeconds);
-	bool TryApplyMagazineInteractionServerClipCommit(
-		void* serverWeapon,
-		int serverWeaponId,
-		void* serverPlayer = nullptr);
-	void QueueMagazineInteractionShotgunServerReloadAbort(const char* reason);
-	void QueueMagazineInteractionShotgunDirectShellCommit(
-		int targetClip,
-		int ammoType,
-		int targetReserve,
-		int expectedPriorReserve,
-		const char* reason);
-	bool TryApplyMagazineInteractionShotgunServerReloadAbort(
-		void* serverWeapon,
-		int serverWeaponId,
-		void* serverPlayer = nullptr);
 	bool ApplyMagazineInteractionShotgunClientReloadAbort(
 		C_WeaponCSBase* clientWeapon,
 		int clientWeaponId,
@@ -3863,11 +4071,17 @@ public:
 	bool ShouldHideMagazineInteractionNativeClip() const;
 	bool ShouldDrawMagazineInteractionDetachedMagazine() const;
 	bool GetMagazineInteractionDetachedMagazineWorld(VrHandMatrix4& outWorld) const;
+    l4d2vr_dual::Hand GetPrimaryPistolHand() const;
+    bool MagazineReloadSupportIsLeft() const;
+    unsigned MagazineGripPhysicalMask() const;
+    bool BuildPistolControllerWorld(bool left, VrHandMatrix4& outWorld) const;
+    bool ReadLeftPistolGloveWrist(Vector& wrist) const;
 	bool ShouldMoveMagazineInteractionBolt() const;
 	bool GetMagazineInteractionBoltWorld(VrHandMatrix4& outWorld) const;
 	void PlayMagazineInteractionBlockedFireEmptySound();
 	bool CaptureMagazineInteractionSound(int entityIndex, const char* sample, float volume, int flags, int pitch);
 	void CancelMagazineInteractionManual();
+	void ResetMagazineInteractionSession();
 	void BeginVrHandsEyeRender(const CViewSetup& view, int eyeIndex);
 	void DrawVrHandsWorldDepthMaskBeforeViewmodel();
 	void FinishVrHandsEyeRender();
@@ -3904,9 +4118,13 @@ public:
 	void DestroyHandHudWorldQuadTextures();
 	void GetPoses();
 	bool UpdatePosesAndActions();
+	void UpdateInputActionState(const l4d2vr_input::ActionFrame::Attempt& attempt);
+	bool IsInputActionFrameAvailable() const { return l4d2vr_input::ActionFrame::Ready(m_InputActionFrame.Read()); }
 	void GetViewParameters();
 	void ProcessMenuInput();
 	void ProcessInput();
+	void ReleaseCustomActionInputs();
+	void SendCustomActionTransition(const l4d2vr_input::HeldTarget& target, bool down);
 	bool UpdateObjectPullInput(C_BasePlayer* localPlayer, bool gripActionDown);
 	void UpdateObjectPullClientTargetMainThread(C_BasePlayer* localPlayer);
 	bool GetObjectPullNativeHighlightIdentity(
@@ -3929,6 +4147,11 @@ public:
 	QAngle GetRightControllerAbsAngle();
 	Vector GetRightControllerAbsPos();
 	Vector GetRightControllerViewmodelAbsPos();
+	bool HasBulletAimCalibration() const;
+	bool CanCalibrateBulletAim() const;
+	QAngle GetBulletAimAbsAngle();
+	bool GetBulletAimRay(Vector& origin, Vector& direction);
+	bool ApplyBulletAimOffset(Vector& origin, Vector& direction, const Vector& referenceUp) const;
 	bool ResolvePavlovTwoHandedAimBasis(
 		const Vector& leftControllerPosAbs,
 		const Vector& rightControllerPosAbs,

@@ -1,0 +1,210 @@
+{
+  "action_manifest_version": 0,
+  "alias_info": {},
+  "bindings": {
+    "/actions/base": {
+      "chords": [],
+      "haptics": [
+        {
+          "output": "/actions/base/out/vibration_left",
+          "path": "/user/hand/left/output/haptic"
+        },
+        {
+          "output": "/actions/base/out/vibration_right",
+          "path": "/user/hand/right/output/haptic"
+        }
+      ],
+      "poses": [
+        {
+          "output": "/actions/base/in/pose_lefthand",
+          "path": "/user/hand/left/pose/raw"
+        },
+        {
+          "output": "/actions/base/in/pose_righthand",
+          "path": "/user/hand/right/pose/raw"
+        }
+      ],
+      "skeleton": [
+        {
+          "output": "/actions/base/in/skeleton_lefthand",
+          "path": "/user/hand/left/input/skeleton/left"
+        },
+        {
+          "output": "/actions/base/in/skeleton_righthand",
+          "path": "/user/hand/right/input/skeleton/right"
+        }
+      ],
+      "sources": []
+    },
+    "/actions/main": {
+      "sources": [
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/ResetPosition"
+            },
+            "position": {
+              "output": "/actions/main/in/Walk"
+            }
+          },
+          "mode": "joystick",
+          "parameters": {
+            "deadzone_pct": "10"
+          },
+          "path": "/user/hand/left/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/Jump"
+            },
+            "position": {
+              "output": "/actions/main/in/Turn"
+            }
+          },
+          "mode": "joystick",
+          "parameters": {
+            "deadzone_pct": "10"
+          },
+          "path": "/user/hand/right/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/OffHandGrip"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/PrimaryAttack"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/trigger"
+        },
+        {
+          "inputs": {
+            "north": {
+              "output": "/actions/main/in/PrevItem"
+            },
+            "south": {
+              "output": "/actions/main/in/NextItem"
+            }
+          },
+          "mode": "dpad",
+          "parameters": {
+            "deadzone_pct": "70",
+            "overlap_pct": "0",
+            "sub_mode": "touch"
+          },
+          "path": "/user/hand/right/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/Use"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/b"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/ActivateVR"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/a"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/MagazineRelease"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/a"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/MenuSelect"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/a"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/MenuBack"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/b"
+        },
+        {
+          "inputs": {
+            "east": {
+              "output": "/actions/main/in/MenuRight"
+            },
+            "north": {
+              "output": "/actions/main/in/MenuUp"
+            },
+            "south": {
+              "output": "/actions/main/in/MenuDown"
+            },
+            "west": {
+              "output": "/actions/main/in/MenuLeft"
+            }
+          },
+          "mode": "dpad",
+          "parameters": {
+            "deadzone_pct": "70",
+            "overlap_pct": "0",
+            "sub_mode": "touch"
+          },
+          "path": "/user/hand/left/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/Flashlight"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/x"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/Pause"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/y"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/SecondaryAttack"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/trigger"
+        }
+      ]
+    }
+  },
+  "category": "steamvr_input",
+  "controller_type": "oculus_touch",
+  "description": "",
+  "name": "Default Left 4 Dead 2 VR bindings for Oculus Touch",
+  "options": {},
+  "simulated_actions": []
+}

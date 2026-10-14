@@ -56,7 +56,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/Flashlight"
+                     "output": "/actions/main/in/Jump"
                   },
                   "position": {
                      "output": "/actions/main/in/Turn"
@@ -71,7 +71,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/Reload"
+                     "output": "/actions/main/in/OffHandGrip"
                   }
                },
                "mode": "button",
@@ -88,17 +88,11 @@
             },
             {
                "inputs": {
-                  "east": {
-                     "output": "/actions/main/in/boolean_turnright"
-                  },
                   "north": {
                      "output": "/actions/main/in/PrevItem"
                   },
                   "south": {
                      "output": "/actions/main/in/NextItem"
-                  },
-                  "west": {
-                     "output": "/actions/main/in/boolean_turnleft"
                   }
                },
                "mode": "dpad",
@@ -130,7 +124,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/Jump"
+                     "output": "/actions/main/in/MagazineRelease"
                   }
                },
                "mode": "button",
@@ -180,7 +174,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/Scoreboard"
+                     "output": "/actions/main/in/Flashlight"
                   }
                },
                "mode": "button",
@@ -198,7 +192,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/Crouch"
+                     "output": "/actions/main/in/WeaponGrip"
                   }
                },
                "mode": "button",

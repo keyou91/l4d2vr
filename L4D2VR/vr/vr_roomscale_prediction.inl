@@ -1273,54 +1273,45 @@ vr::HmdMatrix34_t VR::VMatrixToHmdMatrix(const VMatrix& vMat)
 
 vr::HmdMatrix34_t VR::GetControllerTipMatrix(vr::ETrackedControllerRole controllerRole)
 {
-    vr::VRInputValueHandle_t inputValue = vr::k_ulInvalidInputValueHandle;
-
-    if (controllerRole == vr::TrackedControllerRole_RightHand)
+    const auto result = l4d2vr_controller_tip::Lookup(
+        m_System, m_Input, vr::VRRenderModels(), controllerRole);
+    // Log state changes only. Missing optional tip data uses the controller origin.
+    if (controllerRole == vr::TrackedControllerRole_LeftHand ||
+        controllerRole == vr::TrackedControllerRole_RightHand)
     {
-        m_Input->GetInputSourceHandle("/user/hand/right", &inputValue);
-    }
-    else if (controllerRole == vr::TrackedControllerRole_LeftHand)
-    {
-        m_Input->GetInputSourceHandle("/user/hand/left", &inputValue);
-    }
-
-    if (inputValue != vr::k_ulInvalidInputValueHandle)
-    {
-        char buffer[vr::k_unMaxPropertyStringSize];
-
-        m_System->GetStringTrackedDeviceProperty(vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(controllerRole), vr::Prop_RenderModelName_String,
-            buffer, vr::k_unMaxPropertyStringSize);
-
-        vr::RenderModel_ControllerMode_State_t controllerState = { 0 };
-        vr::RenderModel_ComponentState_t componentState = { 0 };
-
-        if (vr::VRRenderModels()->GetComponentStateForDevicePath(buffer, vr::k_pch_Controller_Component_Tip, inputValue, &controllerState, &componentState))
+        static thread_local int lastStatus[2] = { -1, -1 };
+        const int slot = controllerRole == vr::TrackedControllerRole_LeftHand ? 0 : 1;
+        const int status = static_cast<int>(result.status);
+        if (lastStatus[slot] != status)
         {
-            return componentState.mTrackingToComponentLocal;
+            lastStatus[slot] = status;
+            Game::logMsg("[VR][ControllerTip] role=%d device=%u status=%s inputError=%d propertyError=%d fallback=%d",
+                static_cast<int>(controllerRole), result.device,
+                l4d2vr_controller_tip::StatusName(result.status),
+                static_cast<int>(result.inputError), static_cast<int>(result.propertyError),
+                result.status != l4d2vr_controller_tip::Status::Ready ? 1 : 0);
         }
     }
-
-    // Not a hand controller role or tip lookup failed, return identity
-    const vr::HmdMatrix34_t identity =
-    {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f
-    };
-
-    return identity;
+    return result.matrix;
 }
 
 bool VR::CheckOverlayIntersectionForController(vr::VROverlayHandle_t overlayHandle, vr::ETrackedControllerRole controllerRole)
 {
+    if (!m_System || !m_Overlay || !m_Compositor ||
+        overlayHandle == vr::k_ulOverlayHandleInvalid ||
+        (controllerRole != vr::TrackedControllerRole_LeftHand &&
+            controllerRole != vr::TrackedControllerRole_RightHand))
+        return false;
     vr::TrackedDeviceIndex_t deviceIndex = m_System->GetTrackedDeviceIndexForControllerRole(controllerRole);
 
-    if (deviceIndex == vr::k_unTrackedDeviceIndexInvalid)
+    if (deviceIndex == vr::k_unTrackedDeviceIndex_Hmd ||
+        deviceIndex >= vr::k_unMaxTrackedDeviceCount)
         return false;
 
     vr::TrackedDevicePose_t& controllerPose = m_Poses[deviceIndex];
 
-    if (!controllerPose.bPoseIsValid)
+    if (!controllerPose.bPoseIsValid || !controllerPose.bDeviceIsConnected ||
+        !l4d2vr_controller_tip::Finite(controllerPose.mDeviceToAbsoluteTracking))
         return false;
 
     VMatrix controllerVMatrix = VMatrixFromHmdMatrix(controllerPose.mDeviceToAbsoluteTracking);
@@ -1330,7 +1321,7 @@ bool VR::CheckOverlayIntersectionForController(vr::VROverlayHandle_t overlayHand
     vr::VROverlayIntersectionParams_t  params = { 0 };
     vr::VROverlayIntersectionResults_t results = { 0 };
 
-    params.eOrigin = vr::VRCompositor()->GetTrackingSpace();
+    params.eOrigin = m_Compositor->GetTrackingSpace();
     params.vSource = { controllerVMatrix.m[3][0],  controllerVMatrix.m[3][1],  controllerVMatrix.m[3][2] };
     params.vDirection = { -controllerVMatrix.m[2][0], -controllerVMatrix.m[2][1], -controllerVMatrix.m[2][2] };
 

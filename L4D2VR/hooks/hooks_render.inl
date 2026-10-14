@@ -3155,6 +3155,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			Vector viewmodelPosOffset{};
 			QAngle viewmodelAngOffset{};
 			float weaponAimPitchOffsetDeg = -45.0f;
+			float weaponAimYawOffsetDeg = 0.0f;
+			float weaponAimRollOffsetDeg = 0.0f;
 
 			// Extra render-thread state (written by VR::UpdateTracking under the same seqlock).
 			bool hasLocalPlayer = false;
@@ -3225,6 +3227,10 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			vp.viewmodelAngOffset.z = m_VR->m_RenderViewmodelAngOffsetZ.load(std::memory_order_relaxed);
 			vp.weaponAimPitchOffsetDeg =
 				m_VR->m_RenderWeaponAimPitchOffsetDeg.load(std::memory_order_relaxed);
+			vp.weaponAimYawOffsetDeg =
+				m_VR->m_RenderWeaponAimYawOffsetDeg.load(std::memory_order_relaxed);
+			vp.weaponAimRollOffsetDeg =
+				m_VR->m_RenderWeaponAimRollOffsetDeg.load(std::memory_order_relaxed);
 			vp.hasLocalPlayer = (m_VR->m_RenderHasLocalPlayer.load(std::memory_order_relaxed) != 0);
 			vp.localEyePos.x = m_VR->m_RenderLocalEyePosX.load(std::memory_order_relaxed);
 			vp.localEyePos.y = m_VR->m_RenderLocalEyePosY.load(std::memory_order_relaxed);
@@ -3312,6 +3318,10 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				vp.viewmodelAngOffset.z = m_VR->m_RenderViewmodelAngOffsetZ.load(std::memory_order_relaxed);
 				vp.weaponAimPitchOffsetDeg =
 					m_VR->m_RenderWeaponAimPitchOffsetDeg.load(std::memory_order_relaxed);
+				vp.weaponAimYawOffsetDeg =
+					m_VR->m_RenderWeaponAimYawOffsetDeg.load(std::memory_order_relaxed);
+				vp.weaponAimRollOffsetDeg =
+					m_VR->m_RenderWeaponAimRollOffsetDeg.load(std::memory_order_relaxed);
 				vp.hasLocalPlayer = (m_VR->m_RenderHasLocalPlayer.load(std::memory_order_relaxed) != 0);
 				vp.localEyePos.x = m_VR->m_RenderLocalEyePosX.load(std::memory_order_relaxed);
 				vp.localEyePos.y = m_VR->m_RenderLocalEyePosY.load(std::memory_order_relaxed);
@@ -3961,7 +3971,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				renderPoseTokenUsed = m_VR->m_PoseWaiterSeq.load(std::memory_order_acquire);
 			}
 
-			if (renderPoses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid)
+			if (l4d2vr_controller_identity::UsablePose(renderPoses[vr::k_unTrackedDeviceIndex_Hmd]))
 			{
 				TrackedDevicePoseData hmdPose{};
 				m_VR->GetPoseData(renderPoses[vr::k_unTrackedDeviceIndex_Hmd], hmdPose);
@@ -4161,8 +4171,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 						// Match the configurable weapon-hand calibration used by
 						// the main tracking/gameplay path.
+						ctrlF = VectorRotate(ctrlF, ctrlU, vp.weaponAimYawOffsetDeg);
+						ctrlR = VectorRotate(ctrlR, ctrlU, vp.weaponAimYawOffsetDeg);
 						ctrlF = VectorRotate(ctrlF, ctrlR, vp.weaponAimPitchOffsetDeg);
 						ctrlU = VectorRotate(ctrlU, ctrlR, vp.weaponAimPitchOffsetDeg);
+						ctrlR = VectorRotate(ctrlR, ctrlF, vp.weaponAimRollOffsetDeg);
+						ctrlU = VectorRotate(ctrlU, ctrlF, vp.weaponAimRollOffsetDeg);
 
 						rightCtrlPosAbs = cameraAnchor - Vector(0, 0, 64) + (ctrlPosCorrected * vp.vrScale);
 						rightCtrlViewmodelPosAbs = rightCtrlPosAbs;
@@ -5473,6 +5487,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 	const bool copyRightEyeFromLeft =
 		m_VR->m_RightEyeCopyFromLeft &&
+		!(m_VR->m_ScopeEnabled && m_VR->IsPhysicalScopeMode() && m_VR->ScopeWeaponEligible()) &&
 		queueMode == 0 &&
 		m_VR->m_IsVREnabled;
 	bool rightEyeCopiedFromLeft = false;
@@ -5509,7 +5524,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	timingStereoSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stereoSceneStartTime).count();
 
 	auto renderToTexture_SetRT = [&](ITexture* target, int texW, int texH, QAngle passAngles,
-		CViewSetup& view, CViewSetup& hud, HooksNekoPostPass nekoPostPass)
+		CViewSetup& view, CViewSetup& hud, HooksNekoPostPass nekoPostPass,
+		const PhysicalScopeRenderSnapshot* physicalScope = nullptr)
 		{
 			// Scope/rear-mirror RTTs are allowed in queued rendering. Do not touch
 			// EngineClient viewangles in queueMode!=0; CViewSetup already carries
@@ -5522,6 +5538,7 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				m_VR->HandleMissingRenderContext("Hooks::dRenderView(offscreen)");
 				return;
 			}
+			const uint32_t scopeImageEpoch = m_VR->m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire);
 
 			const bool prevSuppress = m_VR->m_SuppressHudCapture;
 			m_VR->m_SuppressHudCapture = true;
@@ -5571,6 +5588,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 				hkViewport.fOriginal(rc, oldX, oldY, oldW, oldH);
 
 			m_VR->m_SuppressHudCapture = prevSuppress;
+            if (physicalScope || nekoPostPass == HooksNekoPostPass::Scope)
+			{
+				const PhysicalScopeRenderSnapshot stamp = physicalScope ? *physicalScope : PhysicalScopeRenderSnapshot{};
+				if (queueMode == 0) m_VR->PublishPhysicalScopeImage(stamp, scopeImageEpoch);
+				else m_VR->QueuePhysicalScopeImage(rc, stamp, scopeImageEpoch);
+			}
 		};
 
 	bool scopeLensPostProcessPending = false;
@@ -5578,7 +5601,12 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 	// ----------------------------
 	// Scope RTT pass: render from scope camera into vrScope RTT
 	// ----------------------------
-	if (m_VR->m_CreatedVRTextures.load(std::memory_order_acquire) && m_VR->ShouldRenderScope() && m_VR->m_ScopeTexture && m_VR->ShouldUpdateScopeRTT())
+	PhysicalScopeRenderSnapshot physicalScope{};
+	const bool physicalScopeMode = m_VR->IsPhysicalScopeMode();
+	const bool physicalScopeReady = !physicalScopeMode || m_VR->ReadPhysicalScopeRender(physicalScope);
+	const float scopeZNear = m_VR->m_ScopeZNear;
+	if (physicalScopeReady && l4d2vr_optics::ValidClipPlanes(scopeZNear, setup.zFar) &&
+		m_VR->m_CreatedVRTextures.load(std::memory_order_acquire) && m_VR->ShouldRenderScope() && m_VR->m_ScopeTexture && m_VR->ShouldUpdateScopeRTT())
 	{
 		CViewSetup scopeView = setup;
 		scopeView.x = 0;
@@ -5593,14 +5621,14 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 			m_VR->m_ThirdPersonFrontViewEnabled && m_VR->m_IsThirdPersonCamera;
 		scopeView.fov = thirdPersonFrontViewScope
 			? m_VR->m_ThirdPersonFrontViewOverlayFov
-			: m_VR->m_ScopeFov;
+			: physicalScopeMode ? physicalScope.fov : m_VR->GetScopeRenderFov();
 		scopeView.m_flAspectRatio = 1.0f;
 		scopeView.fovViewmodel = scopeView.fov;
-		scopeView.zNear = m_VR->m_ScopeZNear;
+		scopeView.zNear = scopeZNear;
 		scopeView.zNearViewmodel = 99999.0f; // hard-clip viewmodel so scope image is "world only"
 
-		QAngle scopeAngles = m_VR->GetScopeCameraAbsAngle();
-		scopeView.origin = m_VR->GetScopeCameraAbsPos();
+		QAngle scopeAngles = physicalScopeMode ? physicalScope.angles : m_VR->GetScopeCameraAbsAngle();
+		scopeView.origin = physicalScopeMode ? physicalScope.origin : m_VR->GetScopeCameraAbsPos();
 		scopeView.angles.x = scopeAngles.x;
 		scopeView.angles.y = scopeAngles.y;
 		scopeView.angles.z = scopeAngles.z;
@@ -5613,7 +5641,8 @@ void __fastcall Hooks::dRenderView(void* ecx, void* edx, CViewSetup& setup, CVie
 
 		renderToTexture_SetRT(m_VR->m_ScopeTexture,
 			m_VR->m_ScopeRTTSize, m_VR->m_ScopeRTTSize,
-			scopeAngles, scopeView, hudScope, HooksNekoPostPass::Scope);
+			scopeAngles, scopeView, hudScope, HooksNekoPostPass::Scope,
+			physicalScopeMode ? &physicalScope : nullptr);
 		m_VR->m_ScopeRenderingPass = false;
 		scopeLensPostProcessPending = true;
 	}

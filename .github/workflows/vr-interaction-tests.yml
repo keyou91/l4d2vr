@@ -1,0 +1,51 @@
+name: VR interaction tests
+
+on:
+  pull_request:
+    paths:
+      - "L4D2VR/**"
+      - "tests/**"
+      - "tools/prepare_vr_materials.py"
+      - ".github/workflows/vr-interaction-tests.yml"
+  push:
+    paths:
+      - "L4D2VR/**"
+      - "tests/**"
+      - "tools/prepare_vr_materials.py"
+      - ".github/workflows/vr-interaction-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vr-interactions-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Windows x86 interaction tests
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Configure, build and test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:RUNNER_TEMP) { throw 'Runner temporary directory is unavailable' }
+          $testRoot = Join-Path $env:RUNNER_TEMP ('l4d2vr-interactions-' + [guid]::NewGuid().ToString('N'))
+          $python = (Get-Command python -ErrorAction Stop).Source
+          cmake -S tests -B $testRoot -G 'Visual Studio 17 2022' -A Win32 "-DPython3_EXECUTABLE=$python"
+          if ($LASTEXITCODE -ne 0) { throw 'Test configuration failed' }
+          cmake --build $testRoot --config Release -- /m:1 /nr:false
+          if ($LASTEXITCODE -ne 0) { throw 'Test build failed' }
+          ctest --test-dir $testRoot -C Release --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Interaction tests failed' }
+          cmake --build $testRoot --config Debug -- /m:1 /nr:false
+          if ($LASTEXITCODE -ne 0) { throw 'Debug test build failed' }
+          ctest --test-dir $testRoot -C Debug --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Debug interaction tests failed' }

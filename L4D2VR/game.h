@@ -1,4 +1,5 @@
 #pragma once
+class C_WeaponCSBase;
 
 #include <cstdint>
 #include <array>
@@ -7,6 +8,15 @@
 #include <string>
 #include <cstdarg>
 #include <Windows.h>
+#include "vr_magazine_policy.h"
+#include "vr_physical_controls.h"
+#include "vr_remote_shells.h"
+#include "vr_remote_magazines.h"
+#include "vr_server_pistol_commands.h"
+#include "vr_pistol_ammo.h"
+#include "vr_pistol_ammo_sync.h"
+#include "vr_pistol_reload.h"
+#include "vr_throw_lifecycle.h"
 
 #include "vector.h"
 
@@ -54,12 +64,16 @@ struct ManualThrowPending
     bool valid = false;
     bool inventoryDrop = false;
     bool inventoryDropExecuted = false;
+    unsigned pistolDropHand = 0u;
+    bool gripRelease = false;
     int weaponId = 0;
     int releaseTick = 0;
     void* owner = nullptr;
     void* sourceWeapon = nullptr;
     void* sourceWeaponVtable = nullptr;
     void* spawnedPhysicsProp = nullptr;
+    l4d2vr_throw::EntityIdentity ownerIdentity{}, sourceIdentity{}, spawnedPhysicsPropIdentity{};
+    bool sourceDetached = false;
     bool velocityMismatchLogged = false;
     Vector origin = { 0.f, 0.f, 0.f };
     QAngle angles = { 0.f, 0.f, 0.f };
@@ -124,9 +138,18 @@ struct Player
     Vector controllerPos = { 0.f, 0.f, 0.f };
     QAngle controllerAngle = { 0.f, 0.f, 0.f };
     QAngle prevControllerAngle = { 0.f, 0.f, 0.f };
+    Vector prevControllerPos = { 0.f, 0.f, 0.f };
+    bool hasPrevControllerPose = false;
+    bool dualPistolShotPose = false;
+    int pistolDropLastCommand = 0;
+    l4d2vr_magazine::NativeReloadLedger physicalReloadLedger;
 
     bool isMeleeing = false;
     bool isNewSwing = false;
+    l4d2vr_physical::MeleeCommand packetMeleeCommand{};
+    l4d2vr_physical::MeleeSweepHistory meleeSweepHistory;
+    std::uint32_t lastDecodedUsercmd = 0u;
+    std::uint64_t lastDecodedUsercmdTickMs = 0u;
 
     static constexpr size_t kManualThrowPoseSampleCount = 8;
     std::array<ManualThrowPoseSample, kManualThrowPoseSampleCount> manualThrowPoseSamples{};
@@ -161,13 +184,15 @@ struct Player
     VRPoseFrame latestWorldPose{};
     float worldPoseBlendWeight = 0.0f;
     std::uint64_t worldPoseBlendTickMs = 0u;
+    C_BasePlayer* worldPoseEntity = nullptr;
     int worldPoseUserID = -1;
+    std::uint64_t worldPoseRevision = 0u;
 };
 
 struct VRPoseRelayServerClient
 {
     edict_t* entity = nullptr;
-    std::int16_t edictSerial = 0;
+    unsigned edictSerial = 0u;
     bool protocolSupported = false;
     bool haveSequence = false;
     std::uint16_t lastSequence = 0;
@@ -224,6 +249,35 @@ public:
     // Matches Source's MAX_PLAYERS (65) to cover the full player index range.
     static constexpr size_t kMaxPlayers = 65;
     std::array<Player, kMaxPlayers> m_PlayersVRInfo;
+    std::mutex m_ServerPistolCommandsMutex;
+    std::array<l4d2vr_server_pistol::Commands, kMaxPlayers> m_ServerPistolCommands{};
+    std::array<l4d2vr_server_pistol::Reloads, kMaxPlayers> m_ServerReloadCommands{};
+    void ResetServerPistolCommands();
+    std::mutex m_PistolAmmoMutex;
+    std::array<l4d2vr_pistol::AmmoLedger, kMaxPlayers> m_PistolAmmo{};
+    void ResetPistolAmmo();
+    struct PistolAmmoServerClient
+    {
+        edict_t* entity = nullptr;
+        unsigned serial = 0u;
+        l4d2vr_pistol_sync::Sender sender;
+        l4d2vr_pistol_reload::Server reload;
+        l4d2vr_pistol_reload::Request pending{};
+        std::uint64_t queuedAt = 0u;
+        std::uint32_t executedCommand = 0u;
+        bool havePending = false;
+        std::uint32_t reloadSequence = 0u;
+    };
+    std::mutex m_PistolAmmoServerMutex;
+    std::array<PistolAmmoServerClient, kMaxPlayers> m_PistolAmmoServerClients{};
+    void OfferPistolAmmoProtocol(edict_t* entity);
+    void PublishPistolAmmoState(int index, const l4d2vr_pistol::AmmoSnapshot& snapshot, int command);
+    void ResetPistolAmmoServerClients();
+    bool HandlePistolAmmoCommand(edict_t* entity, const void* command);
+    bool PistolAmmoClientReady(int index, unsigned ownerSerial);
+    bool RelinquishPistolPhysicalReload(int index, const l4d2vr_pistol::AmmoSnapshot& snapshot, int command);
+    bool HandlePistolMagazineCommand(edict_t* entity, const void* command);
+    void ProcessPistolMagazineRequests(int index, int command, unsigned ownerSerial);
     mutable std::mutex m_VRPoseMutex;
     std::atomic<bool> m_VRPoseServerCapable{ false };
     std::atomic<bool> m_VRPoseHelloSent{ false };
@@ -232,6 +286,28 @@ public:
     std::recursive_mutex m_BuiltinVRPoseRelayMutex;
     std::array<VRPoseRelayServerClient, kMaxPlayers>
         m_BuiltinVRPoseRelayClients{};
+    struct RemoteShellServerClient
+    {
+        edict_t* entity = nullptr;
+        unsigned serial = 0u;
+        l4d2vr_shell::ServerLedger ledger;
+    };
+    std::mutex m_RemoteShellServerMutex;
+    std::array<RemoteShellServerClient, kMaxPlayers> m_RemoteShellServerClients{};
+    void OfferRemoteShellProtocol(edict_t* entity);
+    bool HandleRemoteShellCommand(edict_t* entity, const void* command);
+    void ResetRemoteShellServerClients();
+    struct RemoteMagazineServerClient
+    {
+        edict_t* entity = nullptr;
+        unsigned serial = 0u;
+        l4d2vr_remote_mag::ServerLedger ledger;
+    };
+    std::mutex m_RemoteMagazineServerMutex;
+    std::array<RemoteMagazineServerClient, kMaxPlayers> m_RemoteMagazineServerClients{};
+    void OfferRemoteMagazineProtocol(edict_t* entity);
+    bool HandleRemoteMagazineCommand(edict_t* entity, const void* command);
+    void ResetRemoteMagazineServerClients();
 
     // === Weapon / Viewmodel State ===
     bool m_IsMeleeWeaponActive = false;
@@ -249,6 +325,9 @@ public:
     char* getNetworkName(uintptr_t* entity);
     const char* GetNetworkClassName(uintptr_t* entity) const;
     int FindRecvPropOffset(const char* networkName, const char* propName) const;
+    bool ReadServerEdictIdentity(const edict_t* entity, int& index, unsigned& serial,
+        const void* expectedEntity = nullptr) const;
+    bool IsDualPistolWeapon(C_WeaponCSBase* weapon, int* clip = nullptr) const;
 
     // === Rendering Thread Mode ===
     // Returns material system thread mode (0 = single-threaded, >0 = queued/multicore).
@@ -298,6 +377,7 @@ public:
 
     // === Multiplayer VR world-model poses ===
     void ResetVRPoseServerSession();
+    void RefreshVRPosePlayerIdentitiesMainThread();
     void HandleVRPoseServerAck(int protocolVersion);
     void ObserveBuiltinVRPoseRelayClient(
         int playerIndex,

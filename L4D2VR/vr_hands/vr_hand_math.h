@@ -184,7 +184,8 @@ namespace VrHandMath
 
     inline VrHandMatrix4 BuildControllerWorld(const Vector& origin, const QAngle& angles, float scale)
     {
-        return BuildControllerWorld(origin, angles, scale, 1.0f, Vector{}, Vector{});
+        return BuildControllerWorld(origin, angles, scale, 1.0f,
+            Vector(0.0f, 0.0f, 0.0f), Vector(0.0f, 0.0f, 0.0f));
     }
 
     inline VrHandMatrix4 BuildSourceView(const Vector& origin, const Vector& angles)

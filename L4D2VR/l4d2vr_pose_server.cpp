@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include "vr_pose_protocol.h"
+#include "vr_edict_identity.h"
 
 // L4D2 does not ship linkable Source SDK libraries.  These are the minimal
 // ABI declarations needed by an ISERVERPLUGINCALLBACKS003 plugin.  Keep their
@@ -53,11 +54,9 @@ struct Vector
 struct edict_t
 {
     int m_fStateFlags;
-    std::int16_t m_NetworkSerialNumber;
-    std::int16_t m_EdictIndex;
+    int m_NetworkSerialNumber;
     void* m_pNetworkable;
     void* m_pUnknown;
-    float freetime;
 };
 
 class CCommand
@@ -208,10 +207,10 @@ namespace
     constexpr char kPoseAckCommand[] = "l4d2vr_pose_ack 2\n";
 
     static_assert(sizeof(void*) == 4, "Build the pose relay as Win32/x86.");
-    static_assert(sizeof(edict_t) == 20, "Unexpected 32-bit Source edict layout.");
+    static_assert(sizeof(edict_t) == 16, "Unexpected L4D2 edict layout.");
     static_assert(
-        offsetof(edict_t, m_EdictIndex) == 6,
-        "Unexpected Source edict player-index offset.");
+        offsetof(edict_t, m_NetworkSerialNumber) == 4,
+        "Unexpected L4D2 edict serial offset.");
     static_assert(
         sizeof(CCommand) == 1288,
         "Unexpected 32-bit Source CCommand layout.");
@@ -235,9 +234,13 @@ namespace
     IVEngineServer* g_engineServer = nullptr;
     std::array<ClientPoseState, kMaxPlayerSlots + 1> g_clients{};
     int g_clientMax = kMaxPlayerSlots;
+    std::uintptr_t g_edictBase = 0u;
+    int g_edictCount = 0;
 
     void ResetAllClients()
     {
+        g_edictBase = 0u;
+        g_edictCount = 0;
         for (ClientPoseState& client : g_clients)
             client = ClientPoseState{};
     }
@@ -254,7 +257,8 @@ namespace
         if (!entity)
             return -1;
 
-        const int playerIndex = static_cast<int>(entity->m_EdictIndex);
+        const int playerIndex = l4d2vr_edict::IndexFromArray(
+            g_edictBase, g_edictCount, reinterpret_cast<std::uintptr_t>(entity));
         return IsValidPlayerIndex(playerIndex) ? playerIndex : -1;
     }
 
@@ -441,8 +445,10 @@ namespace
             ResetAllClients();
         }
 
-        void ServerActivate(edict_t*, int, int clientMax) override
+        void ServerActivate(edict_t* edicts, int edictCount, int clientMax) override
         {
+            g_edictBase = reinterpret_cast<std::uintptr_t>(edicts);
+            g_edictCount = edictCount;
             if (clientMax >= 1 && clientMax <= kMaxPlayerSlots)
                 g_clientMax = clientMax;
             else

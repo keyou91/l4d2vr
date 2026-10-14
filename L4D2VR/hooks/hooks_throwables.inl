@@ -30,6 +30,53 @@ namespace
 #endif
 	}
 
+    static int ManualCarryThrowReadServerWeaponId(void* sourceWeapon);
+
+    static bool ManualThrowCaptureIdentity(void* object, l4d2vr_throw::EntityIdentity& identity)
+    {
+        identity = {};
+        if (!object || !Hooks::m_Game) return false;
+#ifdef _MSC_VER
+        __try
+#endif
+        {
+            auto* edict = *reinterpret_cast<edict_t**>(static_cast<unsigned char*>(object) + 0x28);
+            int index = -1; unsigned serial = 0u;
+            if (!Hooks::m_Game->ReadServerEdictIdentity(edict, index, serial, object)) return false;
+            identity = {reinterpret_cast<uintptr_t>(object), reinterpret_cast<uintptr_t>(edict), index, serial};
+            return identity.Valid();
+        }
+#ifdef _MSC_VER
+        __except (EXCEPTION_EXECUTE_HANDLER) { identity = {}; return false; }
+#endif
+    }
+
+    static bool ManualThrowIdentityMatches(const l4d2vr_throw::EntityIdentity& identity)
+    {
+        l4d2vr_throw::EntityIdentity current{};
+        return identity.Valid() && ManualThrowCaptureIdentity(reinterpret_cast<void*>(identity.object), current) &&
+            l4d2vr_throw::SameEntity(identity, current);
+    }
+
+    static bool ManualThrowReadWeaponOwner(const l4d2vr_throw::EntityIdentity& identity, void*& owner)
+    {
+        owner = nullptr;
+        const auto* offsets = Hooks::m_Game ? Hooks::m_Game->m_Offsets : nullptr;
+        if (!offsets || !offsets->PhysicalGunOwner.valid || offsets->PhysicalGunOwner.address == 0u ||
+            !ManualThrowIdentityMatches(identity)) return false;
+        using Owner = void* (__thiscall*)(void*);
+#ifdef _MSC_VER
+        __try
+#endif
+        {
+            owner = reinterpret_cast<Owner>(offsets->PhysicalGunOwner.address)(reinterpret_cast<void*>(identity.object));
+            return true;
+        }
+#ifdef _MSC_VER
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+#endif
+    }
+
 	static bool ManualThrowWeaponIdIsThrowable(int weaponId)
 	{
 		return weaponId == static_cast<int>(C_WeaponCSBase::WeaponID::MOLOTOV) ||
@@ -384,6 +431,14 @@ namespace
 		if (inventoryDropThrow && !ManualInventoryThrowBackendIsReady(weaponId))
 			return false;
 
+        l4d2vr_throw::EntityIdentity ownerIdentity{}, sourceIdentity{};
+        void* weaponOwner = nullptr;
+        if (!ManualThrowCaptureIdentity(owner, ownerIdentity) || !Hooks::m_Game->IsValidPlayerIndex(ownerIdentity.index) ||
+            !ManualThrowCaptureIdentity(sourceWeapon, sourceIdentity) ||
+            !ManualThrowReadWeaponOwner(sourceIdentity, weaponOwner) || weaponOwner != owner ||
+            ManualCarryThrowReadServerWeaponId(sourceWeapon) != weaponId)
+            return false;
+
 		Vector measuredVelocity{};
 		Vector measuredAngularVelocity{};
 		ManualThrowEstimateReleaseVelocity(
@@ -426,6 +481,8 @@ namespace
 		pending.owner = owner;
 		pending.sourceWeapon = sourceWeapon;
 		pending.sourceWeaponVtable = ManualThrowReadEntityVtable(sourceWeapon);
+        pending.ownerIdentity = ownerIdentity;
+        pending.sourceIdentity = sourceIdentity;
 		pending.origin = player.controllerPos + spawnDirection * 5.0f;
 		pending.angles = player.controllerAngle;
 		pending.velocity = measuredVelocity;
@@ -490,9 +547,11 @@ namespace
 		Player& player = Hooks::m_Game->m_PlayersVRInfo[static_cast<size_t>(playerIndex)];
 		ManualThrowPending& pending = player.manualThrowPending;
 		const int expectedWeaponId = ManualThrowExpectedWeaponId(kind);
-		const int pendingAgeTicks = player.manualThrowLastTick - pending.releaseTick;
+        const std::int64_t pendingAgeTicks = static_cast<std::int64_t>(player.manualThrowLastTick) - pending.releaseTick;
 		if (!player.isUsingVR || !pending.valid || pending.owner != owner ||
-			pending.weaponId != expectedWeaponId || pendingAgeTicks < 0 || pendingAgeTicks > 48)
+            !l4d2vr_throw::ProjectilePending(pending.inventoryDrop, ManualThrowWeaponIdIsThrowable(pending.weaponId)) ||
+			pending.weaponId != expectedWeaponId || pendingAgeTicks < 0 || pendingAgeTicks > 48 ||
+            !ManualThrowIdentityMatches(pending.ownerIdentity) || !ManualThrowIdentityMatches(pending.sourceIdentity))
 		{
 			if (pending.valid && (pendingAgeTicks < 0 || pendingAgeTicks > 48))
 				pending = {};
@@ -520,7 +579,7 @@ namespace
 
 	static bool ManualCarryThrowTeleportDroppedEntity(
 		void* entity,
-		const ManualThrowPending& pending)
+		const ManualThrowPending& pending, bool applyAngles = false)
 	{
 		if (!entity)
 			return false;
@@ -577,7 +636,7 @@ namespace
 #ifdef _MSC_VER
 		__try
 		{
-			teleport(entity, &pending.origin, nullptr, &pending.velocity);
+			teleport(entity, &pending.origin, applyAngles ? &pending.angles : nullptr, &pending.velocity);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
@@ -588,7 +647,7 @@ namespace
 			return false;
 		}
 #else
-		teleport(entity, &pending.origin, nullptr, &pending.velocity);
+		teleport(entity, &pending.origin, applyAngles ? &pending.angles : nullptr, &pending.velocity);
 #endif
 		return true;
 	}
@@ -664,9 +723,9 @@ namespace
 	{
 		bool valid = false;
 		void* sourceWeapon = nullptr;
-		void* sourceWeaponVtable = nullptr;
 		void* spawnedEntity = nullptr;
-		void* spawnedEntityVtable = nullptr;
+        l4d2vr_throw::EntityIdentity sourceIdentity{}, spawnedIdentity{};
+        bool sourceDetached = false;
 		int weaponId = static_cast<int>(C_WeaponCSBase::WeaponID::NONE);
 		std::chrono::steady_clock::time_point createdAt{};
 	};
@@ -692,12 +751,15 @@ namespace
 	}
 
 	static void ManualCarryThrowCacheSpawnedPhysicsProp(
-		void* sourceWeapon,
+        const l4d2vr_throw::EntityIdentity& sourceIdentity,
 		void* spawnedEntity,
 		int weaponId,
-		const char* capturePath)
+        const char* capturePath, bool sourceDetached)
 	{
+        void* sourceWeapon = reinterpret_cast<void*>(sourceIdentity.object);
+        l4d2vr_throw::EntityIdentity spawnedIdentity{};
 		if (!sourceWeapon || !spawnedEntity ||
+            !sourceIdentity.Valid() || !ManualThrowCaptureIdentity(spawnedEntity, spawnedIdentity) ||
 			!ManualCarryThrowWeaponIdUsesSpawnedPhysicsProp(weaponId))
 		{
 			return;
@@ -728,9 +790,10 @@ namespace
 		*selected = {};
 		selected->valid = true;
 		selected->sourceWeapon = sourceWeapon;
-		selected->sourceWeaponVtable = ManualThrowReadEntityVtable(sourceWeapon);
 		selected->spawnedEntity = spawnedEntity;
-		selected->spawnedEntityVtable = ManualThrowReadEntityVtable(spawnedEntity);
+        selected->sourceIdentity = sourceIdentity;
+        selected->spawnedIdentity = spawnedIdentity;
+        selected->sourceDetached = sourceDetached;
 		selected->weaponId = weaponId;
 		selected->createdAt = std::chrono::steady_clock::now();
 		Game::logMsg(
@@ -742,9 +805,10 @@ namespace
 	}
 
 	static void* ManualCarryThrowClaimSpawnedPhysicsProp(
-		void* sourceWeapon,
-		int weaponId)
+        const l4d2vr_throw::EntityIdentity& sourceIdentity,
+        int weaponId, l4d2vr_throw::EntityIdentity& spawnedIdentity, bool& sourceDetached)
 	{
+        void* sourceWeapon = reinterpret_cast<void*>(sourceIdentity.object);
 		if (!sourceWeapon || !ManualCarryThrowWeaponIdUsesSpawnedPhysicsProp(weaponId))
 			return nullptr;
 
@@ -757,12 +821,12 @@ namespace
 				continue;
 			const float age = std::chrono::duration<float>(now - candidate.createdAt).count();
 			if (age < 0.0f || age > kMaximumCandidateAgeSeconds ||
-				ManualThrowReadEntityVtable(candidate.spawnedEntity) != candidate.spawnedEntityVtable)
+                !ManualThrowIdentityMatches(candidate.spawnedIdentity))
 			{
 				candidate = {};
 				continue;
 			}
-			if (candidate.sourceWeapon == sourceWeapon && candidate.weaponId == weaponId &&
+            if (l4d2vr_throw::SameEntity(candidate.sourceIdentity, sourceIdentity) && candidate.weaponId == weaponId &&
 				(!selected || candidate.createdAt > selected->createdAt))
 			{
 				selected = &candidate;
@@ -772,6 +836,8 @@ namespace
 			return nullptr;
 
 		void* spawnedEntity = selected->spawnedEntity;
+        spawnedIdentity = selected->spawnedIdentity;
+        sourceDetached = selected->sourceDetached;
 		const float age = std::chrono::duration<float>(now - selected->createdAt).count();
 		Game::logMsg(
 			"[VR][ManualCarryThrow] claimed cached physics_prop type=%s source=%p dropped=%p age=%.3f",
@@ -2161,6 +2227,183 @@ namespace
 			player.manualEmptyHandsPlaceholderArmed);
 	}
 
+	static bool ManualPistolLayoutIsVerified()
+	{
+		const auto* offsets = Hooks::m_Game ? Hooks::m_Game->m_Offsets : nullptr;
+		if (!offsets || !offsets->PistolRemoveDualWeapons.valid) return false;
+		constexpr unsigned char clipHalving[] = { 0x8B, 0x86, 0x14, 0x14, 0, 0, 0x99, 0x2B, 0xC2, 0x8B, 0xF8, 0xD1, 0xFF };
+#ifdef _MSC_VER
+		__try
+#endif
+		{
+			return std::memcmp(reinterpret_cast<const unsigned char*>(offsets->PistolRemoveDualWeapons.address) + 0xE7,
+				clipHalving, sizeof(clipHalving)) == 0;
+		}
+#ifdef _MSC_VER
+		__except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+#endif
+	}
+
+    static bool ManualPistolReadAmmo(void* owner, void* weapon, l4d2vr_pistol::AmmoSnapshot& result, int& index)
+    {
+        auto* game = Hooks::m_Game;
+        if (!game || !game->m_Offsets || !owner || !weapon || !ManualPistolLayoutIsVerified() ||
+            !game->m_Offsets->PhysicalGunOwner.valid || !game->m_Offsets->PhysicalShellMaxClip.valid ||
+            !game->m_Offsets->CBaseEntity_entindex.valid ||
+            !ManualEmptyHandsPlaceholderOwnerIsLiveSurvivor(owner)) return false;
+#ifdef _MSC_VER
+        __try
+        {
+#endif
+            using Owner = void* (__thiscall*)(void*);
+            using Index = int (__thiscall*)(void*);
+            using Capacity = int (__thiscall*)(void*);
+            if (reinterpret_cast<Owner>(game->m_Offsets->PhysicalGunOwner.address)(weapon) != owner ||
+                reinterpret_cast<Server_WeaponCSBase*>(weapon)->GetWeaponID() != static_cast<int>(C_WeaponCSBase::WeaponID::PISTOL))
+                return false;
+            const auto* bytes = reinterpret_cast<const unsigned char*>(weapon);
+            auto* ownerEdict = *reinterpret_cast<edict_t**>(reinterpret_cast<unsigned char*>(owner) + 0x28);
+            auto* weaponEdict = *reinterpret_cast<edict_t* const*>(bytes + 0x28);
+            const auto entindex = reinterpret_cast<Index>(game->m_Offsets->CBaseEntity_entindex.address);
+            index = entindex(owner);
+            int ownerIndex = -1, weaponIndex = -1; unsigned ownerSerial = 0u, weaponSerial = 0u;
+            if (!game->ReadServerEdictIdentity(ownerEdict, ownerIndex, ownerSerial, owner) ||
+                !game->ReadServerEdictIdentity(weaponEdict, weaponIndex, weaponSerial, weapon) ||
+                !game->IsValidPlayerIndex(index) || index <= 0 || ownerIndex != index ||
+                entindex(weapon) != weaponIndex || (ownerEdict->m_fStateFlags & 2u) != 0u ||
+                (weaponEdict->m_fStateFlags & 2u) != 0u || (weaponEdict->m_fStateFlags & 4u) == 0u ||
+                bytes[0x17DD] > 1u || bytes[0x17DC] > 1u) return false;
+            result = {reinterpret_cast<uintptr_t>(owner), reinterpret_cast<uintptr_t>(weapon),
+                ownerSerial, weaponSerial,
+                *reinterpret_cast<const int*>(bytes + 0x1414), bytes[0x17DD] != 0u,
+                reinterpret_cast<Capacity>(game->m_Offsets->PhysicalShellMaxClip.address)(weapon)};
+            return result.Valid();
+#ifdef _MSC_VER
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+#endif
+    }
+    static bool ManualPistolSelectAmmo(int index, const l4d2vr_pistol::AmmoSnapshot& source,
+        l4d2vr_pistol::Hand drop, l4d2vr_pistol::AmmoSplit& ammo, bool& exact)
+    {
+        if (!Hooks::m_Game || !Hooks::m_Game->IsValidPlayerIndex(index)) return false;
+        std::lock_guard<std::mutex> lock(Hooks::m_Game->m_PistolAmmoMutex);
+        return Hooks::m_Game->m_PistolAmmo[index].Split(source, drop, ammo, exact);
+    }
+    static void ManualPistolRetainAmmo(int index, const l4d2vr_pistol::AmmoSnapshot& before,
+        l4d2vr_pistol::Hand drop, int retained)
+    {
+        if (!Hooks::m_Game || !Hooks::m_Game->IsValidPlayerIndex(index)) return;
+        auto after = before; after.dual = false; after.clip = retained;
+        std::lock_guard<std::mutex> lock(Hooks::m_Game->m_PistolAmmoMutex);
+        Hooks::m_Game->m_PistolAmmo[index].Single(after, l4d2vr_pistol::Opposite(drop));
+    }
+    static bool ManualPistolClipIsWritable(void* weapon)
+    {
+        const auto address = reinterpret_cast<uintptr_t>(weapon) + 0x1414u;
+        MEMORY_BASIC_INFORMATION region{};
+        if (!VirtualQuery(reinterpret_cast<void*>(address), &region, sizeof(region)) || region.State != MEM_COMMIT ||
+            (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0u ||
+            (region.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0u)
+            return false;
+        const auto base = reinterpret_cast<uintptr_t>(region.BaseAddress);
+        return address >= base && address - base <= region.RegionSize &&
+            sizeof(int) <= region.RegionSize - (address - base);
+    }
+
+	// 0: a single pistol uses the normal inventory drop. 1: split committed.
+	// -1: failed closed. All fallible spawn work precedes the native conversion.
+	static int ManualPistolExecuteSplit(int playerIndex, void* owner, const ManualThrowPending& pending)
+	{
+		Offsets* offsets = Hooks::m_Game ? Hooks::m_Game->m_Offsets : nullptr;
+		if (!offsets || !ManualPistolLayoutIsVerified() ||
+			!offsets->GetActiveWeapon.valid || !offsets->DispatchSpawn_Server.valid ||
+			!offsets->CBaseEntity_SetAbsOrigin_Server.valid ||
+			!offsets->ManualEmptyHandsUtilRemove.valid ||
+			!Hooks::hkManualCarryCreateEntityByName.fOriginal ||
+			!ManualEmptyHandsPlaceholderOwnerIsLiveSurvivor(owner))
+			return -1;
+		void* created = nullptr;
+		bool committed = false;
+		using GetActiveFn = void* (__thiscall*)(void*);
+		using RemoveDualFn = bool(__thiscall*)(void*, bool);
+		using SpawnFn = int(__cdecl*)(void*, bool);
+		using SetOriginFn = void(__thiscall*)(void*, const Vector*);
+		using RemoveFn = void(__cdecl*)(void*);
+		const auto remove = reinterpret_cast<RemoveFn>(offsets->ManualEmptyHandsUtilRemove.address);
+		l4d2vr_pistol::AmmoSplit ammo{};
+        l4d2vr_pistol::AmmoSnapshot snapshot{};
+        int snapshotIndex = -1;
+        bool exactAmmo = false;
+#ifdef _MSC_VER
+		__try
+		{
+#endif
+			if (reinterpret_cast<GetActiveFn>(offsets->GetActiveWeapon.address)(owner) != pending.sourceWeapon)
+				return -1;
+			auto* source = reinterpret_cast<unsigned char*>(pending.sourceWeapon);
+			if (source[0x17DD] == 0u) return 0;
+			if (source[0x17DD] != 1u || source[0x17DC] > 1u ||
+				!l4d2vr_pistol::SplitAmmo(*reinterpret_cast<int*>(source + 0x1414), ammo))
+				return -1;
+            if (!ManualPistolClipIsWritable(pending.sourceWeapon)) return -1;
+            if (ManualPistolReadAmmo(owner, pending.sourceWeapon, snapshot, snapshotIndex) && snapshotIndex == playerIndex)
+                ManualPistolSelectAmmo(playerIndex, snapshot, static_cast<l4d2vr_pistol::Hand>(pending.pistolDropHand), ammo, exactAmmo);
+			created = Hooks::hkManualCarryCreateEntityByName.fOriginal("weapon_pistol", -1, true);
+			if (created)
+			{
+				reinterpret_cast<SetOriginFn>(offsets->CBaseEntity_SetAbsOrigin_Server.address)(created, &pending.origin);
+				const int spawned = reinterpret_cast<SpawnFn>(offsets->DispatchSpawn_Server.address)(created, true);
+				if (spawned >= 0 && ManualThrowReadEntityVtable(created) &&
+					ManualCarryThrowTeleportDroppedEntity(created, pending, true))
+                {
+                    bool capacityFits = true;
+                    if (exactAmmo)
+                    {
+                        using Capacity = int (__thiscall*)(void*);
+                        const int capacity = reinterpret_cast<Capacity>(offsets->PhysicalShellMaxClip.address)(created);
+                        capacityFits = capacity > 0 && ammo.dropped <= capacity;
+                    }
+                    if (capacityFits)
+                    {
+					// Spawn has initialized this native CPistol. Set its clip before
+					// the first network snapshot; it has no inventory owner.
+					*reinterpret_cast<int*>(reinterpret_cast<unsigned char*>(created) + 0x1414) = ammo.dropped;
+					committed = reinterpret_cast<RemoveDualFn>(offsets->PistolRemoveDualWeapons.address)(pending.sourceWeapon, true);
+                    if (committed)
+                    {
+                        // Native conversion has dirtied the clip and updated
+                        // ownership/models. Publish the retained hand's count.
+                        *reinterpret_cast<int*>(source + 0x1414) = ammo.retained;
+                        if (snapshotIndex == playerIndex)
+                            ManualPistolRetainAmmo(playerIndex, snapshot,
+                                static_cast<l4d2vr_pistol::Hand>(pending.pistolDropHand), ammo.retained);
+                    }
+                    }
+				}
+			}
+#ifdef _MSC_VER
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			Game::logMsg("[VR][PistolDetach] native split exception player=%d source=%p created=%p", playerIndex, pending.sourceWeapon, created);
+		}
+#endif
+		if (!committed && created)
+		{
+#ifdef _MSC_VER
+			__try { remove(created); }
+			__except (EXCEPTION_EXECUTE_HANDLER) { }
+#else
+			remove(created);
+#endif
+		}
+		Game::logMsg("[VR][PistolDetach] split player=%d hand=%u committed=%d retained=%d dropped=%d exactAmmo=%d source=%p world=%p",
+			playerIndex, pending.pistolDropHand, committed ? 1 : 0, ammo.retained, ammo.dropped, exactAmmo ? 1 : 0,
+            pending.sourceWeapon, committed ? created : nullptr);
+		return committed ? 1 : -1;
+	}
+
 	static bool ManualInventoryThrowExecutePendingDrop(
 		int playerIndex,
 		void* ownerPlayer)
@@ -2175,11 +2418,62 @@ namespace
 		Player& player = Hooks::m_Game->m_PlayersVRInfo[static_cast<size_t>(playerIndex)];
 		ManualThrowPending& pending = player.manualThrowPending;
 		if (!player.isUsingVR || !pending.valid || !pending.inventoryDrop ||
-			pending.inventoryDropExecuted || pending.owner != ownerPlayer ||
-			!pending.sourceWeapon ||
-			ManualThrowReadEntityVtable(pending.sourceWeapon) != pending.sourceWeaponVtable)
+			pending.inventoryDropExecuted)
 		{
 			return false;
+		}
+
+        if (pending.owner != ownerPlayer || !pending.sourceWeapon ||
+            !ManualThrowIdentityMatches(pending.ownerIdentity) || !ManualThrowIdentityMatches(pending.sourceIdentity))
+        { pending = {}; return false; }
+
+        void* sourceOwner = nullptr;
+        if (!ManualThrowReadWeaponOwner(pending.sourceIdentity, sourceOwner) || sourceOwner != ownerPlayer ||
+            ManualCarryThrowReadServerWeaponId(pending.sourceWeapon) != pending.weaponId)
+        { pending = {}; return false; }
+
+        bool activeMatches = false;
+        if (Hooks::m_Game->m_Offsets->GetActiveWeapon.valid)
+        {
+            using Active = void* (__thiscall*)(void*);
+#ifdef _MSC_VER
+            __try
+#endif
+            {
+                activeMatches = reinterpret_cast<Active>(Hooks::m_Game->m_Offsets->GetActiveWeapon.address)(ownerPlayer) == pending.sourceWeapon;
+            }
+#ifdef _MSC_VER
+            __except (EXCEPTION_EXECUTE_HANDLER) { activeMatches = false; }
+#endif
+        }
+        const std::int64_t dropAge = static_cast<std::int64_t>(player.manualThrowLastTick) - pending.releaseTick;
+        if (!l4d2vr_grip::MayCommitDrop(ManualEmptyHandsPlaceholderOwnerIsLiveSurvivor(ownerPlayer),
+            pending.owner == ownerPlayer, ManualThrowReadEntityVtable(pending.sourceWeapon) == pending.sourceWeaponVtable,
+            activeMatches, dropAge))
+        {
+            Game::logMsg("[VR][GripDrop] canceled stale server drop player=%d source=%p activeMatch=%d age=%lld",
+                playerIndex, pending.sourceWeapon, activeMatches ? 1 : 0, static_cast<long long>(dropAge));
+            pending = {};
+            return false;
+        }
+
+		if (pending.pistolDropHand != 0u &&
+			pending.weaponId == static_cast<int>(C_WeaponCSBase::WeaponID::PISTOL))
+		{
+			Vector playerOrigin{};
+			if (!ManualThrowIsFiniteVector(pending.origin) || !IsFiniteViewAngle(pending.angles) ||
+				!ManualThrowGetPlayerOrigin(ownerPlayer, playerOrigin) ||
+				(pending.origin - playerOrigin).Length() > 256.0f)
+			{
+				pending = {};
+				return false;
+			}
+			const int splitResult = ManualPistolExecuteSplit(playerIndex, ownerPlayer, pending);
+			if (splitResult != 0)
+			{
+				pending = {};
+				return splitResult > 0;
+			}
 		}
 
 		// The similarly named CWeaponCarry::DropToPhysicsProp routine is only valid
@@ -2212,6 +2506,9 @@ namespace
 		}
 #endif
 		pending.inventoryDropExecuted = true;
+        void* ownerAfterDrop = nullptr;
+        pending.sourceDetached = !ManualThrowIdentityMatches(pending.sourceIdentity) ||
+            (ManualThrowReadWeaponOwner(pending.sourceIdentity, ownerAfterDrop) && ownerAfterDrop == nullptr);
 		Game::logMsg(
 			"[VR][ManualInventoryThrow] native weapon drop player=%d type=%s source=%p velocity=(%.1f %.1f %.1f)",
 			playerIndex,
@@ -2254,21 +2551,23 @@ namespace
 
 		if (!player.isUsingVR || !pending.valid ||
 			!ManualInventoryThrowWeaponIdIsSupported(pending.weaponId) ||
-			pending.owner != ownerPlayer || !pending.sourceWeapon)
+			pending.owner != ownerPlayer || !pending.sourceWeapon ||
+            !ManualThrowIdentityMatches(pending.ownerIdentity))
 		{
+			if (pending.valid) pending = {};
 			return false;
 		}
 
-		const int pendingAgeTicks = player.manualThrowLastTick - pending.releaseTick;
+        const std::int64_t pendingAgeTicks = static_cast<std::int64_t>(player.manualThrowLastTick) - pending.releaseTick;
 		if (pendingAgeTicks < 0 || pendingAgeTicks > 48)
 		{
 			Game::logMsg(
-				"[VR][ManualCarryThrow] detached pending expired type=%s player=%d releaseTick=%d lastTick=%d age=%d source=%p active=%p",
+				"[VR][ManualCarryThrow] detached pending expired type=%s player=%d releaseTick=%d lastTick=%d age=%lld source=%p active=%p",
 				ManualCarryThrowWeaponName(pending.weaponId),
 				playerIndex,
 				pending.releaseTick,
 				player.manualThrowLastTick,
-				pendingAgeTicks,
+                static_cast<long long>(pendingAgeTicks),
 				pending.sourceWeapon,
 				activeWeaponAfterUsercmd);
 			pending = {};
@@ -2291,6 +2590,10 @@ namespace
 			return false;
 		}
 
+        if (!l4d2vr_throw::DetachedPending(pending.inventoryDrop, pending.inventoryDropExecuted,
+                ManualThrowWeaponIdIsCarryable(pending.weaponId)))
+            return false;
+
 		ManualThrowPending consumed = pending;
 		pending = {};
 		const bool usesSpawnedPhysicsProp =
@@ -2298,15 +2601,24 @@ namespace
 		if (usesSpawnedPhysicsProp && !consumed.spawnedPhysicsProp)
 		{
 			consumed.spawnedPhysicsProp = ManualCarryThrowClaimSpawnedPhysicsProp(
-				consumed.sourceWeapon,
-				consumed.weaponId);
+                consumed.sourceIdentity, consumed.weaponId,
+                consumed.spawnedPhysicsPropIdentity, consumed.sourceDetached);
 		}
+
+        void* currentOwner = nullptr;
+        const bool sourceMatches = ManualThrowIdentityMatches(consumed.sourceIdentity);
+        const bool sourceDetached = sourceMatches
+            ? ManualThrowReadWeaponOwner(consumed.sourceIdentity, currentOwner) && currentOwner == nullptr
+            : consumed.sourceDetached && usesSpawnedPhysicsProp;
+        if (!sourceDetached || (usesSpawnedPhysicsProp
+                ? !ManualThrowIdentityMatches(consumed.spawnedPhysicsPropIdentity) : !sourceMatches))
+            return false;
 		void* droppedEntity = usesSpawnedPhysicsProp
 			? consumed.spawnedPhysicsProp
 			: consumed.sourceWeapon;
 		const bool applied = ManualCarryThrowTeleportDroppedEntity(
 			droppedEntity,
-			consumed);
+			consumed, consumed.gripRelease);
 		if (applied)
 			ManualCarryImpactArm(droppedEntity, consumed);
 		Game::logMsg(
@@ -2871,9 +3183,7 @@ namespace
 		bool resolvedBySpatialFallback = false;
 		// L4D2's own CBaseEntity::entindex implementation subtracts the global
 		// edict base and shifts right by four, proving that this server build's
-		// native edict stride is 16 bytes. The public SDK edict_t declaration
-		// includes a trailing freetime field and is 20 bytes in this project;
-		// typed pointer arithmetic therefore lands on the wrong entity.
+		// native edict stride is 16 bytes, matching the corrected SDK layout.
 		constexpr size_t kNativeEdictStride = 16;
 #ifdef _MSC_VER
 		__try
@@ -4031,20 +4341,83 @@ namespace
 
 }
 
+static bool PistolPhysicalReloadOwnsWeapon(void* owner, void* weapon)
+{
+    auto* game = Hooks::m_Game;
+    l4d2vr_pistol::AmmoSnapshot snapshot{}; int index = -1;
+    if (!game || !Hooks::m_VR || !Hooks::m_VR->m_DualPistolsIndependentHandsEnabled ||
+        !ManualPistolReadAmmo(owner, weapon, snapshot, index) ||
+        !game->PistolAmmoClientReady(index, snapshot.ownerSerial) ||
+        game->GetConVarIntDirect("sv_infinite_ammo", -1) != 0) return false;
+    l4d2vr_pistol::MagazineState magazines{};
+    {
+        std::lock_guard<std::mutex> lock(game->m_PistolAmmoMutex);
+        if (!game->m_PistolAmmo[index].MagazineInfo(snapshot, magazines) || magazines.physical == 0u)
+            return false;
+    }
+    int command = 0;
+    if (TryGetExecutingPistolNativeReload(owner, index, snapshot, command) &&
+        game->RelinquishPistolPhysicalReload(index, snapshot, command))
+        return false;
+    return true;
+}
+
+static bool PhysicalNativeReloadIsBlocked(void* weapon)
+{
+    Game* game = Hooks::m_Game;
+    if (!game || !weapon || !game->m_Offsets || !game->m_Offsets->PhysicalGunOwner.valid ||
+        !game->m_Offsets->CBaseEntity_entindex.valid) return false;
+#ifdef _MSC_VER
+    __try
+#endif
+    {
+        using Owner = void* (__thiscall*)(void*);
+        using Index = int(__thiscall*)(void*);
+        void* owner = reinterpret_cast<Owner>(game->m_Offsets->PhysicalGunOwner.address)(weapon);
+        if (!owner) return false;
+        if (PistolPhysicalReloadOwnsWeapon(owner, weapon)) return true;
+        bool blocked = false;
+        if (TryGetExecutingReloadGate(owner, weapon, blocked)) return blocked;
+        const int index = reinterpret_cast<Index>(game->m_Offsets->CBaseEntity_entindex.address)(owner);
+        if (!game->IsValidPlayerIndex(index)) return false;
+        const Player& player = game->m_PlayersVRInfo[index];
+        return player.isUsingVR && player.physicalReloadLedger.Blocks(reinterpret_cast<uintptr_t>(weapon));
+    }
+#ifdef _MSC_VER
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+#endif
+}
+
+bool __fastcall Hooks::dPhysicalGunReload(void* ecx, void* edx)
+{
+    if (PhysicalNativeReloadIsBlocked(ecx)) return false;
+    return hkPhysicalGunReload.fOriginal(ecx);
+}
+bool __fastcall Hooks::dPhysicalShotgunReload(void* ecx, void* edx)
+{
+    if (PhysicalNativeReloadIsBlocked(ecx)) return false;
+    return hkPhysicalShotgunReload.fOriginal(ecx);
+}
+
 void* __fastcall Hooks::dManualCarryCreatePhysicsProp(void* ecx, void* edx)
 {
 	(void)edx;
+    l4d2vr_throw::EntityIdentity sourceIdentity{};
+    const bool sourceCaptured = ManualThrowCaptureIdentity(ecx, sourceIdentity);
+    const int weaponId = sourceCaptured ? ManualCarryThrowReadServerWeaponId(ecx) : 0;
 	void* droppedEntity = hkManualCarryCreatePhysicsProp.fOriginal
 		? hkManualCarryCreatePhysicsProp.fOriginal(ecx)
 		: nullptr;
-	if (droppedEntity && ecx)
+    if (droppedEntity && sourceCaptured)
 	{
-		const int weaponId = ManualCarryThrowReadServerWeaponId(ecx);
+        void* currentOwner = nullptr;
+        const bool detached = !ManualThrowIdentityMatches(sourceIdentity) ||
+            (ManualThrowReadWeaponOwner(sourceIdentity, currentOwner) && currentOwner == nullptr);
 		ManualCarryThrowCacheSpawnedPhysicsProp(
-			ecx,
+            sourceIdentity,
 			droppedEntity,
 			weaponId,
-			"CWeaponCarry::CreatePhysicsProp");
+            "CWeaponCarry::CreatePhysicsProp", detached);
 	}
 	return droppedEntity;
 }
@@ -4057,33 +4430,8 @@ void* __cdecl Hooks::dManualCarryCreateEntityByName(
 	void* droppedEntity = hkManualCarryCreateEntityByName.fOriginal
 		? hkManualCarryCreateEntityByName.fOriginal(className, forcedEdictIndex, runScriptHook)
 		: nullptr;
-	if (!droppedEntity || !s_ManualCarryThrowPropSpawnHookReady ||
-		!m_ServerProcessingUsercmd || !m_Game || !m_VR ||
-		!m_VR->m_ManualThrowEnabled ||
-		!className || _stricmp(className, "physics_prop") != 0 ||
-		!m_Game->IsValidPlayerIndex(m_ServerProcessingUsercmdPlayerIndex))
-	{
-		return droppedEntity;
-	}
-
-	Player& player = m_Game->m_PlayersVRInfo[
-		static_cast<size_t>(m_ServerProcessingUsercmdPlayerIndex)];
-	ManualThrowPending& pending = player.manualThrowPending;
-	if (player.isUsingVR && pending.valid &&
-		pending.owner == m_ServerProcessingUsercmdPlayer &&
-		!pending.spawnedPhysicsProp &&
-		ManualCarryThrowWeaponIdUsesSpawnedPhysicsProp(pending.weaponId))
-	{
-		pending.spawnedPhysicsProp = droppedEntity;
-		Game::logMsg(
-			"[VR][ManualCarryThrow] captured spawned physics_prop type=%s player=%d tick=%d source=%p dropped=%p",
-			ManualCarryThrowWeaponName(pending.weaponId),
-			m_ServerProcessingUsercmdPlayerIndex,
-			pending.releaseTick,
-			pending.sourceWeapon,
-			droppedEntity);
-	}
-
+    // A generic physics_prop allocation does not identify the thrown source.
+    // CWeaponCarry::CreatePhysicsProp records the exact source/prop serial pair.
 	return droppedEntity;
 }
 

@@ -296,6 +296,7 @@ namespace
             m_EyeIndex(eyeIndex),
             m_DrawPass(drawPass)
         {
+            m_HaveScopeLens = vr && vr->ReadPhysicalScopeLens(eyeIndex, m_ScopeLens);
         }
 
         int AddRef() override
@@ -327,6 +328,7 @@ namespace
             }
 
             vr->DrawVrHandsForEyeImmediate(m_View, m_EyeIndex, m_DrawPass, true);
+            if (m_HaveScopeLens) vr->DrawPhysicalScopeLensForEye(m_View, m_EyeIndex, m_ScopeLens);
         }
 
     private:
@@ -336,6 +338,31 @@ namespace
         CViewSetup m_View{};
         int m_EyeIndex = -1;
         VrHandDrawPass m_DrawPass = VrHandDrawPass::WorldDepth;
+        PhysicalScopeLensSnapshot m_ScopeLens{};
+        bool m_HaveScopeLens = false;
+    };
+
+    class PhysicalScopeImageFunctor final : public CFunctor
+    {
+    public:
+        PhysicalScopeImageFunctor(VR* vr, const PhysicalScopeRenderSnapshot& snapshot, uint32_t epoch)
+            : m_VR(vr), m_Snapshot(snapshot), m_Epoch(epoch) {}
+        int AddRef() override { return static_cast<int>(m_Refs.fetch_add(1, std::memory_order_acq_rel) + 1); }
+        int Release() override
+        {
+            const long refs = m_Refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (!refs) delete this;
+            return static_cast<int>(refs);
+        }
+        void operator()() override
+        {
+            if (m_VR) m_VR->PublishPhysicalScopeImage(m_Snapshot, m_Epoch);
+        }
+    private:
+        std::atomic<long> m_Refs{0};
+        VR* m_VR = nullptr;
+        PhysicalScopeRenderSnapshot m_Snapshot{};
+        uint32_t m_Epoch = 0u;
     };
 
     inline bool IsSourceQueueReadableProtection(DWORD protect)
@@ -2065,6 +2092,7 @@ void VR::Update()
 
     if (!m_Game->m_VguiSurface)
     {
+        ReleaseCustomActionInputs();
         PumpSpeechToTextVoiceBroadcast();
         FlushHapticMixer();
         markPresentSpikeUpdatePhase(m_PresentSpikeUpdateInputUs);
@@ -2077,6 +2105,7 @@ void VR::Update()
 
     if (menuInputActive)
     {
+        ReleaseCustomActionInputs();
         CancelTeleportTargeting();
         ProcessMenuInput();
     }
@@ -2096,9 +2125,9 @@ void VR::Update()
 }
 
 bool VR::GetWalkAxis(float& x, float& y) {
-    vr::InputAnalogActionData_t d;
+    vr::InputAnalogActionData_t d{};
     bool hasAxis = false;
-    if (GetAnalogActionData(m_ActionWalk, d)) {
+    if (GetAnalogActionData(m_ActionWalk, d) && d.bActive && std::isfinite(d.x) && std::isfinite(d.y)) {
         x = d.x;
         y = d.y;
         hasAxis = true;
@@ -2106,6 +2135,19 @@ bool VR::GetWalkAxis(float& x, float& y) {
     else
     {
         x = y = 0.0f;
+    }
+    if (m_VrHandsDebugLog)
+    {
+        static std::atomic<int> previousState{-1};
+        const int currentState = hasAxis ? 1 : 0;
+        if (previousState.exchange(currentState, std::memory_order_acq_rel) != currentState)
+        {
+            const auto left = m_System ? m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand)
+                : vr::k_unTrackedDeviceIndexInvalid;
+            Game::logMsg("[VR][Input] Walk action %s active=%d leftDevice=%u leftConnected=%d",
+                hasAxis ? "available" : "unavailable", d.bActive ? 1 : 0, left,
+                m_System && left < vr::k_unMaxTrackedDeviceCount && m_System->IsTrackedDeviceConnected(left) ? 1 : 0);
+        }
     }
     return hasAxis;
 }
@@ -2633,8 +2675,9 @@ bool VR::QueueVrHandsDrawForEye(
         (m_MagazineBoxDebugEnabled || calibrationOverlayActive) &&
         drawPass != VrHandDrawPass::WorldVisibilityMask &&
         HasFreshMagazineInteractionDebugBoxWork();
+    const bool drawScopeLens = IsPhysicalScopeMode() && m_ScopeEnabled && ScopeWeaponEligible();
     if (!renderContext ||
-        (!drawGloves && !drawMagazineDebugBoxes) ||
+        (!drawGloves && !drawMagazineDebugBoxes && !drawScopeLens) ||
         !m_IsVREnabled ||
         !m_Game)
     {
@@ -4541,7 +4584,7 @@ void VR::SubmitVRTextures()
         vr::VROverlay()->HideOverlay(overlay);
 
     // Scope overlay independent of HUD cursor mode
-    if (m_ScopeTexture && m_ScopeEnabled)
+    if (m_ScopeTexture && m_ScopeEnabled && !IsPhysicalScopeMode())
     {
         const bool scopeOverlayTextureReady = applyScopeTexture(m_ScopeHandle);
         const float alpha = IsScopeActive() ? 1.0f : std::clamp(m_ScopeOverlayIdleAlpha, 0.0f, 1.0f);
@@ -4800,7 +4843,14 @@ void VR::LogCompositorError(const char* action, vr::EVRCompositorError error)
 
 void VR::GetPoseData(vr::TrackedDevicePose_t& poseRaw, TrackedDevicePoseData& poseOut)
 {
-    if (poseRaw.bPoseIsValid)
+    if (!l4d2vr_controller_identity::UsablePose(poseRaw))
+    {
+        // Preserve the last usable position through tracking loss, but do not
+        // keep applying a velocity from a controller that is no longer tracked.
+        poseOut.TrackedDeviceVel = Vector(0.0f, 0.0f, 0.0f);
+        poseOut.TrackedDeviceAngVel = QAngle(0.0f, 0.0f, 0.0f);
+        return;
+    }
     {
         vr::HmdMatrix34_t mat = poseRaw.mDeviceToAbsoluteTracking;
         Vector pos;
@@ -4810,15 +4860,15 @@ void VR::GetPoseData(vr::TrackedDevicePose_t& poseRaw, TrackedDevicePoseData& po
         pos.x = -mat.m[2][3];
         pos.y = -mat.m[0][3];
         pos.z = mat.m[1][3];
-        ang.x = asin(mat.m[1][2]) * (180.0 / 3.141592654);
-        ang.y = atan2f(mat.m[0][2], mat.m[2][2]) * (180.0 / 3.141592654);
-        ang.z = atan2f(-mat.m[1][0], mat.m[1][1]) * (180.0 / 3.141592654);
+        ang.x = static_cast<float>(asin(mat.m[1][2]) * (180.0 / 3.141592654));
+        ang.y = static_cast<float>(atan2f(mat.m[0][2], mat.m[2][2]) * (180.0 / 3.141592654));
+        ang.z = static_cast<float>(atan2f(-mat.m[1][0], mat.m[1][1]) * (180.0 / 3.141592654));
         vel.x = -poseRaw.vVelocity.v[2];
         vel.y = -poseRaw.vVelocity.v[0];
         vel.z = poseRaw.vVelocity.v[1];
-        angvel.x = -poseRaw.vAngularVelocity.v[2] * (180.0 / 3.141592654);
-        angvel.y = -poseRaw.vAngularVelocity.v[0] * (180.0 / 3.141592654);
-        angvel.z = poseRaw.vAngularVelocity.v[1] * (180.0 / 3.141592654);
+        angvel.x = static_cast<float>(-poseRaw.vAngularVelocity.v[2] * (180.0 / 3.141592654));
+        angvel.y = static_cast<float>(-poseRaw.vAngularVelocity.v[0] * (180.0 / 3.141592654));
+        angvel.z = static_cast<float>(poseRaw.vAngularVelocity.v[1] * (180.0 / 3.141592654));
 
         poseOut.TrackedDevicePos = pos;
         poseOut.TrackedDeviceVel = vel;
@@ -5115,8 +5165,32 @@ void VR::NotifyRearMirrorSpecialWarning()
     m_LastRearMirrorAlertTime = std::chrono::steady_clock::now();
 }
 
+bool VR::QueuePhysicalScopeImage(IMatRenderContext* context, const PhysicalScopeRenderSnapshot& snapshot, uint32_t renderEpoch)
+{
+    void* contextVtable = nullptr;
+    void* getCallQueue = nullptr;
+    ICallQueue* queue = GetSourceRenderContextCallQueue(context, &contextVtable, &getCallQueue);
+    void* queueVtable = nullptr;
+    if (!IsSourceCallQueueUsable(queue, &queueVtable)) return false;
+    queue->QueueFunctor(new PhysicalScopeImageFunctor(this, snapshot, renderEpoch));
+    return true;
+}
+
 bool VR::ShouldUpdateScopeRTT()
 {
+    if (IsPhysicalScopeMode())
+    {
+        PhysicalScopeRenderSnapshot snapshot{};
+        if (ReadPhysicalScopeRender(snapshot) &&
+            !l4d2vr_optics::ImageMatches(ReadPhysicalScopeImage(), snapshot.weapon, snapshot.magnification,
+                m_SourceRenderQueueMarkerEpoch.load(std::memory_order_acquire), GetTickCount64()))
+        {
+            // A new gun or zoom needs its own image, even if normal pacing would
+            // retain the previous frame. There is still one RTT pass per frame.
+            m_LastScopeRTTRenderTime = std::chrono::steady_clock::now();
+            return true;
+        }
+    }
     // Keep the scope RTT pacing aligned with the HMD refresh rate.
     // This avoids exposing another manual config knob while still preventing multiple scope updates per HMD frame.
     float effectiveMaxHz = GetHmdDisplayFrequencyHz();

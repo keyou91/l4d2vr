@@ -4,6 +4,9 @@
 #include "sdk.h"
 #include "vr_hand_math.h"
 #include "vr_hand_vm_pose.h"
+#include "../vr_skeletal_data.h"
+#include "../vr_hand_input_validation.h"
+#include "../vr_hand_pose_cache.h"
 
 #include <Windows.h>
 #include <d3d9.h>
@@ -461,10 +464,20 @@ bool VrHandSystem::ResolveSteamVrAssetPath(const char* fileName, std::string& ou
     if (buffer.empty() || buffer.front() == '\0')
         return false;
 
-    const std::filesystem::path path = std::filesystem::path(buffer.data()) /
-        "resources" / "rendermodels" / "vr_glove" / fileName;
-    outPath = path.string();
-    return std::filesystem::exists(path);
+    if (!fileName || !*fileName)
+        return false;
+    try
+    {
+        const std::filesystem::path path = std::filesystem::u8path(buffer.data()) /
+            "resources" / "rendermodels" / "vr_glove" / fileName;
+        outPath = path.u8string();
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error) && !error;
+    }
+    catch (const std::filesystem::filesystem_error&)
+    {
+        return false;
+    }
 }
 
 bool VrHandSystem::EnsureStandaloneMagazineBoxLoaded(
@@ -774,58 +787,78 @@ bool VrHandSystem::DrawMagazineDebugBoxesForEye(
 
 bool VrHandSystem::EnsureAssetsLoaded(bool debugLog)
 {
-    if (m_DependencyUnavailable)
-        return false;
     if (m_AssetsLoaded)
         return true;
-    if (m_AssetLoadAttempted)
-        return false;
-    m_AssetLoadAttempted = true;
+
+    const std::uint32_t now = GetTickCount();
+    bool loadedNewAsset = false;
 
     for (HandState& hand : m_Hands)
     {
+        if (hand.asset.IsValid())
+            continue;
+        if (hand.assetLoadAttempted && now - hand.assetLoadAttemptTick < 1000u)
+            continue;
+        hand.assetLoadAttempted = true;
+        hand.assetLoadAttemptTick = now;
+
         std::string assetPath;
         if (!ResolveSteamVrAssetPath(hand.assetFileName, assetPath))
         {
-            m_DependencyUnavailable = true;
-            m_DependencyFailureReason = std::string("missing SteamVR glove asset: ") +
+            hand.assetFailureReason = std::string("missing SteamVR glove asset: ") +
                 (hand.assetFileName ? hand.assetFileName : "<unknown>");
-            return false;
+            continue;
         }
 
+        VrHandMeshAsset asset;
         std::string error;
-        if (!VrHandAssetLoader::LoadGlb(assetPath, hand.asset, error))
+        if (!VrHandAssetLoader::LoadGlb(assetPath, asset, error) || !asset.IsValid())
         {
-            m_DependencyUnavailable = true;
-            m_DependencyFailureReason = "failed to load SteamVR glove asset: " + assetPath;
+            hand.assetFailureReason = "failed to load SteamVR glove asset: " + assetPath;
             if (!error.empty())
-                m_DependencyFailureReason += " (" + error + ")";
-            return false;
+                hand.assetFailureReason += " (" + error + ")";
+            continue;
         }
+        hand.asset = std::move(asset);
+        hand.assetFailureReason.clear();
+        loadedNewAsset = true;
     }
 
+    bool anyAssetLoaded = false;
     m_AssetsLoaded = true;
-    if (debugLog)
+    m_DependencyFailureReason.clear();
+    for (const HandState& hand : m_Hands)
+    {
+        anyAssetLoaded |= hand.asset.IsValid();
+        m_AssetsLoaded &= hand.asset.IsValid();
+        if (!hand.asset.IsValid() && m_DependencyFailureReason.empty())
+            m_DependencyFailureReason = hand.assetFailureReason;
+        if (debugLog && !hand.assetFailureReason.empty())
+            ReportWarningOnce(hand.assetFailureReason);
+    }
+    m_DependencyUnavailable = !anyAssetLoaded;
+    if (debugLog && loadedNewAsset)
     {
         Game::logMsg(
             "[VR][Hands] assets loaded left=%u vertices right=%u vertices",
             static_cast<unsigned int>(m_Hands[0].asset.vertices.size()),
             static_cast<unsigned int>(m_Hands[1].asset.vertices.size()));
     }
-    return true;
+    return anyAssetLoaded;
 }
 
 bool VrHandSystem::EnsureInitialized(
     vr::IVRInput* input,
+    const l4d2vr_input::ActionFrame& actionFrame,
+    const VrHandControllerContext& controllers,
     bool rightUseViewmodelPose,
     bool twoHandedViewmodelPose,
     bool leftHanded,
     bool debugLog)
 {
-    if (m_DependencyUnavailable)
-        return false;
     if (!input || !EnsureAssetsLoaded(debugLog))
         return false;
+    const auto frameToken = actionFrame.Read();
 
     const int rightViewmodelPoseHandIndex = rightUseViewmodelPose ? (leftHanded ? 0 : 1) : -1;
     const int leftViewmodelPoseHandIndex = twoHandedViewmodelPose ? (leftHanded ? 1 : 0) : -1;
@@ -837,24 +870,29 @@ bool VrHandSystem::EnsureInitialized(
     for (size_t handIndex = 0; handIndex < m_Hands.size(); ++handIndex)
     {
         HandState& hand = m_Hands[handIndex];
-        if (usesViewmodelPose(handIndex))
-            continue;
         if (hand.skeletonInitialized)
+            continue;
+        if (!l4d2vr_input::ActionFrame::Ready(frameToken))
+            continue;
+        if (hand.source == vr::k_ulInvalidInputValueHandle &&
+            (input->GetInputSourceHandle(handIndex == 0u ? "/user/hand/left" : "/user/hand/right", &hand.source) !=
+                vr::VRInputError_None || hand.source == vr::k_ulInvalidInputValueHandle))
             continue;
 
         if (hand.action == vr::k_ulInvalidActionHandle &&
             (input->GetActionHandle(hand.actionPath, &hand.action) != vr::VRInputError_None ||
                 hand.action == vr::k_ulInvalidActionHandle))
         {
-            m_DependencyUnavailable = true;
             m_DependencyFailureReason = std::string("missing SteamVR skeletal action: ") +
                 (hand.actionPath ? hand.actionPath : "<unknown>");
-            return false;
+            continue;
         }
 
         vr::InputSkeletalActionData_t actionData{};
         const vr::EVRInputError actionDataResult = input->GetSkeletalActionData(hand.action, &actionData, sizeof(actionData));
-        if (actionDataResult != vr::VRInputError_None || !actionData.bActive)
+        if (actionDataResult != vr::VRInputError_None || !actionData.bActive ||
+            !l4d2vr_hand_input::ValidateOrigin(input, controllers.system, actionData.activeOrigin,
+                hand.source, controllers.physicalIndices[handIndex]))
         {
             if (debugLog)
             {
@@ -866,37 +904,32 @@ bool VrHandSystem::EnsureInitialized(
                     Game::logMsg("[VR][Hands] waiting for active skeletal action: %s", hand.actionPath);
                 }
             }
-            return false;
+            continue;
         }
 
         std::string error;
         if (!hand.skeleton.Initialize(input, hand.action, error))
         {
-            m_DependencyUnavailable = true;
             m_DependencyFailureReason = "failed to initialize SteamVR hand skeleton";
             if (!error.empty())
                 m_DependencyFailureReason += ": " + error;
-            return false;
+            continue;
         }
-        hand.skeletonInitialized = true;
+        if (actionFrame.Matches(frameToken))
+            hand.skeletonInitialized = true;
     }
 
-    m_Initialized = true;
+    m_Initialized = false;
     for (size_t handIndex = 0; handIndex < m_Hands.size(); ++handIndex)
     {
-        if (usesViewmodelPose(handIndex))
-            continue;
-        if (!m_Hands[handIndex].skeletonInitialized)
-        {
-            m_Initialized = false;
-            break;
-        }
+        if (usesViewmodelPose(handIndex) || m_Hands[handIndex].skeletonInitialized)
+            m_Initialized = true;
     }
     if (m_Initialized && debugLog && !m_DebugInitializationLogged)
     {
         m_DebugInitializationLogged = true;
-        const char* leftMode = usesViewmodelPose(0u) ? "viewmodel" : "openvr";
-        const char* rightMode = usesViewmodelPose(1u) ? "viewmodel" : "openvr";
+        const char* leftMode = usesViewmodelPose(0u) ? "viewmodel" : m_Hands[0].skeletonInitialized ? "openvr" : "pending";
+        const char* rightMode = usesViewmodelPose(1u) ? "viewmodel" : m_Hands[1].skeletonInitialized ? "openvr" : "pending";
         Game::logMsg(
             "[VR][Hands] initialized left=%s/%u vertices right=%s/%u vertices",
             leftMode,
@@ -1209,14 +1242,21 @@ bool VrHandSystem::BuildViewmodelWorld(
 
 void VrHandSystem::UpdatePoses(
     vr::IVRInput* input,
+    const l4d2vr_input::ActionFrame& actionFrame,
+    const VrHandControllerContext& controllers,
     bool motionRangeWithoutController,
     bool rightUseViewmodelPose,
     bool twoHandedViewmodelPose,
     bool leftHanded,
-    bool leftHandMagazineGripPose,
+    unsigned magazineGripPhysicalMask,
     const std::array<float, 5>& gloveFingerMaxCurl,
     bool debugLog)
 {
+    m_LastPoseUpdateTick = GetTickCount();
+    {
+        std::lock_guard<std::mutex> lock(m_FreeWristMutex);
+        m_FreeWrists = {};
+    }
     auto physicalHandIndexForGameplay = [&](int gameplayHandIndex) -> int
         {
             return leftHanded ? (1 - gameplayHandIndex) : gameplayHandIndex;
@@ -1242,34 +1282,38 @@ void VrHandSystem::UpdatePoses(
         : vr::VRSkeletalMotionRange_WithController;
 
     VrHandFingerCurlOverride magazineGripOverride{};
-    if (leftHandMagazineGripPose)
+    if (magazineGripPhysicalMask)
     {
         magazineGripOverride.enabled = true;
         magazineGripOverride.minCurl = { 0.34f, 0.60f, 0.66f, 0.68f, 0.68f };
         magazineGripOverride.maxCurl = { 0.58f, 0.82f, 0.88f, 0.90f, 0.90f };
     }
 
-    const size_t magazineGripPhysicalHandIndex = leftHanded ? 1u : 0u;
     for (size_t handIndex = 0; handIndex < m_Hands.size(); ++handIndex)
     {
         HandState& hand = m_Hands[handIndex];
         hand.paletteValid = false;
+        hand.paletteFrameToken = 0u;
         if (!hand.skeletonInitialized)
             continue;
 
         std::string error;
-        if (!hand.skeleton.Update(input, motionRange, error))
+        if (!hand.skeleton.Update(input, actionFrame, controllers.system, hand.source,
+                controllers.physicalIndices[handIndex], motionRange, error))
         {
             continue;
         }
         const VrHandFingerCurlOverride* fingerCurlOverride =
-            (handIndex == magazineGripPhysicalHandIndex && leftHandMagazineGripPose) ? &magazineGripOverride : nullptr;
+            ((magazineGripPhysicalMask & (1u << handIndex)) != 0u) ? &magazineGripOverride : nullptr;
         if (!hand.skeleton.BuildSkinningPalette(hand.asset, hand.palette, error, fingerCurlOverride, &gloveFingerMaxCurl))
         {
-            m_DependencyUnavailable = true;
+            ReportErrorOnce(std::string(handIndex == 0u ? "left" : "right") +
+                " hand skinning palette unavailable" + (error.empty() ? "" : ": " + error));
             continue;
         }
         hand.paletteValid = true;
+        hand.paletteFrameToken = hand.skeleton.PoseFrameToken();
+        PublishFreeWristModelPosition(handIndex);
     }
 
     bool hasLeftViewmodelPose = false;
@@ -1340,9 +1384,48 @@ void VrHandSystem::UpdatePoses(
     }
 }
 
+void VrHandSystem::PublishFreeWristModelPosition(size_t handIndex)
+{
+    if (handIndex >= m_Hands.size()) return;
+    FreeWristSnapshot snapshot{};
+    const auto& hand = m_Hands[handIndex];
+    const int wrist = FindVrHandsNameIndex(hand.asset.jointNames, handIndex == 0u ? "wrist_l" : "wrist_r");
+    if (hand.paletteValid && hand.asset.IsValid() && wrist >= 0 &&
+        wrist < static_cast<int>(hand.palette.size()) && wrist < static_cast<int>(hand.asset.bindMatrices.size()))
+    {
+        VrHandMatrix4 skin = VrHandMath::Identity();
+        for (int row = 0; row < 3; ++row)
+            for (int col = 0; col < 4; ++col)
+                VrHandMath::Set(skin, row, col, hand.palette[static_cast<size_t>(wrist)].v[static_cast<size_t>(row) * 4u + col]);
+        const auto model = VrHandMath::Multiply(skin, hand.asset.bindMatrices[static_cast<size_t>(wrist)]);
+        snapshot.position = Vector(VrHandMath::Get(model, 0, 3), VrHandMath::Get(model, 1, 3), VrHandMath::Get(model, 2, 3));
+        snapshot.valid = std::isfinite(snapshot.position.x) && std::isfinite(snapshot.position.y) && std::isfinite(snapshot.position.z);
+        snapshot.frameToken = hand.paletteFrameToken;
+        snapshot.updatedAt = m_LastPoseUpdateTick;
+    }
+    std::lock_guard<std::mutex> lock(m_FreeWristMutex);
+    m_FreeWrists[handIndex] = snapshot;
+}
+
+bool VrHandSystem::ReadFreeWristModelPosition(bool physicalLeft,
+    const l4d2vr_input::ActionFrame& actionFrame, Vector& position) const
+{
+    FreeWristSnapshot snapshot{};
+    {
+        std::lock_guard<std::mutex> lock(m_FreeWristMutex);
+        snapshot = m_FreeWrists[physicalLeft ? 0u : 1u];
+    }
+    if (!snapshot.valid || !l4d2vr_hand_pose::Available(actionFrame.Read(), snapshot.frameToken,
+            snapshot.updatedAt, GetTickCount())) return false;
+    position = snapshot.position;
+    return true;
+}
+
 bool VrHandSystem::DrawForEye(
     IDirect3DDevice9* device,
     vr::IVRInput* input,
+    const l4d2vr_input::ActionFrame& actionFrame,
+    const VrHandControllerContext& controllers,
     const CViewSetup& view,
     int eyeIndex,
     float vrScale,
@@ -1384,13 +1467,13 @@ bool VrHandSystem::DrawForEye(
     const Vector& leftHandTargetBoxMins,
     const Vector& leftHandTargetBoxMaxs,
     bool leftHandTargetBoxUseViewmodelLayer,
-    bool leftHandMagazineGripPose,
+    unsigned magazineGripPhysicalMask,
     const std::array<float, 5>& gloveFingerMaxCurl,
     VrHandDrawPass drawPass)
 {
-    if (m_DependencyUnavailable || !device || !input)
+    if (!device || !input)
         return false;
-    if (!EnsureInitialized(input, rightUseViewmodelPose, twoHandedViewmodelPose, leftHanded, debugLog))
+    if (!EnsureInitialized(input, actionFrame, controllers, rightUseViewmodelPose, twoHandedViewmodelPose, leftHanded, debugLog))
     {
         if (m_DependencyUnavailable)
             return false;
@@ -1488,9 +1571,9 @@ bool VrHandSystem::DrawForEye(
         return drewAny;
     }
 
-    if (m_LeftHandMagazineGripPoseWasEnabled != leftHandMagazineGripPose)
+    if (m_MagazineGripPhysicalMaskWasEnabled != magazineGripPhysicalMask)
     {
-        m_LeftHandMagazineGripPoseWasEnabled = leftHandMagazineGripPose;
+        m_MagazineGripPhysicalMaskWasEnabled = magazineGripPhysicalMask;
         m_Hands[0].paletteValid = false;
         m_Hands[1].paletteValid = false;
     }
@@ -1524,7 +1607,9 @@ bool VrHandSystem::DrawForEye(
                 const int physicalHandIndex = physicalHandIndexForGameplay(gameplayHandIndex);
                 if (physicalHandIndex < 0 || physicalHandIndex >= static_cast<int>(m_Hands.size()))
                     return true;
-                if (!m_Hands[static_cast<size_t>(physicalHandIndex)].paletteValid)
+                const HandState& hand = m_Hands[static_cast<size_t>(physicalHandIndex)];
+                if (!hand.paletteValid || !l4d2vr_hand_pose::Available(actionFrame.Read(), hand.paletteFrameToken,
+                        m_LastPoseUpdateTick, GetTickCount()))
                     return true;
             }
             return false;
@@ -1533,19 +1618,21 @@ bool VrHandSystem::DrawForEye(
     if (needsPoseUpdate())
         UpdatePoses(
             input,
+            actionFrame,
+            controllers,
             motionRangeWithoutController,
             rightUseViewmodelPose,
             twoHandedViewmodelPose,
             leftHanded,
-            leftHandMagazineGripPose,
+            magazineGripPhysicalMask,
             gloveFingerMaxCurl,
             debugLog);
 
     const VrHandMatrix4 sceneProjection = BuildVrHandsProjection(view, false);
-    const bool leftHandUsesMagazineViewmodelLayer =
-        leftHandMagazineGripPose && standaloneMagazineBoxUseViewmodelLayer;
+    const bool magazineUsesViewmodelLayer =
+        magazineGripPhysicalMask && standaloneMagazineBoxUseViewmodelLayer;
     const VrHandMatrix4 viewmodelProjection =
-        (rightUseViewmodelPose || twoHandedViewmodelPose || leftHandUsesMagazineViewmodelLayer)
+        (rightUseViewmodelPose || twoHandedViewmodelPose || magazineUsesViewmodelLayer)
         ? BuildVrHandsProjection(view, true)
         : sceneProjection;
     const VrHandMatrix4 camera = VrHandMath::BuildSourceView(view.origin, view.angles);
@@ -1554,11 +1641,17 @@ bool VrHandSystem::DrawForEye(
 
     bool drewAny = false;
     Vector positions[2] = { leftControllerPosition, rightControllerPosition };
-    if (leftHandUsesMagazineViewmodelLayer)
+    if (magazineUsesViewmodelLayer)
     {
-        Vector reprojectedLeft{};
-        if (ReprojectScenePointToViewmodelLayer(view, positions[0], reprojectedLeft))
-            positions[0] = reprojectedLeft;
+        for (int gameplayHand = 0; gameplayHand < 2; ++gameplayHand)
+        {
+            const int physicalHand = physicalHandIndexForGameplay(gameplayHand);
+            if (physicalHand < 0 || physicalHand > 1 ||
+                (magazineGripPhysicalMask & (1u << physicalHand)) == 0u) continue;
+            Vector reprojected{};
+            if (ReprojectScenePointToViewmodelLayer(view, positions[gameplayHand], reprojected))
+                positions[gameplayHand] = reprojected;
+        }
     }
     const QAngle angles[2] = { leftControllerAngles, rightControllerAngles };
     const Vector positionOffsets[2] = { leftHandPoseOffsetMeters, rightHandPoseOffsetMeters };
@@ -1577,11 +1670,16 @@ bool VrHandSystem::DrawForEye(
             useViewmodelPose
             ? (useLeftViewmodelPose ? &leftViewmodelState : &rightViewmodelState)
             : nullptr;
+        if (viewmodelState && !viewmodelState->paletteValid)
+            viewmodelState = nullptr;
         const std::vector<VrHandMatrixRows3x4>& palette =
             viewmodelState ? viewmodelState->palette : hand.palette;
         const bool paletteValid =
             viewmodelState ? viewmodelState->paletteValid : hand.paletteValid;
         if (!paletteValid)
+            continue;
+        if (!viewmodelState && !l4d2vr_hand_pose::Available(actionFrame.Read(), hand.paletteFrameToken,
+                m_LastPoseUpdateTick, GetTickCount()))
             continue;
 
         VrHandMatrix4 world{};
@@ -1610,10 +1708,10 @@ bool VrHandSystem::DrawForEye(
                 rotationOffsets[handIndex]);
         }
 
-        const bool useViewmodelLayer =
-            useViewmodelPose ||
-            (handIndex == 0 && leftHandUsesMagazineViewmodelLayer);
-        if (handIndex == 0 && leftHandUsesMagazineViewmodelLayer &&
+        const bool magazineHandUsesViewmodelLayer = magazineUsesViewmodelLayer &&
+            (magazineGripPhysicalMask & (1u << physicalHandIndex)) != 0u;
+        const bool useViewmodelLayer = viewmodelState != nullptr || magazineHandUsesViewmodelLayer;
+        if (magazineHandUsesViewmodelLayer &&
             drawPass == VrHandDrawPass::WorldVisibilityMask)
         {
             continue;
@@ -1622,14 +1720,34 @@ bool VrHandSystem::DrawForEye(
         const VrHandMatrix4& projection = useViewmodelLayer ? viewmodelProjection : sceneProjection;
         const VrHandMatrix4 wvp = VrHandMath::Multiply(projection, VrHandMath::Multiply(camera, world));
         const VrHandDrawPass handDrawPass =
-            (handIndex == 0 && leftHandUsesMagazineViewmodelLayer)
+            (magazineHandUsesViewmodelLayer)
             ? VrHandDrawPass::ViewmodelStandalone
             : drawPass;
         std::string error;
-        if (!m_Renderer.Draw(device, handIndex, hand.asset, palette, world, wvp, handDrawPass, sceneLightScale, error))
+        if (!m_Renderer.Draw(device, handIndex, hand.asset, palette, world, wvp, handDrawPass, sceneLightScale, error,
+                viewmodelState ? nullptr : &actionFrame, hand.paletteFrameToken, m_LastPoseUpdateTick))
             ReportErrorOnce(error);
         else
             drewAny = true;
+    }
+
+    if (!drewAny && allowControllerlessTestPose)
+    {
+        drewAny = DrawControllerlessTestPose(
+            device,
+            view,
+            vrScale,
+            modelScale,
+            rightUseViewmodelPose,
+            twoHandedViewmodelPose,
+            leftHanded,
+            sceneLightScale,
+            debugLog,
+            leftHandPoseOffsetMeters,
+            leftHandPoseRotationOffsetDeg,
+            rightHandPoseOffsetMeters,
+            rightHandPoseRotationOffsetDeg,
+            drawPass);
     }
 
     if (DrawStandaloneMagazineBox(

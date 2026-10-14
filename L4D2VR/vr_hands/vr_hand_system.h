@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -15,6 +16,13 @@
 class CViewSetup;
 struct IDirect3DDevice9;
 namespace VrHandVmPose { struct Snapshot; }
+
+struct VrHandControllerContext
+{
+    vr::IVRSystem* system = nullptr;
+    std::array<vr::TrackedDeviceIndex_t, 2> physicalIndices{
+        vr::k_unTrackedDeviceIndexInvalid, vr::k_unTrackedDeviceIndexInvalid};
+};
 
 class VrHandSystem
 {
@@ -28,6 +36,8 @@ public:
     bool DrawForEye(
         IDirect3DDevice9* device,
         vr::IVRInput* input,
+        const l4d2vr_input::ActionFrame& actionFrame,
+        const VrHandControllerContext& controllers,
         const CViewSetup& view,
         int eyeIndex,
         float vrScale,
@@ -69,7 +79,7 @@ public:
         const Vector& leftHandTargetBoxMins,
         const Vector& leftHandTargetBoxMaxs,
         bool leftHandTargetBoxUseViewmodelLayer,
-        bool leftHandMagazineGripPose,
+        unsigned magazineGripPhysicalMask,
         const std::array<float, 5>& gloveFingerMaxCurl,
         VrHandDrawPass drawPass);
 
@@ -104,17 +114,35 @@ public:
     bool EnsureAssetsAvailable(bool debugLog);
     bool IsDependencyUnavailable() const;
     const std::string& DependencyFailureReason() const;
+    // Render-thread only: wrist position in the currently skinned glove model.
+    bool ReadFreeWristModelPosition(bool physicalLeft, const l4d2vr_input::ActionFrame& actionFrame,
+        Vector& position) const;
 
 private:
+    std::uint32_t m_LastPoseUpdateTick = 0u;
+    struct FreeWristSnapshot
+    {
+        Vector position{0.0f, 0.0f, 0.0f};
+        std::uint64_t frameToken = 0u;
+        std::uint32_t updatedAt = 0u;
+        bool valid = false;
+    };
+    mutable std::mutex m_FreeWristMutex;
+    std::array<FreeWristSnapshot, 2> m_FreeWrists{};
     struct HandState
     {
         const char* actionPath = nullptr;
         const char* assetFileName = nullptr;
         vr::VRActionHandle_t action = vr::k_ulInvalidActionHandle;
+        vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle;
         VrHandMeshAsset asset;
+        bool assetLoadAttempted = false;
+        std::uint32_t assetLoadAttemptTick = 0u;
+        std::string assetFailureReason;
         VrHandSkeletonRuntime skeleton;
         std::vector<VrHandMatrixRows3x4> palette;
         bool paletteValid = false;
+        std::uint64_t paletteFrameToken = 0u;
         bool skeletonInitialized = false;
     };
 
@@ -139,8 +167,11 @@ private:
     };
 
     bool EnsureAssetsLoaded(bool debugLog);
+    void PublishFreeWristModelPosition(size_t handIndex);
     bool EnsureInitialized(
         vr::IVRInput* input,
+        const l4d2vr_input::ActionFrame& actionFrame,
+        const VrHandControllerContext& controllers,
         bool rightUseViewmodelPose,
         bool twoHandedViewmodelPose,
         bool leftHanded,
@@ -165,11 +196,13 @@ private:
         VrHandDrawPass drawPass);
     void UpdatePoses(
         vr::IVRInput* input,
+        const l4d2vr_input::ActionFrame& actionFrame,
+        const VrHandControllerContext& controllers,
         bool motionRangeWithoutController,
         bool rightUseViewmodelPose,
         bool twoHandedViewmodelPose,
         bool leftHanded,
-        bool leftHandMagazineGripPose,
+        unsigned magazineGripPhysicalMask,
         const std::array<float, 5>& gloveFingerMaxCurl,
         bool debugLog);
     bool DrawControllerlessTestPose(
@@ -213,7 +246,6 @@ private:
     VrHandRendererD3D9 m_Renderer;
     std::unordered_set<std::string> m_ReportedErrors;
     std::unordered_set<std::string> m_ReportedWarnings;
-    bool m_AssetLoadAttempted = false;
     bool m_AssetsLoaded = false;
     bool m_DependencyUnavailable = false;
     std::string m_DependencyFailureReason;
@@ -221,7 +253,7 @@ private:
     bool m_Initialized = false;
     bool m_DebugInitializationLogged = false;
     bool m_DebugTestPoseLogged = false;
-    bool m_LeftHandMagazineGripPoseWasEnabled = false;
+    unsigned m_MagazineGripPhysicalMaskWasEnabled = 0u;
     VrHandMeshAsset m_StandaloneMagazineBoxAsset;
     std::vector<VrHandMatrixRows3x4> m_StandaloneMagazineBoxPalette;
     std::string m_StandaloneMagazineBoxKey;

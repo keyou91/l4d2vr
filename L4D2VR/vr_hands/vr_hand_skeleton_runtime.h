@@ -2,6 +2,7 @@
 
 #include "openvr.h"
 #include "vr_hand_types.h"
+#include "../vr_input_recovery.h"
 
 #include <memory>
 #include <string>
@@ -17,7 +18,10 @@ public:
     VrHandSkeletonRuntime& operator=(const VrHandSkeletonRuntime&) = delete;
 
     bool Initialize(vr::IVRInput* input, vr::VRActionHandle_t action, std::string& outError);
-    bool Update(vr::IVRInput* input, vr::EVRSkeletalMotionRange motionRange, std::string& outError);
+    bool Update(vr::IVRInput* input, const l4d2vr_input::ActionFrame& actionFrame,
+        vr::IVRSystem* system, vr::VRInputValueHandle_t expectedSource,
+        vr::TrackedDeviceIndex_t expectedDevice,
+        vr::EVRSkeletalMotionRange motionRange, std::string& outError);
     bool BuildSkinningPalette(
         const VrHandMeshAsset& asset,
         std::vector<VrHandMatrixRows3x4>& outPalette,
@@ -27,6 +31,7 @@ public:
 
     bool IsInitialized() const;
     bool HasPose() const;
+    std::uint64_t PoseFrameToken() const;
     int JointCount() const;
 
 private:

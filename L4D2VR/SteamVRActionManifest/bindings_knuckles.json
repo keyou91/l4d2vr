@@ -93,17 +93,11 @@
             },
             {
                "inputs": {
-                  "east": {
-                     "output": "/actions/main/in/boolean_turnright"
-                  },
                   "north": {
                      "output": "/actions/main/in/PrevItem"
                   },
                   "south": {
                      "output": "/actions/main/in/NextItem"
-                  },
-                  "west": {
-                     "output": "/actions/main/in/boolean_turnleft"
                   }
                },
                "mode": "dpad",
