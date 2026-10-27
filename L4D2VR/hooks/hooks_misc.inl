@@ -8527,6 +8527,35 @@ namespace
         (void)modelName;
     }
 
+    // Stock shotgun viewmodels do not agree on which clip bone owns the shell mesh:
+    // pump/chrome skin it to weapon_clip_bullets, while autoshotgun/SPAS skin it to
+    // the parent weapon_clip and leave weapon_clip_bullets without vertices. The shell
+    // bone picker always prefers weapon_clip_bullets, so isolate from the weapon_clip
+    // parent to keep the visible shell in the detached draw on every model.
+    inline int ResolveMagazineInteractionShotgunShellIsolationRoot(
+        const std::vector<std::string>& boneNames,
+        const std::vector<int>& boneParents,
+        int shellBone)
+    {
+        const int numBones = static_cast<int>(boneParents.size());
+        if (shellBone < 0 || shellBone >= numBones || static_cast<int>(boneNames.size()) < numBones)
+            return shellBone;
+
+        const int parent = boneParents[static_cast<size_t>(shellBone)];
+        if (parent < 0 || parent >= numBones || parent == shellBone)
+            return shellBone;
+
+        const std::string lowerShellName = vr_vm_stabilize::ToLowerAscii(boneNames[static_cast<size_t>(shellBone)]);
+        const std::string lowerParentName = vr_vm_stabilize::ToLowerAscii(boneNames[static_cast<size_t>(parent)]);
+        const bool shellIsClipBullets =
+            lowerShellName == "valvebiped.weapon_clip_bullets" ||
+            lowerShellName == "weapon_clip_bullets";
+        const bool parentIsClip =
+            lowerParentName == "valvebiped.weapon_clip" ||
+            lowerParentName == "weapon_clip";
+        return (shellIsClipBullets && parentIsClip) ? parent : shellBone;
+    }
+
     inline bool BuildDetachedSourceMagazineBones(
         const char* logPrefix,
         const std::string& modelName,
@@ -8534,6 +8563,7 @@ namespace
         const vr_vm_stabilize::Mat3x4* sourceBones,
         int numBones,
         int clipBone,
+        int isolationRootBone,
         const VrHandMatrix4& targetMagazineWorld,
         const vr_vm_stabilize::Mat3x4* cachedMagazineBones,
         uint32_t renderFrameSeq,
@@ -8546,6 +8576,11 @@ namespace
         if (numBones <= 0 || numBones > 512 || clipBone < 0 || clipBone >= numBones ||
             static_cast<int>(boneParents.size()) < numBones)
             return false;
+
+        // The target pose is solved for clipBone; isolationRootBone only widens which
+        // subtree follows that delta (and is drawn) so sibling-skinned geometry stays visible.
+        if (isolationRootBone < 0 || isolationRootBone >= numBones)
+            isolationRootBone = clipBone;
 
         const vr_vm_stabilize::Mat3x4* magazineSourceBones = cachedMagazineBones ? cachedMagazineBones : sourceBones;
         vr_vm_stabilize::Mat3x4 originalClipWorld{};
@@ -8571,7 +8606,7 @@ namespace
                 int current = bone;
                 for (int guard = 0; guard < numBones && current >= 0 && current < numBones; ++guard)
                 {
-                    if (current == clipBone)
+                    if (current == isolationRootBone)
                         return true;
                     current = boneParents[static_cast<size_t>(current)];
                 }
@@ -8603,14 +8638,17 @@ namespace
         static std::unordered_set<std::string> s_detachedSourceMagazineLoggedModels;
         {
             std::lock_guard<std::mutex> lock(s_detachedSourceMagazineLogMutex);
-            const std::string key = std::string(logPrefix ? logPrefix : "Magazine") + "|" + modelName + "|" + std::to_string(clipBone);
+            const std::string key =
+                std::string(logPrefix ? logPrefix : "Magazine") + "|" + modelName + "|" +
+                std::to_string(clipBone) + "|" + std::to_string(isolationRootBone);
             if (logDiagnostics && s_detachedSourceMagazineLoggedModels.emplace(key).second)
             {
                 Game::logMsg(
-                    "[VR][%s] drawing detached magazine through Source viewmodel shader model=%s clipBone=%d cached=%d",
+                    "[VR][%s] drawing detached magazine through Source viewmodel shader model=%s clipBone=%d isolationRoot=%d cached=%d",
                     logPrefix ? logPrefix : "Magazine",
                     modelName.c_str(),
                     clipBone,
+                    isolationRootBone,
                     cachedMagazineBones ? 1 : 0);
             }
         }
@@ -8744,6 +8782,9 @@ namespace
             (vr->m_MagazineInteractionState == MagazineInteractionManualState::HoldingFreshMagazine)
             ? "MagazineInteractionFresh"
             : "MagazineInteraction";
+        const int isolationRootBone = vr->m_MagazineInteractionShotgunShellMode
+            ? ResolveMagazineInteractionShotgunShellIsolationRoot(boneNames, boneParents, clipBone)
+            : clipBone;
         const bool built = BuildDetachedSourceMagazineBones(
             logPrefix,
             modelName,
@@ -8751,6 +8792,7 @@ namespace
             sourceBones,
             numBones,
             clipBone,
+            isolationRootBone,
             targetMagazineWorld,
             useCachedMagazinePose ? magazineSourceBones : nullptr,
             vr->m_RenderFrameSeq.load(std::memory_order_relaxed),
